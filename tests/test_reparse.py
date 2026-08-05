@@ -6,7 +6,7 @@ import importlib
 import sqlite3
 import sys
 
-from tests.conftest import post_session
+from tests.conftest import post_readiness, post_scale_weighin, post_session
 
 
 def test_reparse_all_reproduces_same_rows(app_client):
@@ -55,3 +55,27 @@ def _run_reparse_all(reparse_module):
         return reparse_module.main()
     finally:
         sys.argv = old_argv
+
+
+def test_reparse_all_covers_all_three_record_types(app_client):
+    """--all with no --type restricts to nothing — it must sweep sessions,
+    readiness_events, and scale_weighins together."""
+    post_session(app_client)
+    post_readiness(app_client)
+    post_scale_weighin(app_client)
+
+    import app.config
+
+    sys.modules.pop("reparse", None)
+    import reparse
+
+    importlib.reload(reparse)
+
+    exit_code = _run_reparse_all(reparse)
+    assert exit_code == 0
+
+    conn = sqlite3.connect(app.config.DB_PATH)
+    assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM readiness_events").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM scale_weighins").fetchone()[0] == 1
+    conn.close()
