@@ -19,8 +19,8 @@ full design and rationale.
 
 ## Status
 
-🚧 Early implementation — ingestion endpoint, storage layer, and Tailscale setup are being
-built out per the spec.
+✅ Ingestion endpoint, storage layer, and reparse tooling implemented per the spec. Tailscale
+Serve setup (below) is a manual step to run on the actual self-hosted box.
 
 ## Getting started
 
@@ -53,6 +53,52 @@ make test
 
 A [devcontainer](.devcontainer/devcontainer.json) is available for a reproducible environment (VS Code / GitHub Codespaces); tool versions are pinned in [.mise.toml](.mise.toml).
 
+### Reparsing stored sessions
+
+`reparse.py` re-runs the parser against raw files already on disk — no network access — and
+is how the database catches up after the parser is improved to handle a new field:
+
+```bash
+python reparse.py --all           # reparse every stored session
+python reparse.py --stale         # reparse only sessions below the current schema_version
+python reparse.py <id> [<id> ...] # reparse specific session ids
+```
+
+## Running in production (Docker)
+
+```bash
+make build
+docker run -d \
+  --name mygymapp-sync-server \
+  -p 127.0.0.1:8420:8420 \
+  -v ~/mygymapp-server-data:/data \
+  -e SYNC_SHARED_SECRET="$(openssl rand -hex 32)" \
+  -e DATA_ROOT=/data \
+  mygymapp-sync-server
+```
+
+Publishing to `127.0.0.1:8420` (not `0.0.0.0:8420` or a bare `-p 8420:8420`) is what keeps
+this off the LAN/public internet — see the Tailscale Serve section below for how the phone
+actually reaches it.
+
+## Tailscale Serve setup
+
+This server must be reachable **only** from your own tailnet (do **not** use Tailscale
+Funnel — that exposes it to the public internet, which this design explicitly avoids). Once
+the container above is running and bound to `127.0.0.1:8420`:
+
+```bash
+tailscale up                                            # if not already joined to the tailnet
+tailscale serve --bg https / http://localhost:8420
+tailscale serve status                                   # verify the mapping
+```
+
+This publishes the service at `https://<machine-name>.<tailnet-name>.ts.net` — visible via
+`tailscale status` — over HTTPS with a MagicDNS-issued cert, reachable only by devices on
+your tailnet (the phone running MyGymApp needs the Tailscale Android app, authenticated to
+the same tailnet). **This hostname is what you put into the MyGymApp Android app's sync
+settings**, together with the `SYNC_SHARED_SECRET` you generated above.
+
 ## Project structure
 
 ```
@@ -66,8 +112,15 @@ A [devcontainer](.devcontainer/devcontainer.json) is available for a reproducibl
 │   ├── sync-ingestion/       # the implementation spec for this project
 │   ├── DOCUMENTATION_GUIDE.md
 │   └── RUNBOOK.md           # operational playbook (fill in once deployed)
-├── app/                    # FastAPI application (routes, parsing, storage)
-├── reparse.py               # standalone re-parse maintenance script
+├── app/                    # FastAPI application
+│   ├── main.py               # app entrypoint, startup (DB init)
+│   ├── routes.py              # HTTP handlers (GET /health, POST /v1/sessions)
+│   ├── ingestion.py            # hash verification, raw write, idempotency (steps 3-7)
+│   ├── parsing.py               # YAML frontmatter parser, shared with reparse.py
+│   ├── storage.py                # SQLite schema + upsert logic
+│   ├── security.py                # bearer-token auth
+│   └── config.py                   # env-driven configuration
+├── reparse.py               # standalone re-parse maintenance script (reuses app/parsing.py)
 ├── tests/                     # test suite
 ├── CLAUDE.md                # instructions for Claude Code and other AI agents
 ├── Makefile                  # stack-agnostic entry points (setup/dev/test/lint/build)
