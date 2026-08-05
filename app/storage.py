@@ -69,15 +69,54 @@ CREATE TABLE IF NOT EXISTS tonnage_by_bodypart (
 );
 CREATE INDEX IF NOT EXISTS idx_tonnage_by_bodypart_session ON tonnage_by_bodypart(session_id);
 
--- Sessions whose raw file was stored but whose parse step failed (step 6
--- "on failure" case in the spec). schema_version = 0 in `sessions` already
--- marks this, but keeping the exception text separately makes debugging a
--- batch of failures much faster than grepping log files by session id.
+-- Readiness events (docs/sync-ingestion/READINESS_SPEC.md). Independent of
+-- sessions — an 8-hex id, but in its own namespace/table, since a readiness
+-- event and a session could coincidentally share the same id string.
+CREATE TABLE IF NOT EXISTS readiness_events (
+  id              TEXT PRIMARY KEY,
+  measured_at     TEXT NOT NULL,
+  readiness       TEXT,
+  ln_rmssd        REAL,
+  resting_hr      INTEGER,
+  vo2max          REAL,
+  recommendation  TEXT,
+  content_hash    TEXT NOT NULL,
+  raw_path        TEXT NOT NULL,
+  received_at     TEXT NOT NULL,
+  schema_version  INTEGER NOT NULL
+);
+
+-- Scale weigh-ins (docs/sync-ingestion/SCALE_SPEC.md). `id` is an ISO date
+-- string (at most one weigh-in per day), not the 8-hex scheme used
+-- elsewhere — still its own namespace/table, no cross-type assumptions.
+CREATE TABLE IF NOT EXISTS scale_weighins (
+  id                 TEXT PRIMARY KEY,
+  date               TEXT NOT NULL,
+  recorded_at        TEXT,
+  weight_kg          REAL,
+  bmi                REAL,
+  body_fat_percent   REAL,
+  lean_mass_percent  REAL,
+  content_hash       TEXT NOT NULL,
+  raw_path           TEXT NOT NULL,
+  received_at        TEXT NOT NULL,
+  schema_version     INTEGER NOT NULL
+);
+
+-- Records whose raw file was stored but whose parse step failed (step 6
+-- "on failure" case in the spec). schema_version = 0 on the corresponding
+-- row already marks this, but keeping the exception text separately makes
+-- debugging a batch of failures much faster than grepping log files.
+-- record_type + record_id together are the key, since ids are only unique
+-- within their own record type (sessions/readiness_events/scale_weighins),
+-- not globally.
 CREATE TABLE IF NOT EXISTS parse_failures (
-  session_id  TEXT PRIMARY KEY,
-  raw_path    TEXT NOT NULL,
-  error       TEXT NOT NULL,
-  failed_at   TEXT NOT NULL
+  record_type  TEXT NOT NULL,
+  record_id    TEXT NOT NULL,
+  raw_path     TEXT NOT NULL,
+  error        TEXT NOT NULL,
+  failed_at    TEXT NOT NULL,
+  PRIMARY KEY (record_type, record_id)
 );
 """
 
@@ -94,7 +133,47 @@ UNPARSED_SCHEMA_VERSION = 0
 def init_db(db_path: Path = DB_PATH) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with connect(db_path) as conn:
+        _migrate_parse_failures_table(conn)
         conn.executescript(SCHEMA)
+
+
+def _migrate_parse_failures_table(conn: sqlite3.Connection) -> None:
+    """One-time migration: `parse_failures` originally had a `session_id`
+    PK (back when sessions were the only record type). Adding readiness/
+    scale weigh-ins required a `(record_type, record_id)` key instead, since
+    ids are only unique within their own record type. `CREATE TABLE IF NOT
+    EXISTS` in SCHEMA won't touch an already-existing table with the old
+    shape, so detect and migrate it explicitly here before SCHEMA runs.
+    Existing rows are session failures by construction (readiness/scale
+    didn't exist yet when they could have been written), so they migrate
+    with record_type='sessions' and record_id=<old session_id>.
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'parse_failures'"
+    ).fetchone()
+    if row is None or "session_id" not in row[0]:
+        return  # table doesn't exist yet, or already has the new shape
+
+    conn.execute("ALTER TABLE parse_failures RENAME TO parse_failures_old")
+    conn.execute(
+        """
+        CREATE TABLE parse_failures (
+          record_type  TEXT NOT NULL,
+          record_id    TEXT NOT NULL,
+          raw_path     TEXT NOT NULL,
+          error        TEXT NOT NULL,
+          failed_at    TEXT NOT NULL,
+          PRIMARY KEY (record_type, record_id)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO parse_failures (record_type, record_id, raw_path, error, failed_at)
+        SELECT 'sessions', session_id, raw_path, error, failed_at FROM parse_failures_old
+        """
+    )
+    conn.execute("DROP TABLE parse_failures_old")
 
 
 @contextmanager
@@ -158,8 +237,46 @@ class ParsedSession:
     exercise_sets: list[ExerciseSet] = field(default_factory=list)
 
 
-def get_stored_content_hash(conn: sqlite3.Connection, session_id: str) -> str | None:
-    row = conn.execute("SELECT content_hash FROM sessions WHERE id = ?", (session_id,)).fetchone()
+@dataclass
+class ParsedReadiness:
+    """See docs/sync-ingestion/READINESS_SPEC.md. `id` lives in its own
+    namespace — never conflate with sessions.id even if they coincide."""
+
+    id: str
+    measured_at: str
+    readiness: str | None
+    ln_rmssd: float
+    resting_hr: int
+    vo2max: float
+    recommendation: str
+
+
+@dataclass
+class ParsedScaleWeighin:
+    """See docs/sync-ingestion/SCALE_SPEC.md. `id` is an ISO date string
+    (at most one weigh-in per day), not the 8-hex scheme used elsewhere."""
+
+    id: str
+    date: str
+    recorded_at: str | None
+    weight_kg: float
+    bmi: float
+    body_fat_percent: float
+    lean_mass_percent: float
+
+
+# Tables that participate in the generic id -> content_hash / stale-lookup
+# helpers below. Whitelisted rather than interpolating an arbitrary caller-
+# supplied table name into SQL.
+_RECORD_TABLES = {"sessions", "readiness_events", "scale_weighins"}
+
+
+def get_stored_content_hash(
+    conn: sqlite3.Connection, record_id: str, table: str = "sessions"
+) -> str | None:
+    if table not in _RECORD_TABLES:
+        raise ValueError(f"unknown table: {table}")
+    row = conn.execute(f"SELECT content_hash FROM {table} WHERE id = ?", (record_id,)).fetchone()  # noqa: S608
     return row[0] if row else None
 
 
@@ -284,54 +401,160 @@ def upsert_parsed_session(
     )
 
     # A successful parse supersedes any earlier failure record for this session.
-    conn.execute("DELETE FROM parse_failures WHERE session_id = ?", (parsed.id,))
+    conn.execute(
+        "DELETE FROM parse_failures WHERE record_type = 'sessions' AND record_id = ?",
+        (parsed.id,),
+    )
 
 
-def record_unparsed_session(
+def upsert_parsed_readiness(
+    conn: sqlite3.Connection,
+    parsed: ParsedReadiness,
+    *,
+    content_hash: str,
+    raw_path: str,
+    received_at: str,
+) -> None:
+    """Step 6 "on success" path for POST /v1/readiness — no child tables, a
+    readiness event is a single flat row."""
+    conn.execute(
+        """
+        INSERT INTO readiness_events (
+            id, measured_at, readiness, ln_rmssd, resting_hr, vo2max,
+            recommendation, content_hash, raw_path, received_at, schema_version
+        ) VALUES (
+            :id, :measured_at, :readiness, :ln_rmssd, :resting_hr, :vo2max,
+            :recommendation, :content_hash, :raw_path, :received_at, :schema_version
+        )
+        ON CONFLICT(id) DO UPDATE SET
+            measured_at=excluded.measured_at, readiness=excluded.readiness,
+            ln_rmssd=excluded.ln_rmssd, resting_hr=excluded.resting_hr,
+            vo2max=excluded.vo2max, recommendation=excluded.recommendation,
+            content_hash=excluded.content_hash, raw_path=excluded.raw_path,
+            received_at=excluded.received_at, schema_version=excluded.schema_version
+        """,
+        {
+            "id": parsed.id,
+            "measured_at": parsed.measured_at,
+            "readiness": parsed.readiness,
+            "ln_rmssd": parsed.ln_rmssd,
+            "resting_hr": parsed.resting_hr,
+            "vo2max": parsed.vo2max,
+            "recommendation": parsed.recommendation,
+            "content_hash": content_hash,
+            "raw_path": raw_path,
+            "received_at": received_at,
+            "schema_version": PARSER_SCHEMA_VERSION,
+        },
+    )
+    conn.execute(
+        "DELETE FROM parse_failures WHERE record_type = 'readiness_events' AND record_id = ?",
+        (parsed.id,),
+    )
+
+
+def upsert_parsed_scale_weighin(
+    conn: sqlite3.Connection,
+    parsed: ParsedScaleWeighin,
+    *,
+    content_hash: str,
+    raw_path: str,
+    received_at: str,
+) -> None:
+    """Step 6 "on success" path for POST /v1/scale-weighins — no child
+    tables, a weigh-in is a single flat row keyed by its ISO date id."""
+    conn.execute(
+        """
+        INSERT INTO scale_weighins (
+            id, date, recorded_at, weight_kg, bmi, body_fat_percent,
+            lean_mass_percent, content_hash, raw_path, received_at, schema_version
+        ) VALUES (
+            :id, :date, :recorded_at, :weight_kg, :bmi, :body_fat_percent,
+            :lean_mass_percent, :content_hash, :raw_path, :received_at, :schema_version
+        )
+        ON CONFLICT(id) DO UPDATE SET
+            date=excluded.date, recorded_at=excluded.recorded_at,
+            weight_kg=excluded.weight_kg, bmi=excluded.bmi,
+            body_fat_percent=excluded.body_fat_percent,
+            lean_mass_percent=excluded.lean_mass_percent,
+            content_hash=excluded.content_hash, raw_path=excluded.raw_path,
+            received_at=excluded.received_at, schema_version=excluded.schema_version
+        """,
+        {
+            "id": parsed.id,
+            "date": parsed.date,
+            "recorded_at": parsed.recorded_at,
+            "weight_kg": parsed.weight_kg,
+            "bmi": parsed.bmi,
+            "body_fat_percent": parsed.body_fat_percent,
+            "lean_mass_percent": parsed.lean_mass_percent,
+            "content_hash": content_hash,
+            "raw_path": raw_path,
+            "received_at": received_at,
+            "schema_version": PARSER_SCHEMA_VERSION,
+        },
+    )
+    conn.execute(
+        "DELETE FROM parse_failures WHERE record_type = 'scale_weighins' AND record_id = ?",
+        (parsed.id,),
+    )
+
+
+def record_parse_failure(
     conn: sqlite3.Connection,
     *,
-    session_id: str,
+    table: str,
+    record_type: str,
+    record_id: str,
     content_hash: str,
     raw_path: str,
     received_at: str,
     error: str,
 ) -> None:
-    """Step 6 "on failure" path.
+    """Step 6 "on failure" path, shared by all three record types.
 
     The raw file (step 5) already succeeded — that's what matters for not
-    losing data. This just records enough to find and retry the session
-    later via `reparse.py`, without ever failing the HTTP request over it.
+    losing data. This just records enough (a bare-minimum row in the
+    record's own table, plus the exception text in parse_failures) to find
+    and retry the record later via `reparse.py`, without ever failing the
+    HTTP request over it.
     """
+    if table not in _RECORD_TABLES:
+        raise ValueError(f"unknown table: {table}")
     conn.execute(
-        """
-        INSERT INTO sessions (id, content_hash, raw_path, received_at, schema_version)
+        f"""
+        INSERT INTO {table} (id, content_hash, raw_path, received_at, schema_version)
         VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             content_hash=excluded.content_hash, raw_path=excluded.raw_path,
             received_at=excluded.received_at, schema_version=excluded.schema_version
-        """,
-        (session_id, content_hash, raw_path, received_at, UNPARSED_SCHEMA_VERSION),
+        """,  # noqa: S608 — table is whitelist-checked above
+        (record_id, content_hash, raw_path, received_at, UNPARSED_SCHEMA_VERSION),
     )
     conn.execute(
         """
-        INSERT INTO parse_failures (session_id, raw_path, error, failed_at)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(session_id) DO UPDATE SET
+        INSERT INTO parse_failures (record_type, record_id, raw_path, error, failed_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(record_type, record_id) DO UPDATE SET
             raw_path=excluded.raw_path, error=excluded.error, failed_at=excluded.failed_at
         """,
-        (session_id, raw_path, error, received_at),
+        (record_type, record_id, raw_path, error, received_at),
     )
 
 
-def get_stale_sessions(conn: sqlite3.Connection) -> list[tuple[str, str]]:
-    """Sessions whose schema_version is behind the current parser version."""
+def get_stale_records(conn: sqlite3.Connection, table: str = "sessions") -> list[tuple[str, str]]:
+    """Records in `table` whose schema_version is behind the current parser version."""
+    if table not in _RECORD_TABLES:
+        raise ValueError(f"unknown table: {table}")
     rows = conn.execute(
-        "SELECT id, raw_path FROM sessions WHERE schema_version < ?",
+        f"SELECT id, raw_path FROM {table} WHERE schema_version < ?",  # noqa: S608
         (PARSER_SCHEMA_VERSION,),
     ).fetchall()
     return [(r[0], r[1]) for r in rows]
 
 
-def get_all_sessions(conn: sqlite3.Connection) -> list[tuple[str, str]]:
-    rows = conn.execute("SELECT id, raw_path FROM sessions").fetchall()
+def get_all_records(conn: sqlite3.Connection, table: str = "sessions") -> list[tuple[str, str]]:
+    if table not in _RECORD_TABLES:
+        raise ValueError(f"unknown table: {table}")
+    rows = conn.execute(f"SELECT id, raw_path FROM {table}").fetchall()  # noqa: S608
     return [(r[0], r[1]) for r in rows]

@@ -53,6 +53,28 @@ exercises:
 Optional free-text session notes go here.
 """
 
+READINESS_MD = """---
+id: a1b2c3d4
+measuredAt: "2026-08-05T07:04:10.123"
+readiness: "GOOD"
+lnRmssd: 4.30
+restingHr: 65
+vo2max: 45.2
+recommendation: "HRV above baseline. Good day to push intensity."
+---
+"""
+
+SCALE_WEIGHIN_MD = """---
+id: "2026-08-05"
+date: "2026-08-05"
+recordedAt: "2026-08-05T07:12:34"
+weightKg: 78.4
+bmi: 24.1
+bodyFatPercent: 16.8
+leanMassPercent: 81.2
+---
+"""
+
 SHARED_SECRET = "test-secret-for-unit-tests"
 
 
@@ -90,6 +112,34 @@ def auth_headers() -> dict:
     return {"Authorization": f"Bearer {SHARED_SECRET}"}
 
 
+def _post_record(
+    client,
+    endpoint: str,
+    id_field: str,
+    record_id: str,
+    md_bytes: bytes,
+    *,
+    rel_path: str,
+    content_hash: str | None,
+    headers: dict | None,
+):
+    import json
+
+    envelope = {
+        id_field: record_id,
+        "relPath": rel_path,
+        "contentHash": content_hash or content_hash_of(md_bytes),
+        "appVersion": "1.0-test",
+        "clientSentAt": "2025-04-15T10:05:42Z",
+    }
+    return client.post(
+        endpoint,
+        data={"envelope": json.dumps(envelope)},
+        files={"file": ("record.md", md_bytes, "text/markdown")},
+        headers=headers if headers is not None else auth_headers(),
+    )
+
+
 def post_session(
     client,
     md_bytes: bytes = SESSION_MD.encode(),
@@ -99,18 +149,55 @@ def post_session(
     content_hash=None,
     headers=None,
 ):
-    envelope = {
-        "sessionId": session_id,
-        "relPath": rel_path or f"2025/04/2025-04-15_rt-b2c3d4e5_{session_id}.md",
-        "contentHash": content_hash or content_hash_of(md_bytes),
-        "appVersion": "1.0-test",
-        "clientSentAt": "2025-04-15T10:05:42Z",
-    }
-    import json
-
-    return client.post(
+    return _post_record(
+        client,
         "/v1/sessions",
-        data={"envelope": json.dumps(envelope)},
-        files={"file": ("session.md", md_bytes, "text/markdown")},
-        headers=headers if headers is not None else auth_headers(),
+        "sessionId",
+        session_id,
+        md_bytes,
+        rel_path=rel_path or f"2025/04/2025-04-15_rt-b2c3d4e5_{session_id}.md",
+        content_hash=content_hash,
+        headers=headers,
+    )
+
+
+def post_readiness(
+    client,
+    md_bytes: bytes = READINESS_MD.encode(),
+    *,
+    event_id="a1b2c3d4",
+    rel_path=None,
+    content_hash=None,
+    headers=None,
+):
+    return _post_record(
+        client,
+        "/v1/readiness",
+        "eventId",
+        event_id,
+        md_bytes,
+        rel_path=rel_path or f"readiness/{event_id}.md",
+        content_hash=content_hash,
+        headers=headers,
+    )
+
+
+def post_scale_weighin(
+    client,
+    md_bytes: bytes = SCALE_WEIGHIN_MD.encode(),
+    *,
+    weighin_id="2026-08-05",
+    rel_path=None,
+    content_hash=None,
+    headers=None,
+):
+    return _post_record(
+        client,
+        "/v1/scale-weighins",
+        "weighInId",
+        weighin_id,
+        md_bytes,
+        rel_path=rel_path or f"2026/08/{weighin_id}.md",
+        content_hash=content_hash,
+        headers=headers,
     )

@@ -1,14 +1,16 @@
-"""Parses the Markdown-with-YAML-frontmatter session format into a ParsedSession.
+"""Parses the Markdown-with-YAML-frontmatter formats used by all three
+record types (sessions, readiness events, scale weigh-ins) into their
+respective Parsed* dataclasses.
 
-This is the *one* parsing function shared by the live POST /v1/sessions
-handler (app/routes.py) and the standalone reparse.py script — per the spec,
-these must never diverge. Everything here is pure (bytes in, ParsedSession
-out, or an exception) and touches neither the network nor the database, so
-it's trivially testable and safe to re-run offline against files already on
-disk.
+These are the *one* parsing function per record type, shared by the live
+POST handlers (app/routes.py) and the standalone reparse.py script — per the
+spec, a given record type's parsing logic must never diverge between the two
+callers. Everything here is pure (bytes in, a Parsed* dataclass out, or an
+exception) and touches neither the network nor the database, so it's
+trivially testable and safe to re-run offline against files already on disk.
 
-Field rules (see docs/sync-ingestion/SPEC.md "Field notes" for the source of
-truth):
+Field rules (see docs/sync-ingestion/SPEC.md, READINESS_SPEC.md, and
+SCALE_SPEC.md "Field notes" sections for the source of truth):
 - Any numeric field can be entirely absent from the YAML when its value is 0
   — treat missing as 0/0.0, never as an error or None.
 - `tonnageByBodypart` entries with value 0 are dropped entirely rather than
@@ -16,19 +18,21 @@ truth):
 - `completedAt` may be `""` (abandoned session) — store as-is, not an error.
 - `excludeFromTonnage` / `isDaily` are omitted when false — missing means False.
 - Unrecognized top-level YAML keys are ignored, not an error — the phone app
-  evolves independently and may add fields this parser doesn't know about yet.
+  evolves independently and may add fields these parsers don't know about yet.
 """
 
 import yaml
 
-from app.storage import ExerciseSet, ParsedSession
+from app.storage import ExerciseSet, ParsedReadiness, ParsedScaleWeighin, ParsedSession
 
 
 class SessionParseError(ValueError):
-    """Raised when the file doesn't look like a valid session (bad frontmatter,
-    missing required identity fields, etc). Callers (routes.py, reparse.py)
-    catch this — per the raw-first principle, a parse failure must never be
-    allowed to take down the raw write or crash the reparse batch."""
+    """Raised when a file doesn't look like a valid record of its claimed
+    type (bad frontmatter, missing required identity fields, etc). Callers
+    (routes.py, reparse.py) catch this — per the raw-first principle, a
+    parse failure must never be allowed to take down the raw write or crash
+    the reparse batch. Named for the original (session) use case but shared
+    across all three record-type parsers below."""
 
 
 _ID_KEYS = ("id", "routineId", "exerciseId")
@@ -125,6 +129,70 @@ def parse_session_file(raw_bytes: bytes) -> ParsedSession:
         notes=body.strip(),
         tonnage_by_bodypart=tonnage_by_bodypart,
         exercise_sets=exercise_sets,
+    )
+
+
+def parse_readiness_file(raw_bytes: bytes) -> ParsedReadiness:
+    """See docs/sync-ingestion/READINESS_SPEC.md. `readiness` events are a
+    single flat record (no child tables, no free-text body to speak of)."""
+    text = raw_bytes.decode("utf-8")
+    frontmatter, _body = _split_frontmatter(text)
+
+    try:
+        data = yaml.load(frontmatter, Loader=_StringIdLoader) or {}
+    except yaml.YAMLError as exc:
+        raise SessionParseError(f"invalid YAML frontmatter: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise SessionParseError("frontmatter did not parse to a mapping")
+
+    event_id = data.get("id")
+    if not event_id or not isinstance(event_id, str):
+        raise SessionParseError("frontmatter missing required 'id' field")
+
+    measured_at = data.get("measuredAt")
+    if not measured_at:
+        raise SessionParseError("frontmatter missing required 'measuredAt' field")
+
+    return ParsedReadiness(
+        id=event_id,
+        measured_at=measured_at,
+        readiness=data.get("readiness"),
+        ln_rmssd=_num(data, "lnRmssd"),
+        resting_hr=_int(data, "restingHr"),
+        vo2max=_num(data, "vo2max"),
+        recommendation=data.get("recommendation") or "",
+    )
+
+
+def parse_scale_weighin_file(raw_bytes: bytes) -> ParsedScaleWeighin:
+    """See docs/sync-ingestion/SCALE_SPEC.md. `id` is an ISO date string
+    (at most one weigh-in per day), not the 8-hex scheme used elsewhere —
+    still handled by the same string-coercing loader, harmlessly (it's
+    already quoted on the wire, so this is just consistent, not required)."""
+    text = raw_bytes.decode("utf-8")
+    frontmatter, _body = _split_frontmatter(text)
+
+    try:
+        data = yaml.load(frontmatter, Loader=_StringIdLoader) or {}
+    except yaml.YAMLError as exc:
+        raise SessionParseError(f"invalid YAML frontmatter: {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise SessionParseError("frontmatter did not parse to a mapping")
+
+    weighin_id = data.get("id")
+    if not weighin_id or not isinstance(weighin_id, str):
+        raise SessionParseError("frontmatter missing required 'id' field")
+
+    return ParsedScaleWeighin(
+        id=weighin_id,
+        date=data.get("date") or weighin_id,
+        recorded_at=data.get("recordedAt"),
+        weight_kg=_num(data, "weightKg"),
+        bmi=_num(data, "bmi"),
+        body_fat_percent=_num(data, "bodyFatPercent"),
+        lean_mass_percent=_num(data, "leanMassPercent"),
     )
 
 

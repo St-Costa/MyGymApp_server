@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
-"""Standalone maintenance script: re-parse raw session files already on disk.
+"""Standalone maintenance script: re-parse raw record files already on disk,
+across all three record types (sessions, readiness events, scale weigh-ins —
+see docs/sync-ingestion/{SPEC,READINESS_SPEC,SCALE_SPEC}.md).
 
 Never touches the network — reads DATA_ROOT/raw/**, re-runs the *same*
-parsing function POST /v1/sessions uses (app.parsing.parse_session_file,
-via app.ingestion — never duplicated here), and upserts the result exactly
-as the live endpoint would. This is how the database catches up after the
-parser is improved to handle a new field, without needing the phone
-involved: the raw files already have everything they ever sent.
+per-type parsing function the live POST handlers use (app.parsing, via
+app.ingestion — never duplicated here), and upserts the result exactly as
+the live endpoint would. This is how the database catches up after a parser
+is improved to handle a new field, without needing the phone involved: the
+raw files already have everything they ever sent.
 
 Usage:
-    python reparse.py --all
-    python reparse.py --stale
-    python reparse.py <session_id> [<session_id> ...]
+    python reparse.py --all                  # every record, all three types
+    python reparse.py --stale                # only schema_version < current, all types
+    python reparse.py --type readiness --all  # restrict to one record type
+    python reparse.py <id> [<id> ...]          # specific ids (searched across all types)
 """
 
 import argparse
@@ -21,26 +24,45 @@ import traceback
 from datetime import UTC, datetime
 
 from app.config import DATA_ROOT, DB_PATH, RAW_DIR
-from app.parsing import SessionParseError, parse_session_file
+from app.parsing import (
+    SessionParseError,
+    parse_readiness_file,
+    parse_scale_weighin_file,
+    parse_session_file,
+)
 from app.storage import (
     connect,
-    get_all_sessions,
-    get_stale_sessions,
+    get_all_records,
+    get_stale_records,
     init_db,
-    record_unparsed_session,
+    record_parse_failure,
+    upsert_parsed_readiness,
+    upsert_parsed_scale_weighin,
     upsert_parsed_session,
 )
 
 logger = logging.getLogger("mygymapp.reparse")
 
+# One entry per record type: (table name, parse function, upsert function).
+# Adding a fourth record type in the future means adding one line here, not
+# a new code path — reparse_one/main below are already generic over this.
+RECORD_TYPES = {
+    "sessions": ("sessions", parse_session_file, upsert_parsed_session),
+    "readiness": ("readiness_events", parse_readiness_file, upsert_parsed_readiness),
+    "scale": ("scale_weighins", parse_scale_weighin_file, upsert_parsed_scale_weighin),
+}
 
-def reparse_one(conn, session_id: str, raw_path: str) -> bool:
-    """Re-reads RAW_DIR/<raw_path> and re-runs the shared parser. Returns
-    True on a successful parse, False if it was recorded as a failure
-    (never raises — a bad file must not abort a batch of many)."""
+
+def reparse_one(conn, record_type: str, record_id: str, raw_path: str) -> bool:
+    """Re-reads RAW_DIR/<raw_path> and re-runs the shared parser for
+    `record_type`. Returns True on a successful parse, False if it was
+    recorded as a failure (never raises — a bad file must not abort a batch
+    of many)."""
+    table, parse_fn, upsert_fn = RECORD_TYPES[record_type]
+
     full_path = RAW_DIR / raw_path
     if not full_path.exists():
-        logger.error("raw file missing for session %s: %s", session_id, full_path)
+        logger.error("raw file missing for %s %s: %s", record_type, record_id, full_path)
         return False
 
     raw_bytes = full_path.read_bytes()
@@ -49,20 +71,23 @@ def reparse_one(conn, session_id: str, raw_path: str) -> bool:
     # content_hash isn't recomputed here — reparse re-derives the *parsed*
     # columns from bytes already accepted and hash-verified at ingest time;
     # it doesn't re-run step 3. The existing hash on the row is preserved by
-    # SessionParseError not touching sessions.content_hash below.
-    with conn:  # nested transaction scope per session; keeps one bad file isolated
+    # SessionParseError not touching it below.
+    with conn:  # nested transaction scope per record; keeps one bad file isolated
         stored = conn.execute(
-            "SELECT content_hash FROM sessions WHERE id = ?", (session_id,)
+            f"SELECT content_hash FROM {table} WHERE id = ?",  # noqa: S608 — table from RECORD_TYPES
+            (record_id,),
         ).fetchone()
         content_hash = stored[0] if stored else ""
 
         try:
-            parsed = parse_session_file(raw_bytes)
+            parsed = parse_fn(raw_bytes)
         except SessionParseError:
-            logger.exception("failed to reparse session %s at %s", session_id, raw_path)
-            record_unparsed_session(
+            logger.exception("failed to reparse %s %s at %s", record_type, record_id, raw_path)
+            record_parse_failure(
                 conn,
-                session_id=session_id,
+                table=table,
+                record_type=table,
+                record_id=record_id,
                 content_hash=content_hash,
                 raw_path=raw_path,
                 received_at=received_at,
@@ -70,7 +95,7 @@ def reparse_one(conn, session_id: str, raw_path: str) -> bool:
             )
             return False
 
-        upsert_parsed_session(
+        upsert_fn(
             conn,
             parsed,
             content_hash=content_hash,
@@ -80,50 +105,76 @@ def reparse_one(conn, session_id: str, raw_path: str) -> bool:
         return True
 
 
+def _targets_for_type(
+    conn, record_type: str, *, all_records: bool, stale: bool
+) -> list[tuple[str, str]]:
+    table = RECORD_TYPES[record_type][0]
+    if all_records:
+        return get_all_records(conn, table=table)
+    if stale:
+        return get_stale_records(conn, table=table)
+    return []
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--type",
+        choices=list(RECORD_TYPES),
+        default=None,
+        help="restrict to one record type (default: all three)",
+    )
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--all", action="store_true", help="reparse every stored session")
+    group.add_argument("--all", action="store_true", help="reparse every stored record")
     group.add_argument(
         "--stale",
         action="store_true",
-        help="reparse only sessions below the current schema_version",
+        help="reparse only records below the current schema_version",
     )
-    group.add_argument(
-        "session_ids", nargs="*", default=[], help="specific session id(s) to reparse"
-    )
+    group.add_argument("record_ids", nargs="*", default=[], help="specific record id(s) to reparse")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO)
 
     init_db(DB_PATH)
 
+    types_to_scan = [args.type] if args.type else list(RECORD_TYPES)
+
     with connect(DB_PATH) as conn:
-        if args.all:
-            targets = get_all_sessions(conn)
-        elif args.stale:
-            targets = get_stale_sessions(conn)
+        targets: list[tuple[str, str, str]] = []  # (record_type, id, raw_path)
+
+        if args.all or args.stale:
+            for record_type in types_to_scan:
+                for record_id, raw_path in _targets_for_type(
+                    conn, record_type, all_records=args.all, stale=args.stale
+                ):
+                    targets.append((record_type, record_id, raw_path))
         else:
-            placeholders = ",".join("?" * len(args.session_ids))
-            rows = conn.execute(
-                f"SELECT id, raw_path FROM sessions WHERE id IN ({placeholders})",
-                args.session_ids,
-            ).fetchall()
-            targets = [(r[0], r[1]) for r in rows]
+            # Specific ids: search each requested type's table (or all three
+            # if --type wasn't given) since ids are only unique within their
+            # own record type, not globally.
+            for record_type in types_to_scan:
+                table = RECORD_TYPES[record_type][0]
+                placeholders = ",".join("?" * len(args.record_ids))
+                rows = conn.execute(
+                    f"SELECT id, raw_path FROM {table} WHERE id IN ({placeholders})",  # noqa: S608
+                    args.record_ids,
+                ).fetchall()
+                targets.extend((record_type, r[0], r[1]) for r in rows)
 
         if not targets:
-            print("No matching sessions found.")
+            print("No matching records found.")
             return 0
 
         ok = 0
         failed = 0
-        for session_id, raw_path in targets:
-            if reparse_one(conn, session_id, raw_path):
+        for record_type, record_id, raw_path in targets:
+            if reparse_one(conn, record_type, record_id, raw_path):
                 ok += 1
             else:
                 failed += 1
 
-    print(f"Reparsed {ok} session(s) successfully, {failed} failed (see logs).")
+    print(f"Reparsed {ok} record(s) successfully, {failed} failed (see logs).")
     return 1 if failed else 0
 
 
