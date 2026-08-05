@@ -1,0 +1,14 @@
+# Secret-scanning config for gitleaks (https://github.com/gitleaks/gitleaks),
+# invoked by lefthook's pre-commit hook. Uses gitleaks' built-in rule set by
+# default; extend below only for project-specific false positives or
+# additional patterns (internal token formats, etc).
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Global allowlist"
+paths = [
+  '''\.gitleaks\.toml$''',
+  '''(^|/)\.env\.example$''',
+]

@@ -1,0 +1,27 @@
+{
+  "name": "{{PROJECT_NAME}}",
+
+  // Pick a base image for your stack, or switch to "dockerFile"/"dockerComposeFile"
+  // once the project needs more than one container (e.g. app + database).
+  // Catalog: https://github.com/devcontainers/images/tree/main/src
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+
+  // mise (see .mise.toml) manages actual language/tool versions inside the
+  // container, so this file stays generic across stacks. Install it here:
+  "onCreateCommand": "curl https://mise.run | sh && echo 'eval \"$(~/.local/bin/mise activate bash)\"' >> ~/.bashrc",
+
+  // After mise installs the tools pinned in .mise.toml, install project deps.
+  // Replace with the real command for your stack (npm ci / poetry install / go mod download / cargo fetch ...).
+  "postCreateCommand": "~/.local/bin/mise install",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "editorconfig.editorconfig"
+      ]
+    }
+  }
+
+  // "forwardPorts": [3000],
+  // "remoteUser": "vscode"
+}

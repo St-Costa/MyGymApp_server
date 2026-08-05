@@ -1,0 +1,15 @@
+# Pins exact tool/runtime versions for this project, enforced consistently
+# across local dev, CI, and the devcontainer. Install mise: https://mise.jdx.dev
+#
+# Uncomment and set real versions for your stack. Multiple tools can be
+# pinned at once (e.g. node + python in the same repo).
+
+[tools]
+# node = "22"
+# python = "3.12"
+# go = "1.22"
+# rust = "1.79"
+
+[env]
+# Project-wide env vars available in `mise` shells, e.g.:
+# NODE_ENV = "development"

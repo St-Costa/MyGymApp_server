@@ -1,0 +1,17 @@
+# Keeps the extensive Markdown docs in this template internally consistent.
+# https://github.com/DavidAnson/markdownlint
+
+default: true
+
+# Allow long lines — prose and tables shouldn't be hard-wrapped.
+MD013: false
+
+# Allow inline HTML (used sparingly for things like <!-- --> placeholders).
+MD033: false
+
+# Allow multiple top-level headings (some docs use them for sectioning).
+MD025: false
+
+# Allow duplicate heading text across a document (e.g. repeated "## Notes").
+MD024:
+  siblings_only: true

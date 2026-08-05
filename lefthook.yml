@@ -1,0 +1,26 @@
+# Git hooks manager (single Go binary, no runtime dependency): https://lefthook.dev
+# Install: `mise install` (add lefthook to .mise.toml) or see the site for other options.
+# Activate once per clone: `lefthook install`
+#
+# This is the safety net behind CLAUDE.md's "commit automatically" policy —
+# it catches secrets, formatting, and lint issues before they ever enter
+# history, regardless of who or what is committing.
+
+pre-commit:
+  parallel: true
+  commands:
+    gitleaks:
+      run: gitleaks protect --staged --verbose
+    # Uncomment and wire up once the stack is chosen. Keep these in sync
+    # with the `lint` / `format` targets in the Makefile and CLAUDE.md.
+    # lint:
+    #   glob: "*.{js,ts,py,go,rs}"
+    #   run: make lint
+    # format:
+    #   glob: "*.{js,ts,py,go,rs}"
+    #   run: make format
+
+commit-msg:
+  commands:
+    commitlint:
+      run: npx --yes commitlint --edit {1}

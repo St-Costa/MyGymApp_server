@@ -1,0 +1,46 @@
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Editors ---
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+
+# --- Env / secrets ---
+.env
+.env.*
+!.env.example
+
+# --- Logs ---
+*.log
+logs/
+
+# --- Common build/dependency output (uncomment what applies) ---
+# Node
+# node_modules/
+# dist/
+# build/
+# coverage/
+
+# Python
+# __pycache__/
+# *.pyc
+# .venv/
+# venv/
+# *.egg-info/
+
+# Go
+# bin/
+
+# Rust
+# target/
+
+# Java/Kotlin
+# target/
+# *.class
+
+# General
+tmp/
+*.tmp

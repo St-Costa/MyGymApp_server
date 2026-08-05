@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # This is a placeholder job so the workflow is valid and the README badge
+  # has something to point at. Replace it with real setup/lint/test/build
+  # steps for your language/toolchain, then delete this job.
+  #
+  # Examples:
+  #   Node:   actions/setup-node@v4  -> npm ci -> npm run lint -> npm test
+  #   Python: actions/setup-python@v5 -> pip install -> ruff check -> pytest
+  #   Go:     actions/setup-go@v5    -> go vet ./... -> go test ./...
+  #   Rust:   dtolnay/rust-toolchain  -> cargo clippy -> cargo test
+  placeholder:
+    name: Placeholder (replace me)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No toolchain configured yet
+        run: |
+          echo "Replace this job with real lint/test/build steps for your stack."
+          echo "See CLAUDE.md 'Commands' table for what should run here."
