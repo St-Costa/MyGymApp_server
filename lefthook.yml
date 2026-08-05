@@ -11,14 +11,13 @@ pre-commit:
   commands:
     gitleaks:
       run: gitleaks protect --staged --verbose
-    # Uncomment and wire up once the stack is chosen. Keep these in sync
-    # with the `lint` / `format` targets in the Makefile and CLAUDE.md.
-    # lint:
-    #   glob: "*.{js,ts,py,go,rs}"
-    #   run: make lint
-    # format:
-    #   glob: "*.{js,ts,py,go,rs}"
-    #   run: make format
+    lint:
+      glob: "*.py"
+      run: ruff check {staged_files}
+    format:
+      glob: "*.py"
+      run: ruff format {staged_files}
+      stage_fixed: true
 
 commit-msg:
   commands:

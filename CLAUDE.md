@@ -2,29 +2,27 @@
 
 Instructions for Claude Code (and other AI coding agents that read this file) when working in this repository.
 
-## First: check whether this repo is still an unadapted template
-
-Before doing anything else in a new session, check whether this project has been adapted from the template yet: search for unreplaced `{{TOKEN}}` placeholders (`grep -rn '{{[A-Z_]*}}'` across the repo, excluding `.git/`). If any remain — including the one in this file's "Project overview" section below — the repo is still in raw template state.
-
-In that case, **don't just start on the user's request on top of a half-configured repo**. Proactively say so, then offer to run the adaptation now: ask what language/stack, project name, and any other details from [docs/USING_THIS_TEMPLATE.md](docs/USING_THIS_TEMPLATE.md) are needed, and work through that checklist (replace placeholders, wire up `Makefile`/CI/`.mise.toml`/`lefthook.yml` for the chosen stack, fill in this file's own Tech stack and Commands sections). Once no placeholders remain, proceed with what the user actually asked for.
-
-If the user explicitly says to skip adaptation or work around the placeholders as-is, respect that instead.
-
 ## Project overview
 
-<!-- Replace with a short, concrete description: what this project is, who uses it, and what "done" looks like for a typical change. -->
-
-{{PROJECT_DESCRIPTION}}
+MyGymApp Sync Server is a standalone, self-hosted ingestion server for the MyGymApp Android
+app. It receives one workout session (a Markdown file with YAML frontmatter) per `POST`
+after each gym session, stores the raw bytes durably first, then parses them into a queryable
+SQLite layer as a second, best-effort step. Single user, single shared secret, reachable only
+over Tailscale (see [docs/sync-ingestion/SPEC.md](docs/sync-ingestion/SPEC.md) for the full
+spec). "Done" for a typical change: the raw-first guarantee still holds (a parse failure never
+loses or corrupts data), idempotency on `sessionId` + content hash still holds, and the
+`reparse.py` script still shares its parsing logic with the live endpoint.
 
 ## Tech stack
 
-<!-- List language(s), frameworks, package manager, and any non-obvious infra (database, queue, deploy target). Keep this current — it's the first thing an agent reads. -->
-
-- Language:
-- Package manager:
-- Test framework:
-- Lint/format tooling:
-- Deploy target:
+- Language: Python 3.12
+- Package manager: `pip` + `pyproject.toml` (via `mise`-pinned Python)
+- Web framework: FastAPI (+ Uvicorn)
+- Storage: SQLite (stdlib `sqlite3`), raw files on disk under `DATA_ROOT`
+- Parsing: PyYAML for frontmatter
+- Test framework: `pytest`
+- Lint/format tooling: `ruff`
+- Deploy target: Docker container on a self-hosted box, reachable only via `tailscale serve`
 
 ## Commands
 
@@ -32,14 +30,14 @@ If the user explicitly says to skip adaptation or work around the placeholders a
 
 | Task | Command |
 |---|---|
-| Install deps | `` |
-| Run dev server | `` |
-| Run tests | `` |
-| Run a single test | `` |
-| Lint | `` |
-| Format | `` |
-| Build | `` |
-| Type-check | `` |
+| Install deps | `pip install -e ".[dev]"` |
+| Run dev server | `uvicorn app.main:app --reload --port 8420` |
+| Run tests | `pytest` |
+| Run a single test | `pytest path/to/test_file.py::test_name` |
+| Lint | `ruff check .` |
+| Format | `ruff format .` |
+| Build (Docker image) | `docker build -t mygymapp-sync-server .` |
+| Reparse stored sessions | `python reparse.py --all` (or `--stale`, or specific IDs) |
 
 ## Conventions
 
@@ -48,8 +46,15 @@ If the user explicitly says to skip adaptation or work around the placeholders a
 - No speculative abstractions: build what's asked, not what might be needed later.
 - Keep functions/files close to the size and shape of neighboring code in the same directory.
 - Comment only where the *why* isn't obvious from the code itself.
-
-<!-- Add project-specific conventions: naming, error handling patterns, where business logic lives vs. handlers, etc. -->
+- **Raw-first, always**: never let a parsing failure prevent or corrupt the raw file write.
+  The raw bytes on disk are the durable source of truth; the SQLite layer is a best-effort,
+  re-derivable index over them. See [docs/sync-ingestion/SPEC.md](docs/sync-ingestion/SPEC.md)
+  for the full reasoning.
+- **One parser, two callers**: the YAML-frontmatter parsing logic used by `POST /v1/sessions`
+  (step 6) must be the same function `reparse.py` calls — never duplicate it.
+- Business logic (parsing, hashing, idempotency checks) lives outside the FastAPI route
+  handlers so it's testable and reusable from `reparse.py` without spinning up the app.
+- Bump `PARSER_SCHEMA_VERSION` by hand whenever the set of fields the parser extracts changes.
 
 ## Testing expectations
 
@@ -117,17 +122,21 @@ In this repository, committing is part of finishing a unit of work — you do no
 
 ### Branching and PRs
 
-- Branch naming: <!-- e.g. `feature/short-description`, `fix/short-description` -->
+- Branch naming: `feature/short-description`, `fix/short-description`
 - Keep PRs scoped to one logical change. Explain *why* in the PR description, not just *what*.
 - Do not commit secrets, credentials, or `.env` files. See `.gitignore`.
 
 ## What not to touch without asking
 
-<!-- List anything sensitive: migrations, CI/CD config, infra-as-code, generated files, vendored code. -->
-
 - CI/CD workflow files (`.github/workflows/`) — changes here affect every future PR.
 - Anything under `docs/adr/` — these are historical records, not living docs; add a new ADR instead of editing an old one.
 - `.claude/settings.json`, `lefthook.yml`, `.gitleaks.toml`, `commitlint.config.js` — these govern what Claude itself is permitted to do and what gets checked before a commit lands; loosening them is a trust decision for the user to make, not the agent.
+- The `sessions` / `exercise_sets` / `tonnage_by_bodypart` SQLite schema — it's re-derivable
+  from raw files via `reparse.py`, but a breaking change still needs a `PARSER_SCHEMA_VERSION`
+  bump and a migration plan, not a silent edit.
+- `docs/sync-ingestion/SPEC.md` — the source spec for this project; treat as a historical
+  record like an ADR. If behavior needs to diverge from it, document the divergence rather
+  than editing the spec to match.
 
 ## Architecture notes
 

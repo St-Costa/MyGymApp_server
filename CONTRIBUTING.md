@@ -21,7 +21,9 @@ See [README.md](README.md#getting-started).
 
 ## Commit messages
 
-<!-- State the convention, e.g. Conventional Commits -->
+This project follows [Conventional Commits](https://www.conventionalcommits.org/) — see
+[CLAUDE.md](CLAUDE.md#commit-message-format) for the exact format, enforced by commitlint
+via a pre-commit hook.
 
 ## Opening a pull request
 
