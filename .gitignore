@@ -17,30 +17,22 @@ Thumbs.db
 *.log
 logs/
 
-# --- Common build/dependency output (uncomment what applies) ---
-# Node
-# node_modules/
-# dist/
-# build/
-# coverage/
+# --- Common build/dependency output ---
 
 # Python
-# __pycache__/
-# *.pyc
-# .venv/
-# venv/
-# *.egg-info/
-
-# Go
-# bin/
-
-# Rust
-# target/
-
-# Java/Kotlin
-# target/
-# *.class
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
 
 # General
 tmp/
 *.tmp
+
+# --- Project data (never commit real workout data or the raw-first store) ---
+/data/
+*.sqlite3
+
