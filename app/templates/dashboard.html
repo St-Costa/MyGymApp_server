@@ -65,26 +65,23 @@
 <div class="chart-grid">
   <div class="chart-wrap" id="wrap-chart-afibEpisodes">
     <p class="chart-desc">
-      Episodes where the beat-to-beat rhythm looked irregular enough (high variability +
-      low autocorrelation over a 30-beat window) to suspect atrial fibrillation.
+      Lower means fewer episodes where the beat-to-beat rhythm looked irregular enough to
+      suspect atrial fibrillation.
     </p>
     <div class="chart-canvas-box"><canvas id="chart-afibEpisodes"></canvas></div>
   </div>
   <div class="chart-wrap" id="wrap-chart-pauses">
-    <p class="chart-desc">Gaps longer than 2 seconds between consecutive heartbeats.</p>
     <div class="chart-canvas-box"><canvas id="chart-pauses"></canvas></div>
   </div>
   <div class="chart-wrap" id="wrap-chart-premature">
     <p class="chart-desc">
-      Premature (early) beats followed by a compensatory pause — the classic PAC/PVC
-      signature.
+      Lower means fewer premature (early) beats followed by a compensatory pause.
     </p>
     <div class="chart-canvas-box"><canvas id="chart-premature"></canvas></div>
   </div>
   <div class="chart-wrap" id="wrap-chart-uneven">
     <p class="chart-desc">
-      Consecutive beats whose spacing deviates well beyond the local average — a general
-      irregularity marker distinct from a single premature beat.
+      Lower means fewer beats whose spacing deviated well beyond the local average.
     </p>
     <div class="chart-canvas-box"><canvas id="chart-uneven"></canvas></div>
   </div>
@@ -99,78 +96,71 @@
 <div class="chart-grid">
   <div class="chart-wrap" id="wrap-chart-restingHr">
     <p class="chart-desc">
-      Heart rate at rest, measured each session. Lower generally means better
-      cardiovascular fitness or recovery; a rising trend can signal fatigue or illness.
+      Lower generally means better cardiovascular fitness or recovery; a rising trend can
+      signal fatigue or illness.
     </p>
     <div class="chart-canvas-box"><canvas id="chart-restingHr"></canvas></div>
   </div>
   <div class="chart-wrap" id="wrap-chart-hrr60s">
     <p class="chart-desc">
-      Heart-rate recovery: how many BPM your heart rate drops in the 60 seconds after a
-      session peak. Higher is better-conditioned; a chronic drop below ~12 BPM suggests
-      poor recovery.
+      Higher means your heart rate drops faster in the 60 seconds after a session peak —
+      better conditioned. Chronically below ~12 BPM suggests poor recovery.
     </p>
     <div class="chart-canvas-box"><canvas id="chart-hrr60s"></canvas></div>
   </div>
   <div class="chart-wrap" id="wrap-chart-rmssd">
     <p class="chart-desc">
-      RMSSD: beat-to-beat heart-rate variability during the session. Higher generally
-      reflects better parasympathetic (recovery) activity.
+      Higher generally means better beat-to-beat heart-rate variability and parasympathetic
+      (recovery) activity.
     </p>
     <div class="chart-canvas-box"><canvas id="chart-rmssd"></canvas></div>
   </div>
   <div class="chart-wrap" id="wrap-chart-sdnn">
     <p class="chart-desc">
-      SDNN: overall heart-rate variability across the whole session, a broader HRV measure
-      than RMSSD.
+      Higher generally means better overall heart-rate variability across the whole
+      session, a broader HRV measure than RMSSD.
     </p>
     <div class="chart-canvas-box"><canvas id="chart-sdnn"></canvas></div>
   </div>
   <div class="chart-wrap" id="wrap-chart-drift">
     <p class="chart-desc">
-      Cardiac drift: how much heart rate trends upward per minute at a steady effort — a
-      sign of accumulating fatigue or heat/dehydration within a session.
+      Lower means less heart rate trending upward per minute at a steady effort — a sign of
+      accumulating fatigue or heat/dehydration within a session.
     </p>
     <div class="chart-canvas-box"><canvas id="chart-drift"></canvas></div>
   </div>
   <div class="chart-wrap" id="wrap-chart-poincareRatio">
     <p class="chart-desc">
-      Poincaré ratio (SD2/SD1): the balance between short-term and long-term beat-to-beat
-      variability — a shape descriptor of heart-rhythm variability, not a rhythm-problem
-      count.
+      No single "better" direction — this is the balance (SD2/SD1) between short-term and
+      long-term beat-to-beat variability, an optimal range rather than a max or min.
     </p>
     <div class="chart-canvas-box"><canvas id="chart-poincareRatio"></canvas></div>
   </div>
 </div>
 
-<h3 id="wrap-vo2maxChart-heading">VO2max — 6-month, 4-week buckets</h3>
+<h3 id="wrap-vo2maxChart-heading">6-month, 4-week buckets</h3>
 <div class="chart-wrap" id="wrap-vo2maxChart">
-  <p class="chart-desc">
-    Estimated aerobic capacity (Uth-Sørensen-Overgaard-Pedersen formula, from max/resting
-    HR).
-  </p>
   <div class="chart-canvas-box"><canvas id="vo2maxChart"></canvas></div>
 </div>
 
 <h2 class="section-title">Body composition</h2>
 
-<h3 id="wrap-weightChart-heading">Body weight — 8-week weekly median</h3>
+<h3 id="wrap-weightChart-heading">8-week weekly median</h3>
 <div class="chart-wrap" id="wrap-weightChart">
-  <p class="chart-desc">Weight measured by the smart scale, weekly median.</p>
   <div class="chart-canvas-box"><canvas id="weightChart"></canvas></div>
 </div>
 
 <h3>Weekly trend — last 8 weeks</h3>
 <div class="chart-grid">
   <div class="chart-wrap" id="wrap-chart-bmi">
-    <p class="chart-desc">Body Mass Index: weight relative to height squared.</p>
+    <p class="chart-desc">Weight relative to height squared — no single "better" direction.</p>
     <div class="chart-canvas-box"><canvas id="chart-bmi"></canvas></div>
   </div>
   <div class="chart-wrap" id="wrap-chart-bodyComp">
     <p class="chart-desc">
-      Estimated body fat % (red, filled from the bottom) and lean mass % (green, filled
-      from the top) from the scale's bioimpedance reading. They don't necessarily sum to
-      100% — bone/water mass isn't counted in either.
+      From the scale's bioimpedance reading. Red fills up to body fat %, green fills down
+      to lean mass % — they don't necessarily sum to 100%, since bone/water mass isn't
+      counted in either.
     </p>
     <div class="chart-canvas-box"><canvas id="chart-bodyComp"></canvas></div>
   </div>
@@ -186,18 +176,21 @@
   // suspicion counts, not fitness metrics, regardless of the "diagnostic
   // color" rule applied below.
   const CARDIO_META = {
-    restingHr:     { name: "Resting HR",     unit: "bpm",      good: "down", color: "#5b9dff" },
-    hrr60s:        { name: "HRR60s",         unit: "bpm",      good: "up",   color: "#3ecf7e" },
-    rmssd:         { name: "RMSSD",          unit: "ms",       good: "up",   color: "#e0b23e" },
-    sdnn:          { name: "SDNN",           unit: "ms",       good: "up",   color: "#c77dff" },
-    drift:         { name: "Cardiac drift",  unit: "bpm/min",  good: "down", color: "#4dd0e1" },
-    poincareRatio: { name: "Poincaré ratio", unit: "",         good: null,   color: "#4dd0e1" },
-    afibEpisodes:  { name: "AFib episodes",  unit: "",         good: "down", color: "#e05a5a" },
-    pauses:        { name: "Pauses",         unit: "",         good: "down", color: "#e05a5a" },
-    premature:     { name: "Premature beats",unit: "",         good: "down", color: "#e05a5a" },
-    uneven:        { name: "Uneven beats",   unit: "",         good: "down", color: "#e05a5a" },
+    restingHr:     { name: "Resting HR",             unit: "bpm",      good: "down", color: "#5b9dff" },
+    hrr60s:        { name: "HRR60s",                 unit: "bpm",      good: "up",   color: "#3ecf7e" },
+    rmssd:         { name: "RMSSD",                  unit: "ms",       good: "up",   color: "#e0b23e" },
+    sdnn:          { name: "SDNN",                   unit: "ms",       good: "up",   color: "#c77dff" },
+    drift:         { name: "Cardiac drift",          unit: "bpm/min",  good: "down", color: "#4dd0e1" },
+    poincareRatio: { name: "Poincaré ratio",         unit: "",         good: null,   color: "#4dd0e1" },
+    afibEpisodes:  { name: "AFib episodes",          unit: "",         good: "down", color: "#e05a5a" },
+    pauses:        { name: "2s btw beats pauses",    unit: "",         good: "down", color: "#e05a5a" },
+    premature:     { name: "Premature beats",        unit: "",         good: "down", color: "#e05a5a" },
+    uneven:        { name: "Uneven beats",           unit: "",         good: "down", color: "#e05a5a" },
   };
-  const DIRECTION_ARROW = { up: "↑", down: "↓" };
+  // Three stacked chevrons rather than a single arrow glyph, per spec —
+  // <br> between each so line-height in .chart-direction actually stacks
+  // them vertically instead of running them side by side on one line.
+  const DIRECTION_ARROW = { up: "∧<br>∧<br>∧", down: "∨<br>∨<br>∨" };
 
   function chartHeader(meta) {
     const arrow = meta.good ? `<span class="chart-direction">${DIRECTION_ARROW[meta.good]}</span>` : "";

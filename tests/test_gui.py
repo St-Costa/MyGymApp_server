@@ -33,7 +33,25 @@ def test_dashboard_charts_have_a_description(app_client) -> None:
     response = app_client.get("/")
     assert response.status_code == 200
     assert "atrial fibrillation" in response.text  # afib chart description
-    assert "aerobic capacity" in response.text  # VO2max description
+    assert "Lower generally means better cardiovascular fitness" in response.text  # restingHr
+
+
+def test_dashboard_vo2max_chart_has_no_description(app_client) -> None:
+    # Explicitly requested: VO2max keeps its chart but drops the descriptive
+    # paragraph other charts have.
+    response = app_client.get("/")
+    assert response.status_code == 200
+    assert 'id="wrap-vo2maxChart"' in response.text
+    vo2max_section = response.text.split('id="wrap-vo2maxChart"')[1].split("</div>")[0]
+    assert "chart-desc" not in vo2max_section
+
+
+def test_dashboard_pauses_chart_title_has_no_description(app_client) -> None:
+    response = app_client.get("/")
+    assert response.status_code == 200
+    assert "2s btw beats pauses" in response.text
+    pauses_section = response.text.split('id="wrap-chart-pauses"')[1].split("</div>")[0]
+    assert "chart-desc" not in pauses_section
 
 
 def test_dashboard_includes_all_weekly_cardio_charts(app_client) -> None:
@@ -77,6 +95,16 @@ def test_dashboard_body_composition_is_a_single_combined_chart(app_client) -> No
     assert 'id="chart-bodyComp"' in response.text
     assert "Body fat %" in response.text
     assert "Lean mass %" in response.text
+
+
+def test_dashboard_charts_show_empty_state_when_series_is_all_null(app_client) -> None:
+    # Client-side JS logic (no browser in this test suite to verify the
+    # rendered DOM) — just confirm the empty-state branch is actually wired
+    # into the shared lineChart() helper every chart calls.
+    response = app_client.get("/")
+    assert response.status_code == 200
+    assert "No data yet" in response.text
+    assert "chart-no-data" in response.text
 
 
 def test_exercises_list_empty(app_client) -> None:
