@@ -17,10 +17,19 @@ import json
 import logging
 import sqlite3
 from collections.abc import Callable
+from dataclasses import asdict
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
 
+from app.analysis import (
+    all_time_tonnage_pr,
+    compute_cardio_trend_card,
+    recent_heaviest_set_pr,
+    resting_hr_weekly_trend,
+    scale_weekly_trend,
+    vo2max_4week_trend,
+)
 from app.config import DB_PATH
 from app.ingestion import (
     Envelope,
@@ -151,3 +160,66 @@ async def post_scale_weighin(
         response_id_key="weighInId",
         ingest_fn=ingest_scale_weighin,
     )
+
+
+# ---------------------------------------------------------------------------
+# Analysis endpoints (docs/sync-ingestion/ANALYSIS_SPEC.md).
+#
+# Read-only: all query app.analysis functions against the existing SQLite
+# layer, never touch the raw-first ingestion path above. `today` is an
+# optional ISO date override (mainly for testing/backfilling a specific
+# date rather than always "now") — omit it to analyze as of the current date.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/v1/analysis/cardio-trend", dependencies=[Depends(require_valid_bearer_token)])
+def get_cardio_trend(today: str | None = Query(default=None)) -> dict:
+    """§11.1 + §11.2: 4-week cardio trend card with semaphores and
+    self-diagnosis alert strings."""
+    with connect(DB_PATH) as conn:
+        card = compute_cardio_trend_card(conn, today=today)
+    return asdict(card)
+
+
+@router.get("/v1/analysis/resting-hr-trend", dependencies=[Depends(require_valid_bearer_token)])
+def get_resting_hr_trend(today: str | None = Query(default=None)) -> list[dict]:
+    """§11.3: 8-week rolling window, weekly median resting HR."""
+    with connect(DB_PATH) as conn:
+        buckets = resting_hr_weekly_trend(conn, today=today)
+    return [asdict(b) for b in buckets]
+
+
+@router.get("/v1/analysis/vo2max-trend", dependencies=[Depends(require_valid_bearer_token)])
+def get_vo2max_trend(today: str | None = Query(default=None)) -> list[dict]:
+    """§11.3: 6-month window, 4-week median buckets."""
+    with connect(DB_PATH) as conn:
+        buckets = vo2max_4week_trend(conn, today=today)
+    return [asdict(b) for b in buckets]
+
+
+@router.get("/v1/analysis/scale-trend", dependencies=[Depends(require_valid_bearer_token)])
+def get_scale_trend(today: str | None = Query(default=None)) -> dict[str, list[dict]]:
+    """§11.3: 8-week rolling window, weekly medians for weight/BMI/body-fat/lean-mass."""
+    with connect(DB_PATH) as conn:
+        trends = scale_weekly_trend(conn, today=today)
+    return {metric: [asdict(b) for b in buckets] for metric, buckets in trends.items()}
+
+
+@router.get(
+    "/v1/analysis/exercises/{exercise_id}/pr", dependencies=[Depends(require_valid_bearer_token)]
+)
+def get_exercise_pr(
+    exercise_id: str,
+    is_daily: bool = Query(default=False),
+    is_warmup: bool = Query(default=False),
+) -> dict:
+    """§1.5: the two distinct PR definitions, kept as separate fields rather
+    than merged into one "PR" concept — see the spec for why."""
+    with connect(DB_PATH) as conn:
+        all_time = all_time_tonnage_pr(conn, exercise_id)
+        recent = recent_heaviest_set_pr(conn, exercise_id, is_daily=is_daily, is_warmup=is_warmup)
+    return {
+        "exerciseId": exercise_id,
+        "allTimeTonnagePr": asdict(all_time) if all_time else None,
+        "recentHeaviestSetPr": asdict(recent) if recent else None,
+    }
