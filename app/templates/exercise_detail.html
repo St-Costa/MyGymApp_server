@@ -44,4 +44,25 @@
     {% endif %}
   </div>
 </div>
+
+<h2>History — last 12 weeks</h2>
+{% if history %}
+<div class="chart-wrap"><canvas id="historyChart" height="80"></canvas></div>
+{% else %}
+<p class="empty">No sets logged for this exercise in the last 12 weeks.</p>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const HISTORY = {{ history | tojson }};
+  lineChart(
+    "historyChart",
+    HISTORY.map(p => p.session_date),
+    HISTORY.map(p => p.best_set_weight),
+    "Best set weight (kg)",
+    "#5b9dff",
+    "date"
+  );
+</script>
 {% endblock %}

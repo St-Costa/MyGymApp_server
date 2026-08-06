@@ -11,6 +11,7 @@ Templates call app.analysis functions directly against a live connection
 consumer of the same analysis layer, not a proxy in front of the API.
 """
 
+from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import APIRouter, Query, Request
@@ -18,8 +19,10 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from app.analysis import (
+    all_cardio_metrics_weekly_trend,
     all_time_tonnage_pr,
     compute_cardio_trend_card,
+    exercise_history,
     list_exercises,
     recent_heaviest_set_pr,
     resting_hr_weekly_trend,
@@ -38,6 +41,7 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 def dashboard(request: Request, today: str | None = Query(default=None)):
     with connect(DB_PATH) as conn:
         cardio = compute_cardio_trend_card(conn, today=today)
+        cardio_series = all_cardio_metrics_weekly_trend(conn, today=today)
         resting_hr = resting_hr_weekly_trend(conn, today=today)
         vo2max = vo2max_4week_trend(conn, today=today)
         scale = scale_weekly_trend(conn, today=today)
@@ -47,6 +51,10 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
         "dashboard.html",
         {
             "cardio": cardio,
+            # cardio_series feeds a |tojson in the template — dataclasses
+            # aren't JSON-serializable by Jinja2's tojson filter, so convert
+            # up front (WeeklyBucket -> plain dict) rather than in-template.
+            "cardio_series": {k: [asdict(b) for b in v] for k, v in cardio_series.items()},
             "resting_hr_trend": resting_hr,
             "vo2max_trend": vo2max,
             "scale_trend": scale,
@@ -63,12 +71,13 @@ def exercises_list(request: Request):
 
 
 @router.get("/exercises/{exercise_id}", response_class=HTMLResponse)
-def exercise_detail(request: Request, exercise_id: str):
+def exercise_detail(request: Request, exercise_id: str, today: str | None = Query(default=None)):
     with connect(DB_PATH) as conn:
         all_time = all_time_tonnage_pr(conn, exercise_id)
         recent = recent_heaviest_set_pr(conn, exercise_id, is_daily=False, is_warmup=False)
         recent_warmup = recent_heaviest_set_pr(conn, exercise_id, is_daily=False, is_warmup=True)
         recent_daily = recent_heaviest_set_pr(conn, exercise_id, is_daily=True, is_warmup=False)
+        history = exercise_history(conn, exercise_id, today=today)
         # Best-effort display name: pull it from any set we can find.
         name_row = conn.execute(
             """SELECT exercise_name FROM exercise_sets
@@ -86,5 +95,6 @@ def exercise_detail(request: Request, exercise_id: str):
             "recent_pr": recent,
             "recent_warmup_pr": recent_warmup,
             "recent_daily_pr": recent_daily,
+            "history": [asdict(p) for p in history],
         },
     )

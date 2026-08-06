@@ -19,6 +19,27 @@ def test_dashboard_reflects_ingested_session(app_client) -> None:
     assert "58.0" in response.text
 
 
+def test_dashboard_includes_all_weekly_cardio_charts(app_client) -> None:
+    response = app_client.get("/")
+    assert response.status_code == 200
+    for chart_id in (
+        "chart-restingHr",
+        "chart-hrr60s",
+        "chart-rmssd",
+        "chart-sdnn",
+        "chart-drift",
+        "chart-poincareRatio",
+        "chart-afibEpisodes",
+        "chart-pauses",
+        "chart-premature",
+        "chart-uneven",
+        "chart-bmi",
+        "chart-bodyFatPercent",
+        "chart-leanMassPercent",
+    ):
+        assert f'id="{chart_id}"' in response.text
+
+
 def test_exercises_list_empty(app_client) -> None:
     response = app_client.get("/exercises")
     assert response.status_code == 200
@@ -47,6 +68,45 @@ def test_exercise_detail_reflects_ingested_session(app_client) -> None:
     assert response.status_code == 200
     assert "Bench Press" in response.text
     assert "No qualifying set found" in response.text  # excludeFromTonnage excludes it
+
+
+def test_exercise_detail_includes_history_chart_when_data_present(app_client) -> None:
+    # SESSION_MD's ex-a1b2c3d4 has excludeFromTonnage: true, which
+    # exercise_history filters out (same rule all_time_tonnage_pr uses) — so
+    # a plain post_session() wouldn't produce any history points. Send a
+    # standalone session with a non-excluded exercise instead.
+    from tests.conftest import content_hash_of, post_session
+
+    md = (
+        b"---\n"
+        b"id: eeeeeeee\n"
+        b"date: 2025-04-15\n"
+        b"exercises:\n"
+        b"  - exerciseId: ex-a1b2c3d4\n"
+        b"    exerciseName: Bench Press\n"
+        b"    type: FORZA\n"
+        b"    sets:\n"
+        b"      - reps: 8\n"
+        b"        weight: 80.0\n"
+        b"---\n"
+    )
+    post_session(
+        app_client,
+        md,
+        session_id="eeeeeeee",
+        rel_path="2025/04/eeeeeeee.md",
+        content_hash=content_hash_of(md),
+    )
+
+    response = app_client.get("/exercises/ex-a1b2c3d4", params={"today": "2025-04-20"})
+    assert response.status_code == 200
+    assert 'id="historyChart"' in response.text
+
+
+def test_exercise_detail_shows_empty_state_when_no_history(app_client) -> None:
+    response = app_client.get("/exercises/ex-nonexistent")
+    assert response.status_code == 200
+    assert "No sets logged for this exercise" in response.text
 
 
 def test_static_chartjs_is_served(app_client) -> None:

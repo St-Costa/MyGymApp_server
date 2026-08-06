@@ -45,8 +45,19 @@
 </ul>
 {% endif %}
 
-<h2>Resting HR — 8-week weekly median</h2>
-<div class="chart-wrap"><canvas id="restingHrChart" height="80"></canvas></div>
+<h2>Weekly trends — last 12 weeks</h2>
+<div class="grid">
+  <div class="chart-wrap"><canvas id="chart-restingHr" height="70"></canvas></div>
+  <div class="chart-wrap"><canvas id="chart-hrr60s" height="70"></canvas></div>
+  <div class="chart-wrap"><canvas id="chart-rmssd" height="70"></canvas></div>
+  <div class="chart-wrap"><canvas id="chart-sdnn" height="70"></canvas></div>
+  <div class="chart-wrap"><canvas id="chart-drift" height="70"></canvas></div>
+  <div class="chart-wrap"><canvas id="chart-poincareRatio" height="70"></canvas></div>
+  <div class="chart-wrap"><canvas id="chart-afibEpisodes" height="70"></canvas></div>
+  <div class="chart-wrap"><canvas id="chart-pauses" height="70"></canvas></div>
+  <div class="chart-wrap"><canvas id="chart-premature" height="70"></canvas></div>
+  <div class="chart-wrap"><canvas id="chart-uneven" height="70"></canvas></div>
+</div>
 
 <h2>VO2max — 6-month, 4-week buckets</h2>
 <div class="chart-wrap"><canvas id="vo2maxChart" height="80"></canvas></div>
@@ -54,54 +65,80 @@
 <h2>Body weight — 8-week weekly median</h2>
 <div class="chart-wrap"><canvas id="weightChart" height="80"></canvas></div>
 
+<h2>Body composition — 8-week weekly median</h2>
+<div class="grid">
+  <div class="chart-wrap"><canvas id="chart-bmi" height="70"></canvas></div>
+  <div class="chart-wrap"><canvas id="chart-bodyFatPercent" height="70"></canvas></div>
+  <div class="chart-wrap"><canvas id="chart-leanMassPercent" height="70"></canvas></div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
 <script>
-  const CHART_OPTIONS = {
-    responsive: true,
-    plugins: { legend: { labels: { color: "#e6e8ec" } } },
-    scales: {
-      x: { ticks: { color: "#8b93a7" }, grid: { color: "#262b36" } },
-      y: { ticks: { color: "#8b93a7" }, grid: { color: "#262b36" } },
-    },
+  const CARDIO_SERIES = {{ cardio_series | tojson }};
+  const CARDIO_LABELS = {
+    restingHr: "Resting HR (bpm)", hrr60s: "HRR60s (bpm)", rmssd: "RMSSD (ms)",
+    sdnn: "SDNN (ms)", drift: "Cardiac drift (bpm/min)", poincareRatio: "Poincaré ratio",
+    afibEpisodes: "AFib episodes", pauses: "Pauses", premature: "Premature beats", uneven: "Uneven beats",
+  };
+  const CARDIO_COLORS = {
+    restingHr: "#5b9dff", hrr60s: "#3ecf7e", rmssd: "#e0b23e", sdnn: "#c77dff",
+    drift: "#e05a5a", poincareRatio: "#4dd0e1", afibEpisodes: "#e05a5a",
+    pauses: "#e05a5a", premature: "#e0b23e", uneven: "#e0b23e",
   };
 
-  function lineChart(canvasId, labels, values, label, color) {
-    new Chart(document.getElementById(canvasId), {
-      type: "line",
-      data: {
-        labels: labels,
-        datasets: [{
-          label: label,
-          data: values,
-          borderColor: color,
-          backgroundColor: color + "33",
-          spanGaps: true,
-          tension: 0.25,
-        }],
-      },
-      options: CHART_OPTIONS,
-    });
+  for (const key of Object.keys(CARDIO_LABELS)) {
+    const series = CARDIO_SERIES[key] || [];
+    lineChart(
+      "chart-" + key,
+      series.map(b => b.week_start),
+      series.map(b => b.value),
+      CARDIO_LABELS[key],
+      CARDIO_COLORS[key],
+      "week"
+    );
   }
 
-  lineChart(
-    "restingHrChart",
-    {{ resting_hr_trend | map(attribute="week_start") | list | tojson }},
-    {{ resting_hr_trend | map(attribute="value") | list | tojson }},
-    "Resting HR (bpm)",
-    "#5b9dff"
-  );
   lineChart(
     "vo2maxChart",
     {{ vo2max_trend | map(attribute="week_start") | list | tojson }},
     {{ vo2max_trend | map(attribute="value") | list | tojson }},
     "VO2max",
-    "#3ecf7e"
+    "#3ecf7e",
+    "month"
   );
   lineChart(
     "weightChart",
     {{ scale_trend["weightKg"] | map(attribute="week_start") | list | tojson }},
     {{ scale_trend["weightKg"] | map(attribute="value") | list | tojson }},
     "Weight (kg)",
-    "#e0b23e"
+    "#e0b23e",
+    "week"
+  );
+  lineChart(
+    "chart-bmi",
+    {{ scale_trend["bmi"] | map(attribute="week_start") | list | tojson }},
+    {{ scale_trend["bmi"] | map(attribute="value") | list | tojson }},
+    "BMI",
+    "#c77dff",
+    "week"
+  );
+  lineChart(
+    "chart-bodyFatPercent",
+    {{ scale_trend["bodyFatPercent"] | map(attribute="week_start") | list | tojson }},
+    {{ scale_trend["bodyFatPercent"] | map(attribute="value") | list | tojson }},
+    "Body fat %",
+    "#e05a5a",
+    "week"
+  );
+  lineChart(
+    "chart-leanMassPercent",
+    {{ scale_trend["leanMassPercent"] | map(attribute="week_start") | list | tojson }},
+    {{ scale_trend["leanMassPercent"] | map(attribute="value") | list | tojson }},
+    "Lean mass %",
+    "#4dd0e1",
+    "week"
   );
 </script>
 {% endblock %}
