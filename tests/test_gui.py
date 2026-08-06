@@ -19,6 +19,23 @@ def test_dashboard_reflects_ingested_session(app_client) -> None:
     assert "58.0" in response.text
 
 
+def test_dashboard_has_dedicated_rhythm_and_cardiac_issues_section(app_client) -> None:
+    response = app_client.get("/")
+    assert response.status_code == 200
+    assert "Rhythm &amp; cardiac issues" in response.text
+    # The 4 rhythm-counter charts must live under that section, not mixed
+    # into the general recovery/fitness metrics.
+    for chart_id in ("chart-afibEpisodes", "chart-pauses", "chart-premature", "chart-uneven"):
+        assert f'id="{chart_id}"' in response.text
+
+
+def test_dashboard_charts_have_a_description(app_client) -> None:
+    response = app_client.get("/")
+    assert response.status_code == 200
+    assert "atrial fibrillation" in response.text  # afib chart description
+    assert "aerobic capacity" in response.text  # VO2max description
+
+
 def test_dashboard_includes_all_weekly_cardio_charts(app_client) -> None:
     response = app_client.get("/")
     assert response.status_code == 200

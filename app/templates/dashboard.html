@@ -2,6 +2,10 @@
 {% block title %}Trends — MyGymApp{% endblock %}
 {% block content %}
 <h1>Cardio trend — last 4 weeks (as of {{ cardio.window_end }})</h1>
+<p class="section-desc">
+  Recent (last 14 days) vs. baseline (14–28 days ago) average for each metric, with a
+  semaphore for whether it's trending in a good direction.
+</p>
 
 <div class="grid">
   {% for key, m in cardio.metrics.items() %}
@@ -16,7 +20,28 @@
   {% endfor %}
 </div>
 
-<h2>Rhythm (28-day totals)</h2>
+{% if cardio.alerts %}
+<h3>Alerts</h3>
+<p class="section-desc">
+  Automatically generated call-outs when a rhythm counter or recovery metric crosses a
+  threshold worth noticing — not a diagnosis, just a flag to pay attention.
+</p>
+<ul class="alerts">
+  {% for alert in cardio.alerts %}
+  <li>{{ alert }}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+<h2 class="section-title">Rhythm &amp; cardiac issues</h2>
+<p class="section-desc">
+  Arrhythmia markers detected by the phone's offline ECG analysis of each session's Polar
+  H10 recording. These are suspicion counts from a consumer-grade single-lead signal, not a
+  medical diagnosis — persistent or rising counts are worth mentioning to a doctor, not a
+  cause for alarm on their own.
+</p>
+
+<h3>Last 4 weeks</h3>
 <div class="grid">
   <div class="card">
     <div class="metric-label"><span class="dot {{ cardio.rhythm.afib_semaphore }}"></span>AFib episodes</div>
@@ -36,40 +61,117 @@
   </div>
 </div>
 
-{% if cardio.alerts %}
-<h2>Alerts</h2>
-<ul class="alerts">
-  {% for alert in cardio.alerts %}
-  <li>{{ alert }}</li>
-  {% endfor %}
-</ul>
-{% endif %}
-
-<h2>Weekly trends — last 12 weeks</h2>
+<h3>Weekly trend — last 12 weeks</h3>
 <div class="chart-grid">
-  <div class="chart-wrap"><canvas id="chart-restingHr"></canvas></div>
-  <div class="chart-wrap"><canvas id="chart-hrr60s"></canvas></div>
-  <div class="chart-wrap"><canvas id="chart-rmssd"></canvas></div>
-  <div class="chart-wrap"><canvas id="chart-sdnn"></canvas></div>
-  <div class="chart-wrap"><canvas id="chart-drift"></canvas></div>
-  <div class="chart-wrap"><canvas id="chart-poincareRatio"></canvas></div>
-  <div class="chart-wrap"><canvas id="chart-afibEpisodes"></canvas></div>
-  <div class="chart-wrap"><canvas id="chart-pauses"></canvas></div>
-  <div class="chart-wrap"><canvas id="chart-premature"></canvas></div>
-  <div class="chart-wrap"><canvas id="chart-uneven"></canvas></div>
+  <div class="chart-wrap">
+    <p class="chart-desc">
+      Episodes where the beat-to-beat rhythm looked irregular enough (high variability +
+      low autocorrelation over a 30-beat window) to suspect atrial fibrillation.
+    </p>
+    <canvas id="chart-afibEpisodes"></canvas>
+  </div>
+  <div class="chart-wrap">
+    <p class="chart-desc">Gaps longer than 2 seconds between consecutive heartbeats.</p>
+    <canvas id="chart-pauses"></canvas>
+  </div>
+  <div class="chart-wrap">
+    <p class="chart-desc">
+      Premature (early) beats followed by a compensatory pause — the classic PAC/PVC
+      signature.
+    </p>
+    <canvas id="chart-premature"></canvas>
+  </div>
+  <div class="chart-wrap">
+    <p class="chart-desc">
+      Consecutive beats whose spacing deviates well beyond the local average — a general
+      irregularity marker distinct from a single premature beat.
+    </p>
+    <canvas id="chart-uneven"></canvas>
+  </div>
 </div>
 
-<h2>VO2max — 6-month, 4-week buckets</h2>
+<h2 class="section-title">Recovery &amp; fitness trends</h2>
+<p class="section-desc">
+  Heart-rate and HRV metrics that reflect training load and recovery, not rhythm problems.
+</p>
+
+<h3>Weekly trend — last 12 weeks</h3>
+<div class="chart-grid">
+  <div class="chart-wrap">
+    <p class="chart-desc">
+      Heart rate at rest, measured each session. Lower generally means better
+      cardiovascular fitness or recovery; a rising trend can signal fatigue or illness.
+    </p>
+    <canvas id="chart-restingHr"></canvas>
+  </div>
+  <div class="chart-wrap">
+    <p class="chart-desc">
+      Heart-rate recovery: how many BPM your heart rate drops in the 60 seconds after a
+      session peak. Higher is better-conditioned; a chronic drop below ~12 BPM suggests
+      poor recovery.
+    </p>
+    <canvas id="chart-hrr60s"></canvas>
+  </div>
+  <div class="chart-wrap">
+    <p class="chart-desc">
+      RMSSD: beat-to-beat heart-rate variability during the session. Higher generally
+      reflects better parasympathetic (recovery) activity.
+    </p>
+    <canvas id="chart-rmssd"></canvas>
+  </div>
+  <div class="chart-wrap">
+    <p class="chart-desc">
+      SDNN: overall heart-rate variability across the whole session, a broader HRV measure
+      than RMSSD.
+    </p>
+    <canvas id="chart-sdnn"></canvas>
+  </div>
+  <div class="chart-wrap">
+    <p class="chart-desc">
+      Cardiac drift: how much heart rate trends upward per minute at a steady effort — a
+      sign of accumulating fatigue or heat/dehydration within a session.
+    </p>
+    <canvas id="chart-drift"></canvas>
+  </div>
+  <div class="chart-wrap">
+    <p class="chart-desc">
+      Poincaré ratio (SD2/SD1): the balance between short-term and long-term beat-to-beat
+      variability — a shape descriptor of heart-rhythm variability, not a rhythm-problem
+      count.
+    </p>
+    <canvas id="chart-poincareRatio"></canvas>
+  </div>
+</div>
+
+<h3>VO2max — 6-month, 4-week buckets</h3>
+<p class="section-desc">
+  Estimated aerobic capacity (Uth-Sørensen-Overgaard-Pedersen formula, from max/resting HR).
+  Higher indicates better cardiovascular fitness.
+</p>
 <div class="chart-wrap"><canvas id="vo2maxChart"></canvas></div>
 
-<h2>Body weight — 8-week weekly median</h2>
+<h2 class="section-title">Body composition</h2>
+
+<h3>Body weight — 8-week weekly median</h3>
+<p class="section-desc">Weight measured by the smart scale, weekly median.</p>
 <div class="chart-wrap"><canvas id="weightChart"></canvas></div>
 
-<h2>Body composition — 8-week weekly median</h2>
+<h3>Weekly trend — last 8 weeks</h3>
 <div class="chart-grid">
-  <div class="chart-wrap"><canvas id="chart-bmi"></canvas></div>
-  <div class="chart-wrap"><canvas id="chart-bodyFatPercent"></canvas></div>
-  <div class="chart-wrap"><canvas id="chart-leanMassPercent"></canvas></div>
+  <div class="chart-wrap">
+    <p class="chart-desc">Body Mass Index: weight relative to height squared.</p>
+    <canvas id="chart-bmi"></canvas>
+  </div>
+  <div class="chart-wrap">
+    <p class="chart-desc">
+      Estimated body fat percentage from the scale's bioimpedance reading.
+    </p>
+    <canvas id="chart-bodyFatPercent"></canvas>
+  </div>
+  <div class="chart-wrap">
+    <p class="chart-desc">Estimated lean (non-fat) mass as a percentage of body weight.</p>
+    <canvas id="chart-leanMassPercent"></canvas>
+  </div>
 </div>
 
 {% endblock %}
