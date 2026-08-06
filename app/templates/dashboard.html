@@ -65,23 +65,30 @@
 <div class="chart-grid">
   <div class="chart-wrap" id="wrap-chart-afibEpisodes">
     <p class="chart-desc">
-      Lower means fewer episodes where the beat-to-beat rhythm looked irregular enough to
-      suspect atrial fibrillation.
+      Beat-to-beat rhythm that looked irregular enough to suspect atrial fibrillation.
     </p>
     <div class="chart-canvas-box"><canvas id="chart-afibEpisodes"></canvas></div>
   </div>
   <div class="chart-wrap" id="wrap-chart-pauses">
+    <p class="chart-desc">
+      Gaps over 2 seconds between beats. Uncommon in a healthy rhythm — a rising count is
+      worth mentioning to a doctor.
+    </p>
     <div class="chart-canvas-box"><canvas id="chart-pauses"></canvas></div>
   </div>
   <div class="chart-wrap" id="wrap-chart-premature">
     <p class="chart-desc">
-      Lower means fewer premature (early) beats followed by a compensatory pause.
+      Early beats followed by a compensatory pause (PACs). Occasional ones are common and
+      usually harmless; a persistently high count can point to atrial irritability worth
+      raising with a doctor.
     </p>
     <div class="chart-canvas-box"><canvas id="chart-premature"></canvas></div>
   </div>
   <div class="chart-wrap" id="wrap-chart-uneven">
     <p class="chart-desc">
-      Lower means fewer beats whose spacing deviated well beyond the local average.
+      Beats whose spacing deviated well beyond the local average, without fitting the
+      pause or premature-beat pattern. A general irregularity marker — persistent high
+      counts are worth mentioning to a doctor, same as the other rhythm markers here.
     </p>
     <div class="chart-canvas-box"><canvas id="chart-uneven"></canvas></div>
   </div>
@@ -95,37 +102,28 @@
 <h3>Weekly trend — last 12 weeks</h3>
 <div class="chart-grid">
   <div class="chart-wrap" id="wrap-chart-restingHr">
-    <p class="chart-desc">
-      Lower generally means better cardiovascular fitness or recovery; a rising trend can
-      signal fatigue or illness.
-    </p>
+    <p class="chart-desc">Lower means better cardiovascular fitness and recovery.</p>
     <div class="chart-canvas-box"><canvas id="chart-restingHr"></canvas></div>
   </div>
   <div class="chart-wrap" id="wrap-chart-hrr60s">
     <p class="chart-desc">
-      Higher means your heart rate drops faster in the 60 seconds after a session peak —
-      better conditioned. Chronically below ~12 BPM suggests poor recovery.
+      Higher means HR drops faster in the 60 seconds after a peak, better conditioned.
     </p>
     <div class="chart-canvas-box"><canvas id="chart-hrr60s"></canvas></div>
   </div>
   <div class="chart-wrap" id="wrap-chart-rmssd">
     <p class="chart-desc">
-      Higher generally means better beat-to-beat heart-rate variability and parasympathetic
-      (recovery) activity.
+      Higher means better beat-to-beat heart-rate variability and parasympathetic activity.
     </p>
     <div class="chart-canvas-box"><canvas id="chart-rmssd"></canvas></div>
   </div>
   <div class="chart-wrap" id="wrap-chart-sdnn">
-    <p class="chart-desc">
-      Higher generally means better overall heart-rate variability across the whole
-      session, a broader HRV measure than RMSSD.
-    </p>
+    <p class="chart-desc">Higher means better overall heart-rate variability.</p>
     <div class="chart-canvas-box"><canvas id="chart-sdnn"></canvas></div>
   </div>
   <div class="chart-wrap" id="wrap-chart-drift">
     <p class="chart-desc">
-      Lower means less heart rate trending upward per minute at a steady effort — a sign of
-      accumulating fatigue or heat/dehydration within a session.
+      Higher means accumulating fatigue or heat/dehydration within a session.
     </p>
     <div class="chart-canvas-box"><canvas id="chart-drift"></canvas></div>
   </div>
@@ -153,15 +151,9 @@
 <h3>Weekly trend — last 8 weeks</h3>
 <div class="chart-grid">
   <div class="chart-wrap" id="wrap-chart-bmi">
-    <p class="chart-desc">Weight relative to height squared — no single "better" direction.</p>
     <div class="chart-canvas-box"><canvas id="chart-bmi"></canvas></div>
   </div>
   <div class="chart-wrap" id="wrap-chart-bodyComp">
-    <p class="chart-desc">
-      From the scale's bioimpedance reading. Red fills up to body fat %, green fills down
-      to lean mass % — they don't necessarily sum to 100%, since bone/water mass isn't
-      counted in either.
-    </p>
     <div class="chart-canvas-box"><canvas id="chart-bodyComp"></canvas></div>
   </div>
 </div>
