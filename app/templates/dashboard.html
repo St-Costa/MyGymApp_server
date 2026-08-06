@@ -70,25 +70,17 @@
     <div class="chart-canvas-box"><canvas id="chart-afibEpisodes"></canvas></div>
   </div>
   <div class="chart-wrap" id="wrap-chart-pauses">
-    <p class="chart-desc">
-      Gaps over 2 seconds between beats. Uncommon in a healthy rhythm — a rising count is
-      worth mentioning to a doctor.
-    </p>
+    <p class="chart-desc">A rising count is worth mentioning to a doctor.</p>
     <div class="chart-canvas-box"><canvas id="chart-pauses"></canvas></div>
   </div>
   <div class="chart-wrap" id="wrap-chart-premature">
-    <p class="chart-desc">
-      Early beats followed by a compensatory pause (PACs). Occasional ones are common and
-      usually harmless; a persistently high count can point to atrial irritability worth
-      raising with a doctor.
-    </p>
+    <p class="chart-desc">Early beats followed by a compensatory pause (PACs).</p>
     <div class="chart-canvas-box"><canvas id="chart-premature"></canvas></div>
   </div>
   <div class="chart-wrap" id="wrap-chart-uneven">
     <p class="chart-desc">
-      Beats whose spacing deviated well beyond the local average, without fitting the
-      pause or premature-beat pattern. A general irregularity marker — persistent high
-      counts are worth mentioning to a doctor, same as the other rhythm markers here.
+      Beats whose spacing deviated beyond the local average, persistent high counts are
+      worth mentioning to a doctor.
     </p>
     <div class="chart-canvas-box"><canvas id="chart-uneven"></canvas></div>
   </div>
@@ -179,10 +171,8 @@
     premature:     { name: "Premature beats",        unit: "",         good: "down", color: "#e05a5a" },
     uneven:        { name: "Uneven beats",           unit: "",         good: "down", color: "#e05a5a" },
   };
-  // Three stacked triangles rather than a single arrow glyph, per spec —
-  // <br> between each so line-height in .chart-direction actually stacks
-  // them vertically instead of running them side by side on one line.
-  const DIRECTION_ARROW = { up: "▲<br>▲<br>▲", down: "▼<br>▼<br>▼" };
+  // Three triangles in a row (not stacked vertically) — ▲▲▲/▼▼▼, per spec.
+  const DIRECTION_ARROW = { up: "▲▲▲", down: "▼▼▼" };
 
   function chartHeader(meta) {
     const arrow = meta.good ? `<span class="chart-direction">${DIRECTION_ARROW[meta.good]}</span>` : "";
