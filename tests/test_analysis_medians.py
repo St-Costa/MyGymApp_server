@@ -1,0 +1,127 @@
+"""§11.3 median/weekly-bucket helpers and §11.4 average_weekly_delta
+(docs/sync-ingestion/ANALYSIS_SPEC.md)."""
+
+import sqlite3
+
+import pytest
+
+from app.analysis import (
+    average_weekly_delta,
+    median,
+    resting_hr_weekly_trend,
+    scale_weekly_trend,
+    vo2max_4week_trend,
+)
+from app.storage import init_db
+
+
+@pytest.fixture
+def conn(tmp_path):
+    db_path = tmp_path / "test.sqlite3"
+    init_db(db_path)
+    connection = sqlite3.connect(db_path)
+    yield connection
+    connection.close()
+
+
+def test_median_odd_count():
+    assert median([1, 3, 2]) == 2
+
+
+def test_median_even_count():
+    assert median([1, 2, 3, 4]) == 2.5
+
+
+def test_median_empty_is_none():
+    assert median([]) is None
+
+
+def test_average_weekly_delta_uses_only_endpoints():
+    # (10 - 4) / (4 - 1) = 2, regardless of the middle values
+    assert average_weekly_delta([4, 100, -50, 10]) == 2.0
+
+
+def test_average_weekly_delta_fewer_than_2_points_is_none():
+    assert average_weekly_delta([5]) is None
+    assert average_weekly_delta([]) is None
+
+
+def _insert_session(conn, session_id, date, **fields):
+    columns = {
+        "id": session_id,
+        "date": date,
+        "content_hash": "sha256:x",
+        "raw_path": f"{date}.md",
+        "received_at": "2026-01-01T00:00:00Z",
+        "schema_version": 1,
+        "resting_hr": 0,
+        **fields,
+    }
+    cols = ", ".join(columns)
+    placeholders = ", ".join("?" for _ in columns)
+    conn.execute(f"INSERT INTO sessions ({cols}) VALUES ({placeholders})", list(columns.values()))
+    conn.commit()
+
+
+def test_resting_hr_weekly_trend_buckets_by_monday(conn):
+    # 2026-08-03 is a Monday; 2026-08-05 (Wed) falls in the same week.
+    _insert_session(conn, "s1", "2026-08-03", resting_hr=60)
+    _insert_session(conn, "s2", "2026-08-05", resting_hr=64)
+    buckets = resting_hr_weekly_trend(conn, today="2026-08-09")
+    week = next(b for b in buckets if b.week_start == "2026-08-03")
+    assert week.value == 62.0
+    assert week.n == 2
+
+
+def test_resting_hr_weekly_trend_filters_zero_values(conn):
+    _insert_session(conn, "s1", "2026-08-03", resting_hr=0)
+    buckets = resting_hr_weekly_trend(conn, today="2026-08-09")
+    week = next(b for b in buckets if b.week_start == "2026-08-03")
+    assert week.value is None
+    assert week.n == 0
+
+
+def _insert_weighin(conn, weighin_id, date, **fields):
+    columns = {
+        "id": weighin_id,
+        "date": date,
+        "content_hash": "sha256:x",
+        "raw_path": f"{date}.md",
+        "received_at": "2026-01-01T00:00:00Z",
+        "schema_version": 1,
+        "weight_kg": 0,
+        "bmi": 0,
+        "body_fat_percent": 0,
+        "lean_mass_percent": 0,
+        **fields,
+    }
+    cols = ", ".join(columns)
+    placeholders = ", ".join("?" for _ in columns)
+    conn.execute(
+        f"INSERT INTO scale_weighins ({cols}) VALUES ({placeholders})", list(columns.values())
+    )
+    conn.commit()
+
+
+def test_scale_weekly_trend_lean_mass_only_counted_with_real_bia_reading(conn):
+    # bodyFatPercent<=0 means no real BIA reading that week -> leanMassPercent excluded.
+    _insert_weighin(
+        conn, "2026-08-03", "2026-08-03", weight_kg=80, body_fat_percent=0, lean_mass_percent=85
+    )
+    trends = scale_weekly_trend(conn, today="2026-08-09")
+    week = next(b for b in trends["leanMassPercent"] if b.week_start == "2026-08-03")
+    assert week.n == 0
+    weight_week = next(b for b in trends["weightKg"] if b.week_start == "2026-08-03")
+    assert weight_week.value == 80
+
+
+def test_vo2max_4week_buckets_group_by_4_weeks_not_1(conn):
+    today = "2026-08-09"
+    _insert_session(conn, "s1", "2026-08-01", vo2max=40)
+    _insert_session(conn, "s2", "2026-08-08", vo2max=44)
+    buckets = vo2max_4week_trend(conn, today=today)
+    non_empty = [b for b in buckets if b.n > 0]
+    # Both sessions land in the same 4-week bucket since they're 1 week apart.
+    assert len(non_empty) == 1
+    assert non_empty[0].n == 2
+    assert non_empty[0].value == 42.0
