@@ -133,5 +133,66 @@
   <main>
     {% block content %}{% endblock %}
   </main>
+  <script>
+    // Shared chart helpers: ISO date -> "W20" (ISO week-of-year) or "Aug"
+    // (abbreviated month name), plus a common lineChart() builder. Data
+    // stays plain ISO dates end to end (from Python through the template);
+    // this is purely a display-time relabeling of the x-axis.
+    const MONTH_ABBR = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+    function isoWeekLabel(dateStr) {
+      // ISO 8601 week number: the week containing the year's first Thursday is week 1.
+      const d = new Date(dateStr + "T00:00:00Z");
+      const dayNum = (d.getUTCDay() + 6) % 7; // Mon=0 .. Sun=6
+      d.setUTCDate(d.getUTCDate() - dayNum + 3); // nearest Thursday
+      const firstThursday = new Date(Date.UTC(d.getUTCFullYear(), 0, 4));
+      const firstThursdayDay = (firstThursday.getUTCDay() + 6) % 7;
+      firstThursday.setUTCDate(firstThursday.getUTCDate() - firstThursdayDay + 3);
+      const weekNum = 1 + Math.round((d - firstThursday) / (7 * 86400000));
+      return "W" + weekNum;
+    }
+
+    function monthLabel(dateStr) {
+      const d = new Date(dateStr + "T00:00:00Z");
+      return MONTH_ABBR[d.getUTCMonth()];
+    }
+
+    function formatLabels(dates, mode) {
+      if (mode === "week") return dates.map(isoWeekLabel);
+      if (mode === "month") return dates.map(monthLabel);
+      return dates;
+    }
+
+    const CHART_OPTIONS = {
+      responsive: true,
+      plugins: { legend: { labels: { color: "#e6e8ec" } } },
+      scales: {
+        x: { ticks: { color: "#8b93a7" }, grid: { color: "#262b36" } },
+        y: { ticks: { color: "#8b93a7" }, grid: { color: "#262b36" } },
+      },
+    };
+
+    // labelMode: "week" -> "W20", "month" -> "Aug", anything else -> raw ISO date.
+    function lineChart(canvasId, dates, values, label, color, labelMode) {
+      const el = document.getElementById(canvasId);
+      if (!el) return;
+      new Chart(el, {
+        type: "line",
+        data: {
+          labels: formatLabels(dates, labelMode),
+          datasets: [{
+            label: label,
+            data: values,
+            borderColor: color,
+            backgroundColor: color + "33",
+            spanGaps: true,
+            tension: 0.25,
+          }],
+        },
+        options: CHART_OPTIONS,
+      });
+    }
+  </script>
+  {% block scripts %}{% endblock %}
 </body>
 </html>

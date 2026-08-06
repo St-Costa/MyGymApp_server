@@ -367,6 +367,77 @@ def _generic_weekly_trend(
     return _weekly_median_buckets(filtered, window_start=window_start, window_end=today_date)
 
 
+def _weekly_sum_buckets(
+    rows: list[tuple[str, float]], *, window_start, window_end
+) -> list[WeeklyBucket]:
+    """Same Monday-keyed bucketing as _weekly_median_buckets, but sums
+    instead of taking a median — used for cumulative rhythm counters
+    (afib/pauses/premature/uneven) where "how many happened this week"
+    is the meaningful value, not a per-session average."""
+    buckets: dict[str, list[float]] = {}
+    cursor = _monday_of(window_start)
+    while cursor <= window_end:
+        buckets[cursor.isoformat()] = []
+        cursor += timedelta(days=7)
+
+    for date_str, value in rows:
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        week_key = _monday_of(d).isoformat()
+        if week_key in buckets:
+            buckets[week_key].append(value)
+
+    return [
+        WeeklyBucket(week_start=week, value=sum(values) if values else 0.0, n=len(values))
+        for week, values in sorted(buckets.items())
+    ]
+
+
+# All 7 cardio metrics (§11.1) plus the 4 rhythm counters, as weekly time
+# series rather than a single recent-vs-baseline aggregate — same 12-week
+# window ANALYSIS_SPEC.md §1.6 already uses for session tonnage/e1RM trend
+# charts, so every chart on the dashboard spans a consistent period.
+_CARDIO_SERIES_WEEKS = 12
+
+# (key, column, aggregation, positive_only) — aggregation "median" mirrors
+# the trend-card's per-metric semantics (average condition over the week);
+# "sum" mirrors the trend-card's rhythm counters (cumulative incidents).
+_CARDIO_SERIES_SPECS = (
+    ("restingHr", "resting_hr", "median", True),
+    ("hrr60s", "hrr60s", "median", True),
+    ("vo2max", "vo2max", "median", True),
+    ("rmssd", "ecg_session_rmssd", "median", True),
+    ("sdnn", "sdnn", "median", True),
+    ("drift", "cardiac_drift_bpm_min", "median", False),  # can be negative
+    ("poincareRatio", "poincare_ratio", "median", True),
+    ("afibEpisodes", "afib_suspicion_episodes", "sum", False),
+    ("pauses", "ecg_pause_count", "sum", False),
+    ("premature", "ecg_pac_count", "sum", False),
+    ("uneven", "ecg_irregular_beats", "sum", False),
+)
+
+
+def all_cardio_metrics_weekly_trend(
+    conn: sqlite3.Connection, *, today: str | None = None
+) -> dict[str, list[WeeklyBucket]]:
+    """Weekly time series for every §11.1 metric and rhythm counter, so each
+    can be charted rather than shown only as a single 4-week aggregate."""
+    today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
+    window_start = today_date - timedelta(weeks=_CARDIO_SERIES_WEEKS)
+
+    result: dict[str, list[WeeklyBucket]] = {}
+    for key, column, aggregation, positive_only in _CARDIO_SERIES_SPECS:
+        rows = conn.execute(
+            f"SELECT date, {column} FROM sessions "  # noqa: S608 — column from the fixed spec table above
+            "WHERE date >= ? AND date <= ? AND schema_version > 0 ORDER BY date",
+            (window_start.isoformat(), today_date.isoformat()),
+        ).fetchall()
+        filtered = [(d, v) for d, v in rows if v is not None and (not positive_only or v > 0)]
+        bucket_fn = _weekly_sum_buckets if aggregation == "sum" else _weekly_median_buckets
+        result[key] = bucket_fn(filtered, window_start=window_start, window_end=today_date)
+
+    return result
+
+
 def vo2max_4week_trend(conn: sqlite3.Connection, *, today: str | None = None) -> list[WeeklyBucket]:
     """§11.3: 4-week buckets (not weekly) over a 6-month fetch window, bucket
     boundary = window_start + floor(weeks_since_start / 4) * 4 weeks,
@@ -595,6 +666,54 @@ def recent_heaviest_set_pr(
         session_id=best[2],
         session_date=best[3],
     )
+
+
+@dataclass
+class ExerciseSessionPoint:
+    session_date: str
+    session_id: str
+    best_set_weight: float  # heaviest working set that session, 0 if none
+    best_e1rm: float | None  # None if no qualifying set (see best_estimated_1rm)
+
+
+def exercise_history(
+    conn: sqlite3.Connection, exercise_id: str, *, weeks: int = 12, today: str | None = None
+) -> list[ExerciseSessionPoint]:
+    """§1.6-style trend series for a single exercise: one point per session
+    that included it, chronological, over a rolling window (12 weeks by
+    default, matching ANALYSIS_SPEC.md §1.6's session tonnage/e1RM trend
+    window). Not itself in the spec — this is the per-exercise chart the
+    dashboard needs, built from the same best_estimated_1rm/set data the
+    spec's PR functions already use."""
+    today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
+    window_start = today_date - timedelta(weeks=weeks)
+
+    rows = conn.execute(
+        """
+        SELECT s.date, s.id, es.reps, es.weight
+        FROM exercise_sets es
+        JOIN sessions s ON s.id = es.session_id
+        WHERE es.exercise_id = ? AND es.exclude_from_tonnage = 0
+          AND s.date >= ? AND s.date <= ?
+        ORDER BY s.date
+        """,
+        (exercise_id, window_start.isoformat(), today_date.isoformat()),
+    ).fetchall()
+
+    by_session: dict[tuple[str, str], list[SetLike]] = {}
+    for date_str, session_id, reps, weight in rows:
+        by_session.setdefault((date_str, session_id), []).append(SetLike(reps=reps, weight=weight))
+
+    points = [
+        ExerciseSessionPoint(
+            session_date=date_str,
+            session_id=session_id,
+            best_set_weight=max((s.weight for s in sets if s.weight > 0), default=0.0),
+            best_e1rm=best_estimated_1rm(sets),
+        )
+        for (date_str, session_id), sets in sorted(by_session.items())
+    ]
+    return points
 
 
 # ---------------------------------------------------------------------------
