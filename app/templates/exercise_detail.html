@@ -5,6 +5,10 @@
 <h1>{{ exercise_name }}</h1>
 
 <h2>All-time tonnage PR</h2>
+<p class="section-desc">
+  The single best set (reps &times; weight) ever logged for this exercise, across all
+  sessions.
+</p>
 {% if all_time_pr %}
 <div class="card">
   <div class="metric-value">{{ all_time_pr.weight }} kg &times; {{ all_time_pr.reps }}</div>
@@ -15,6 +19,10 @@
 {% endif %}
 
 <h2>Recent heaviest set (last 30 sessions)</h2>
+<p class="section-desc">
+  The heaviest set from the last 30 sessions that included this exercise, split out by
+  working vs. warm-up vs. daily sets since those aren't comparable to each other.
+</p>
 <div class="grid">
   <div class="card">
     <div class="metric-label">Working sets</div>
@@ -46,6 +54,7 @@
 </div>
 
 <h2>History — last 12 weeks</h2>
+<p class="section-desc">Best working-set weight per session that included this exercise.</p>
 {% if history %}
 <div class="chart-wrap"><canvas id="historyChart"></canvas></div>
 {% else %}
