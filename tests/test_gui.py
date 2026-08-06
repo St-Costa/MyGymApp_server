@@ -33,25 +33,25 @@ def test_dashboard_charts_have_a_description(app_client) -> None:
     response = app_client.get("/")
     assert response.status_code == 200
     assert "atrial fibrillation" in response.text  # afib chart description
-    assert "Lower generally means better cardiovascular fitness" in response.text  # restingHr
+    assert "Lower means better cardiovascular fitness and recovery." in response.text  # restingHr
 
 
-def test_dashboard_vo2max_chart_has_no_description(app_client) -> None:
-    # Explicitly requested: VO2max keeps its chart but drops the descriptive
-    # paragraph other charts have.
+def test_dashboard_vo2max_and_bmi_charts_have_no_description(app_client) -> None:
+    # Explicitly requested: these keep their chart but drop the descriptive
+    # paragraph most other charts have.
     response = app_client.get("/")
     assert response.status_code == 200
-    assert 'id="wrap-vo2maxChart"' in response.text
-    vo2max_section = response.text.split('id="wrap-vo2maxChart"')[1].split("</div>")[0]
-    assert "chart-desc" not in vo2max_section
+    for wrap_id in ("wrap-vo2maxChart", "wrap-chart-bmi", "wrap-chart-bodyComp"):
+        assert f'id="{wrap_id}"' in response.text
+        section = response.text.split(f'id="{wrap_id}"')[1].split("</div>")[0]
+        assert "chart-desc" not in section
 
 
-def test_dashboard_pauses_chart_title_has_no_description(app_client) -> None:
+def test_dashboard_pauses_chart_has_diagnostic_description(app_client) -> None:
     response = app_client.get("/")
     assert response.status_code == 200
     assert "2s btw beats pauses" in response.text
-    pauses_section = response.text.split('id="wrap-chart-pauses"')[1].split("</div>")[0]
-    assert "chart-desc" not in pauses_section
+    assert "worth mentioning to a doctor" in response.text
 
 
 def test_dashboard_includes_all_weekly_cardio_charts(app_client) -> None:
