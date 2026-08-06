@@ -251,12 +251,15 @@
 
     // Reference-line glyphs, plain Unicode geometric shapes (not emoji —
     // these have no emoji presentation form, so they render as text glyphs
-    // in every font/OS rather than a colored pictograph). △ (outline) for a
-    // "warning" line, ▲ (filled) for a "danger" line — same vocabulary as
-    // the semaphore dots elsewhere, just two severities since a reference
-    // line is a single fixed cutoff, not a live current-value state.
-    const THRESHOLD_GLYPH = { warning: "△", danger: "▲" };
-    const THRESHOLD_COLOR = { warning: "#e0b23e", danger: "#e05a5a" };
+    // in every font/OS rather than a colored pictograph). Both severities
+    // use the same filled ▲ — color (yellow vs red) is what distinguishes
+    // them, same vocabulary as the semaphore dots elsewhere, not shape.
+    // "info" is a third severity for multi-level scales (e.g. VO2max's
+    // ACSM Poor/Fair/Average/Good/Excellent/Superior) where most boundaries
+    // are just informative stage markers, not a problem — only the
+    // lowest-tier boundary is realistically a "warning".
+    const THRESHOLD_GLYPH = { warning: "▲", danger: "▲", info: "▲" };
+    const THRESHOLD_COLOR = { warning: "#e0b23e", danger: "#e05a5a", info: "#8b93a7" };
 
     // Draws each chart's threshold glyphs directly on the canvas 2D
     // context, positioned just left of the y-axis like an axis tick.
@@ -333,6 +336,25 @@
       };
     }
 
+    // Builds one chartjs-plugin-annotation "box" entry for a shaded
+    // background range: { min, max, color } — e.g. Poincaré ratio's
+    // 1.5-4.5 "optimal" band (ANALYSIS_SPEC.md §11.1's GREEN cutoff).
+    // Uses the annotation plugin's box type (not the custom canvas plugin
+    // used for glyphs) since a plain rectangle has none of the "label"
+    // type's positioning bugs found earlier — box annotations are simple
+    // geometry, not text layout.
+    function thresholdBand(band, index) {
+      return {
+        [`thresholdBand${index}`]: {
+          type: "box",
+          yMin: band.min,
+          yMax: band.max,
+          backgroundColor: band.color + "26",
+          borderWidth: 0,
+        },
+      };
+    }
+
     // labelMode: "week" -> "W20", "month" -> "Aug", anything else -> raw ISO date.
     // series: a single {label, values, color, fill?} or an array of them for
     // a multi-dataset chart (see the two-series body-composition chart).
@@ -341,7 +363,9 @@
     // thresholds: optional array of {value, severity, label} reference lines
     // (see docs/sync-ingestion/ANALYSIS_SPEC.md and the sources cited in
     // dashboard.html's THRESHOLDS table for where each cutoff comes from).
-    function lineChart(canvasId, dates, series, labelMode, thresholds) {
+    // bands: optional array of {min, max, color} shaded background ranges
+    // (e.g. Poincaré ratio's optimal-range band).
+    function lineChart(canvasId, dates, series, labelMode, thresholds, bands) {
       const el = document.getElementById(canvasId);
       if (!el) return;
       const seriesList = Array.isArray(series) ? series : [series];
@@ -359,6 +383,10 @@
       }
 
       const annotations = {};
+      // Bands first so they sit behind the threshold lines in z-order (both
+      // are drawn behind the dataset lines by chartjs-plugin-annotation's
+      // default drawTime, beforeDatasetsDraw).
+      (bands || []).forEach((b, i) => { Object.assign(annotations, thresholdBand(b, i)); });
       (thresholds || []).forEach((t, i) => {
         Object.assign(annotations, thresholdLine(t, i));
       });
