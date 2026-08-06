@@ -56,7 +56,9 @@
 <h2>History — last 12 weeks</h2>
 <p class="section-desc">Best working-set weight per session that included this exercise.</p>
 {% if history %}
-<div class="chart-wrap"><canvas id="historyChart"></canvas></div>
+<div class="chart-wrap" id="wrap-historyChart">
+  <div class="chart-canvas-box"><canvas id="historyChart"></canvas></div>
+</div>
 {% else %}
 <p class="empty">No sets logged for this exercise in the last 12 weeks.</p>
 {% endif %}
@@ -65,13 +67,18 @@
 {% block scripts %}
 <script>
   const HISTORY = {{ history | tojson }};
-  lineChart(
-    "historyChart",
-    HISTORY.map(p => p.session_date),
-    HISTORY.map(p => p.best_set_weight),
-    "Best set weight (kg)",
-    "#5b9dff",
-    "date"
-  );
+  const historyWrap = document.getElementById("wrap-historyChart");
+  if (historyWrap) {
+    historyWrap.insertAdjacentHTML(
+      "afterbegin",
+      '<div class="chart-header"><span>Best set weight (kg)</span><span class="chart-direction">↑</span></div>'
+    );
+    lineChart(
+      "historyChart",
+      HISTORY.map(p => p.session_date),
+      { label: "Best set weight (kg)", values: HISTORY.map(p => p.best_set_weight), color: "#5b9dff" },
+      "date"
+    );
+  }
 </script>
 {% endblock %}
