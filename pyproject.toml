@@ -8,6 +8,7 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "python-multipart>=0.0.9",
     "pyyaml>=6.0",
+    "jinja2>=3.1",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +24,13 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+[tool.setuptools.package-data]
+# Non-.py assets for the server-rendered dashboard (app/gui.py) — setuptools
+# doesn't include these by default, so `pip install .` (used by the
+# Dockerfile) would silently ship a package missing its templates/static
+# files without this.
+app = ["templates/*.html", "static/*"]
 
 [tool.ruff]
 line-length = 100

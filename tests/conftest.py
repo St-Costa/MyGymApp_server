@@ -91,6 +91,7 @@ def app_client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_ROOT", str(tmp_path / "data"))
 
     import app.config
+    import app.gui
     import app.ingestion
     import app.main
     import app.routes
@@ -102,6 +103,7 @@ def app_client(tmp_path, monkeypatch):
     importlib.reload(app.storage)
     importlib.reload(app.ingestion)
     importlib.reload(app.routes)
+    importlib.reload(app.gui)
     importlib.reload(app.main)
 
     with TestClient(app.main.app) as client:

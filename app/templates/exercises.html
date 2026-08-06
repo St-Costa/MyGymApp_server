@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Exercises — MyGymApp{% endblock %}
+{% block content %}
+<h1>Exercises</h1>
+
+{% if exercises %}
+<table>
+  <thead>
+    <tr><th>Exercise</th><th>Sets logged</th></tr>
+  </thead>
+  <tbody>
+    {% for ex in exercises %}
+    <tr>
+      <td><a class="row-link" href="/exercises/{{ ex.exercise_id }}">{{ ex.exercise_name or ex.exercise_id }}</a></td>
+      <td>{{ ex.set_count }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No exercises synced yet.</p>
+{% endif %}
+{% endblock %}
