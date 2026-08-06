@@ -187,10 +187,10 @@
     premature:     { name: "Premature beats",        unit: "",         good: "down", color: "#e05a5a" },
     uneven:        { name: "Uneven beats",           unit: "",         good: "down", color: "#e05a5a" },
   };
-  // Three stacked chevrons rather than a single arrow glyph, per spec —
+  // Three stacked triangles rather than a single arrow glyph, per spec —
   // <br> between each so line-height in .chart-direction actually stacks
   // them vertically instead of running them side by side on one line.
-  const DIRECTION_ARROW = { up: "∧<br>∧<br>∧", down: "∨<br>∨<br>∨" };
+  const DIRECTION_ARROW = { up: "▲<br>▲<br>▲", down: "▼<br>▼<br>▼" };
 
   function chartHeader(meta) {
     const arrow = meta.good ? `<span class="chart-direction">${DIRECTION_ARROW[meta.good]}</span>` : "";
