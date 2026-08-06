@@ -256,6 +256,7 @@
     // the semaphore dots elsewhere, just two severities since a reference
     // line is a single fixed cutoff, not a live current-value state.
     const THRESHOLD_GLYPH = { warning: "△", danger: "▲" };
+    const THRESHOLD_COLOR = { warning: "#e0b23e", danger: "#e05a5a" };
 
     // Draws each chart's threshold glyphs directly on the canvas 2D
     // context, positioned just left of the y-axis like an axis tick.
@@ -279,11 +280,19 @@
         const ctx = chart.ctx;
         const yScale = chart.scales.y;
         ctx.save();
-        ctx.font = "12px -apple-system, BlinkMacSystemFont, sans-serif";
+        // Bold + larger than the axis's own tick-label font (which is
+        // ~11-12px, muted gray) so the glyph reads as a distinct colored
+        // marker at a glance instead of blending into the tick labels.
+        ctx.font = "bold 16px -apple-system, BlinkMacSystemFont, sans-serif";
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         for (const g of glyphs) {
-          ctx.fillStyle = g.color;
+          // g came from dashboard.html's THRESHOLDS table, which only
+          // carries {value, severity, label} — color is derived from
+          // severity here (previously read a non-existent g.color, which
+          // silently left fillStyle at whatever it last was, rendering the
+          // glyph in the wrong — barely visible — color).
+          ctx.fillStyle = THRESHOLD_COLOR[g.severity];
           // yScale.left is where the axis's own tick labels ("60", "100",
           // etc) start — chartArea.left is further right, past those
           // labels. Anchoring off chartArea.left put the glyph *on top of*
@@ -301,7 +310,7 @@
     // reference line with its description text (the glyph is drawn
     // separately, see thresholdGlyphPlugin above).
     function thresholdLine(threshold, index) {
-      const color = threshold.severity === "danger" ? "#e05a5a" : "#e0b23e";
+      const color = THRESHOLD_COLOR[threshold.severity];
       return {
         [`thresholdLine${index}`]: {
           type: "line",
