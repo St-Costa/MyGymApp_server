@@ -19,6 +19,13 @@ SCALE_SPEC.md "Field notes" sections for the source of truth):
 - `excludeFromTonnage` / `isDaily` are omitted when false — missing means False.
 - Unrecognized top-level YAML keys are ignored, not an error — the phone app
   evolves independently and may add fields these parsers don't know about yet.
+- `sets[].isBodyweight` (proposed, not yet sent by the phone as of writing):
+  same "omitted means False" convention as the other booleans above. Once
+  the phone starts sending it, no server-side change is needed — the parser
+  already reads it defensively. See ANALYSIS_SPEC.md's common_tonnage note
+  for why this distinction matters (a completed bodyweight set and an
+  untouched/empty one both have weight=0 today, indistinguishable without
+  this field).
 """
 
 import yaml
@@ -239,6 +246,15 @@ def _parse_exercises(raw_exercises: list) -> list[ExerciseSet]:
                     weight=float(raw_set.get("weight") or 0.0),
                     exclude_from_tonnage=exclude_from_tonnage,
                     is_daily=is_daily,
+                    # Not part of the wire format yet — proposed addition to
+                    # distinguish a completed bodyweight set (weight=0 by
+                    # nature) from an untouched/empty one, which today look
+                    # identical (see ANALYSIS_SPEC.md's known common_tonnage
+                    # gap). Parsed defensively now so nothing needs to change
+                    # here once the phone starts sending it; absent -> False,
+                    # same "omitted means false" convention as the other
+                    # per-set/per-exercise booleans.
+                    is_bodyweight=bool(raw_set.get("isBodyweight", False)),
                 )
             )
     return exercise_sets

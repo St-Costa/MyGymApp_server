@@ -48,6 +48,40 @@ def test_exclude_from_tonnage_and_is_daily_default_to_false_when_omitted() -> No
     assert parsed.exercise_sets[0].is_daily is False
 
 
+def test_is_bodyweight_defaults_to_false_when_omitted() -> None:
+    # isBodyweight isn't sent by the phone yet — must not error, must default False.
+    md = (
+        b"---\n"
+        b"id: cccccccc\n"
+        b"exercises:\n"
+        b"  - exerciseId: ex-22222222\n"
+        b"    type: FORZA\n"
+        b"    sets:\n"
+        b"      - reps: 12\n"
+        b"        weight: 0.0\n"
+        b"---\n"
+    )
+    parsed = parse_session_file(md)
+    assert parsed.exercise_sets[0].is_bodyweight is False
+
+
+def test_is_bodyweight_parsed_when_present() -> None:
+    md = (
+        b"---\n"
+        b"id: dddddddd\n"
+        b"exercises:\n"
+        b"  - exerciseId: ex-33333333\n"
+        b"    type: FORZA\n"
+        b"    sets:\n"
+        b"      - reps: 12\n"
+        b"        weight: 0.0\n"
+        b"        isBodyweight: true\n"
+        b"---\n"
+    )
+    parsed = parse_session_file(md)
+    assert parsed.exercise_sets[0].is_bodyweight is True
+
+
 def test_unknown_top_level_keys_are_ignored() -> None:
     md = b"---\nid: cccccccc\ntotalTonnage: 1.0\nsomeFutureField: whatever\n---\n"
     parsed = parse_session_file(md)
