@@ -365,6 +365,29 @@
     // dashboard.html's THRESHOLDS table for where each cutoff comes from).
     // bands: optional array of {min, max, color} shaded background ranges
     // (e.g. Poincaré ratio's optimal-range band).
+    // Chart.js auto-scales the y-axis to fit *everything* it draws,
+    // including threshold lines/bands — so a "Poor < 25" reference line on
+    // a VO2max chart whose real values sit at 40-45 forces the axis down to
+    // 25, squeezing an otherwise-flat real series into the top sliver of
+    // the chart. Computing min/max from the actual data (with a margin)
+    // and setting them explicitly keeps the real series roughly centered;
+    // threshold lines/bands outside that range just don't show (correct —
+    // they're not relevant to this data), rather than distorting the scale
+    // to fit them.
+    function dataDrivenYRange(seriesList) {
+      const values = seriesList.flatMap(s => s.values).filter(v => v !== null && v !== undefined);
+      if (!values.length) return {};
+      const min = Math.min(...values);
+      const max = Math.max(...values);
+      if (min === max) {
+        // Flat/single-point series: pad by a fixed amount rather than a
+        // percentage of a zero range.
+        return { min: min - 5, max: max + 5 };
+      }
+      const margin = (max - min) * 0.15;
+      return { min: min - margin, max: max + margin };
+    }
+
     function lineChart(canvasId, dates, series, labelMode, thresholds, bands) {
       const el = document.getElementById(canvasId);
       if (!el) return;
@@ -413,6 +436,10 @@
         options: {
           ...CHART_OPTIONS,
           plugins: { ...CHART_OPTIONS.plugins, annotation: { annotations } },
+          scales: {
+            ...CHART_OPTIONS.scales,
+            y: { ...CHART_OPTIONS.scales.y, ...dataDrivenYRange(seriesList) },
+          },
           // Consumed by thresholdGlyphPlugin's afterDraw, not a Chart.js
           // built-in option — see that plugin's registration above.
           thresholdGlyphs: thresholds || [],
