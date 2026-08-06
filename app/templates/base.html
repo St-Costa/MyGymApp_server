@@ -123,15 +123,20 @@
     }
     .chart-header {
       display: flex;
-      align-items: baseline;
-      gap: 0.4rem;
-      font-size: 0.95rem;
-      font-weight: 600;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      font-size: 1.1rem;
+      font-weight: 700;
       margin: 0 0 0.35rem;
+      text-align: center;
     }
     .chart-direction {
-      font-size: 0.9rem;
-      font-weight: 700;
+      display: inline-flex;
+      flex-direction: column;
+      line-height: 0.55;
+      font-size: 0.7rem;
+      letter-spacing: -0.05em;
       color: var(--muted);
     }
     .chart-canvas-box {
@@ -145,6 +150,15 @@
     }
     .chart-canvas-box canvas {
       max-height: 100%;
+    }
+    .chart-no-data {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: var(--muted);
+      font-style: italic;
+      font-size: 0.9rem;
     }
     table {
       width: 100%;
@@ -241,6 +255,19 @@
       const el = document.getElementById(canvasId);
       if (!el) return;
       const seriesList = Array.isArray(series) ? series : [series];
+
+      // Every series entirely null (e.g. a metric with no synced data at
+      // all in the window) would otherwise render a blank, misleadingly
+      // "did this break?" canvas — show an explicit empty state instead.
+      const hasAnyData = seriesList.some(s => s.values.some(v => v !== null && v !== undefined));
+      if (!hasAnyData) {
+        el.replaceWith(Object.assign(document.createElement("div"), {
+          className: "chart-no-data",
+          textContent: "No data yet",
+        }));
+        return;
+      }
+
       new Chart(el, {
         type: "line",
         data: {
