@@ -180,3 +180,20 @@ def test_static_chartjs_is_served(app_client) -> None:
     response = app_client.get("/static/chart.umd.min.js")
     assert response.status_code == 200
     assert len(response.content) > 1000
+
+
+def test_static_annotation_plugin_is_served(app_client) -> None:
+    response = app_client.get("/static/chartjs-plugin-annotation.min.js")
+    assert response.status_code == 200
+    assert len(response.content) > 1000
+
+
+def test_dashboard_includes_threshold_reference_lines(app_client) -> None:
+    response = app_client.get("/")
+    assert response.status_code == 200
+    assert "chartjs-plugin-annotation.min.js" in response.text
+    # Non-emoji geometric glyphs, per spec — not ⚠ or similar pictographs.
+    assert "△" in response.text
+    assert "▲" in response.text
+    assert "Bradycardia" in response.text
+    assert "Cole et al." in response.text

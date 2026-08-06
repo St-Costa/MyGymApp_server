@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}MyGymApp Dashboard{% endblock %}</title>
   <script src="/static/chart.umd.min.js"></script>
+  <script src="/static/chartjs-plugin-annotation.min.js"></script>
   <style>
     :root {
       --bg: #0f1115;
@@ -243,12 +244,48 @@
     const POINT_RADIUS = 4;
     const POINT_HOVER_RADIUS = 6;
 
+    // Reference-line glyphs, plain Unicode geometric shapes (not emoji —
+    // these have no emoji presentation form, so they render as text glyphs
+    // in every font/OS rather than a colored pictograph). △ (outline) for a
+    // "warning" line, ▲ (filled) for a "danger" line — same vocabulary as
+    // the semaphore dots elsewhere, just two severities since a reference
+    // line is a single fixed cutoff, not a live current-value state.
+    const THRESHOLD_GLYPH = { warning: "△", danger: "▲" };
+
+    // Builds one chartjs-plugin-annotation line annotation. threshold:
+    // { value, severity: "warning"|"danger", label } — label is the short
+    // text shown next to the glyph (e.g. "Bradycardia < 60").
+    function thresholdLine(threshold) {
+      const color = threshold.severity === "danger" ? "#e05a5a" : "#e0b23e";
+      return {
+        type: "line",
+        yMin: threshold.value,
+        yMax: threshold.value,
+        borderColor: color,
+        borderWidth: 1,
+        borderDash: [5, 4],
+        label: {
+          display: true,
+          content: `${THRESHOLD_GLYPH[threshold.severity]} ${threshold.label}`,
+          position: "start",
+          backgroundColor: "transparent",
+          color: color,
+          font: { size: 10, weight: "normal" },
+          padding: 0,
+          yAdjust: -8,
+        },
+      };
+    }
+
     // labelMode: "week" -> "W20", "month" -> "Aug", anything else -> raw ISO date.
     // series: a single {label, values, color, fill?} or an array of them for
     // a multi-dataset chart (see the two-series body-composition chart).
     // fill: omitted/false for a plain line, "start"/"end" to shade the area
     // between the line and the chart's bottom/top edge (Chart.js fill modes).
-    function lineChart(canvasId, dates, series, labelMode) {
+    // thresholds: optional array of {value, severity, label} reference lines
+    // (see docs/sync-ingestion/ANALYSIS_SPEC.md and the sources cited in
+    // dashboard.html's THRESHOLDS table for where each cutoff comes from).
+    function lineChart(canvasId, dates, series, labelMode, thresholds) {
       const el = document.getElementById(canvasId);
       if (!el) return;
       const seriesList = Array.isArray(series) ? series : [series];
@@ -264,6 +301,9 @@
         }));
         return;
       }
+
+      const annotations = {};
+      (thresholds || []).forEach((t, i) => { annotations["threshold" + i] = thresholdLine(t); });
 
       new Chart(el, {
         type: "line",
@@ -284,7 +324,10 @@
             tension: 0.25,
           })),
         },
-        options: CHART_OPTIONS,
+        options: {
+          ...CHART_OPTIONS,
+          plugins: { ...CHART_OPTIONS.plugins, annotation: { annotations } },
+        },
       });
     }
   </script>
