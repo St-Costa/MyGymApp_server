@@ -226,6 +226,10 @@
       // regardless of how tall .chart-wrap is set. false lets the canvas
       // fill its container's height exactly.
       maintainAspectRatio: false,
+      // Extra left padding so a threshold glyph anchored just outside the
+      // y-axis (see thresholdAnnotations' xAdjust) has room to render
+      // instead of being clipped by the canvas edge.
+      layout: { padding: { left: 16 } },
       // Legend is redundant now that every chart has its own <h4> title
       // above it (single-series charts) or an explicit dataset label already
       // conveyed by the section around it — dropped in favor of that,
@@ -252,12 +256,14 @@
     // line is a single fixed cutoff, not a live current-value state.
     const THRESHOLD_GLYPH = { warning: "△", danger: "▲" };
 
-    // Builds one chartjs-plugin-annotation line annotation. threshold:
-    // { value, severity: "warning"|"danger", label } — label is the short
-    // text shown next to the glyph (e.g. "Bradycardia < 60").
-    function thresholdLine(threshold) {
+    // Builds the two chartjs-plugin-annotation entries for one threshold:
+    // { value, severity: "warning"|"danger", label }. The glyph sits like a
+    // y-axis tick — outside the plotting area, to the left of the axis, via
+    // a negative xAdjust — while the description text stays on the line
+    // itself inside the chart.
+    function thresholdAnnotations(threshold, index) {
       const color = threshold.severity === "danger" ? "#e05a5a" : "#e0b23e";
-      return {
+      const line = {
         type: "line",
         yMin: threshold.value,
         yMax: threshold.value,
@@ -266,7 +272,7 @@
         borderDash: [5, 4],
         label: {
           display: true,
-          content: `${THRESHOLD_GLYPH[threshold.severity]} ${threshold.label}`,
+          content: threshold.label,
           position: "start",
           backgroundColor: "transparent",
           color: color,
@@ -275,6 +281,24 @@
           yAdjust: -8,
         },
       };
+      const glyph = {
+        type: "label",
+        xScaleID: "x",
+        yScaleID: "y",
+        // The x-axis is a category scale (week/date labels), so "the first
+        // category" is what anchors this at the left edge — xValue: 0 means
+        // "index 0 of the labels array", not a numeric x position.
+        xValue: 0,
+        yValue: threshold.value,
+        content: THRESHOLD_GLYPH[threshold.severity],
+        color: color,
+        font: { size: 12 },
+        // Sits just left of the y-axis, like an axis tick, not inside the
+        // plotting area where the line's own text label already lives.
+        xAdjust: -20,
+        backgroundColor: "transparent",
+      };
+      return { [`thresholdLine${index}`]: line, [`thresholdGlyph${index}`]: glyph };
     }
 
     // labelMode: "week" -> "W20", "month" -> "Aug", anything else -> raw ISO date.
@@ -303,7 +327,9 @@
       }
 
       const annotations = {};
-      (thresholds || []).forEach((t, i) => { annotations["threshold" + i] = thresholdLine(t); });
+      (thresholds || []).forEach((t, i) => {
+        Object.assign(annotations, thresholdAnnotations(t, i));
+      });
 
       new Chart(el, {
         type: "line",
