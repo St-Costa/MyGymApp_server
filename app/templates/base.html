@@ -295,7 +295,11 @@
         font: { size: 12 },
         // Sits just left of the y-axis, like an axis tick, not inside the
         // plotting area where the line's own text label already lives.
+        // clip: false is required for that — by default the plugin clips
+        // any annotation to the chart area, which silently hides anything
+        // pushed outside it via xAdjust.
         xAdjust: -20,
+        clip: false,
         backgroundColor: "transparent",
       };
       return { [`thresholdLine${index}`]: line, [`thresholdGlyph${index}`]: glyph };
