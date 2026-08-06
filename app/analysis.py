@@ -470,6 +470,12 @@ def estimate_1rm(weight: float, reps: int) -> float:
 class SetLike:
     reps: int
     weight: float
+    # See app.parsing's isBodyweight note: distinguishes a completed
+    # bodyweight set (weight=0 by nature) from an untouched/empty one, which
+    # otherwise look identical. Only consumed by _is_untouched_or_empty below
+    # — weight-based PR/1RM calculations correctly stay 0/None for bodyweight
+    # sets regardless of this flag, since there's no external load to PR on.
+    is_bodyweight: bool = False
 
 
 def best_estimated_1rm(sets: list[SetLike]) -> float | None:
@@ -588,8 +594,12 @@ def _is_untouched_or_empty(exercise: ExerciseOccurrence) -> bool:
     was never part of the wire format), so this treats "no sets with
     reps>0 and weight>0" as the observable proxy for both cases. Weaker
     than the phone's true flag, but the closest available signal from what's
-    actually synced today."""
-    return not any(s.reps > 0 and s.weight > 0 for s in exercise.sets)
+    actually synced today.
+
+    A set with `is_bodyweight=True` counts as touched even at weight=0 —
+    once the phone sends that field (see app.parsing's isBodyweight note),
+    this stops misclassifying completed bodyweight work as untouched."""
+    return not any(s.reps > 0 and (s.weight > 0 or s.is_bodyweight) for s in exercise.sets)
 
 
 def common_tonnage(

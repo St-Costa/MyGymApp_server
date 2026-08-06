@@ -58,7 +58,8 @@ CREATE TABLE IF NOT EXISTS exercise_sets (
   reps                  INTEGER,
   weight                REAL,
   exclude_from_tonnage  INTEGER NOT NULL DEFAULT 0,
-  is_daily              INTEGER NOT NULL DEFAULT 0
+  is_daily              INTEGER NOT NULL DEFAULT 0,
+  is_bodyweight         INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_exercise_sets_session ON exercise_sets(session_id);
 
@@ -135,6 +136,24 @@ def init_db(db_path: Path = DB_PATH) -> None:
     with connect(db_path) as conn:
         _migrate_parse_failures_table(conn)
         conn.executescript(SCHEMA)
+        _migrate_exercise_sets_is_bodyweight_column(conn)
+
+
+def _migrate_exercise_sets_is_bodyweight_column(conn: sqlite3.Connection) -> None:
+    """One-time migration: `exercise_sets.is_bodyweight` was added after
+    `exercise_sets` already existed in deployed databases. `CREATE TABLE IF
+    NOT EXISTS` in SCHEMA won't add a column to an already-existing table,
+    so add it here if missing. Defaults to 0 (not bodyweight) for existing
+    rows — correct for anything with weight>0, and the closest available
+    guess for weight=0 rows recorded before this column existed (no data to
+    distinguish "untouched set" from "bodyweight exercise" for those; a
+    reparse won't fix this retroactively either, since the raw files
+    themselves predate the phone sending isBodyweight at all)."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(exercise_sets)")}
+    if "is_bodyweight" not in columns:
+        conn.execute(
+            "ALTER TABLE exercise_sets ADD COLUMN is_bodyweight INTEGER NOT NULL DEFAULT 0"
+        )
 
 
 def _migrate_parse_failures_table(conn: sqlite3.Connection) -> None:
@@ -201,6 +220,7 @@ class ExerciseSet:
     weight: float
     exclude_from_tonnage: bool
     is_daily: bool
+    is_bodyweight: bool = False
 
 
 @dataclass
@@ -372,8 +392,8 @@ def upsert_parsed_session(
         """
         INSERT INTO exercise_sets (
             session_id, exercise_id, exercise_name, exercise_type, bodypart,
-            set_index, reps, weight, exclude_from_tonnage, is_daily
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            set_index, reps, weight, exclude_from_tonnage, is_daily, is_bodyweight
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -387,6 +407,7 @@ def upsert_parsed_session(
                 s.weight,
                 int(s.exclude_from_tonnage),
                 int(s.is_daily),
+                int(s.is_bodyweight),
             )
             for s in parsed.exercise_sets
         ],

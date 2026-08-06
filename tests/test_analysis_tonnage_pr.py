@@ -103,6 +103,29 @@ def test_common_tonnage_no_overlap_falls_back_to_totals():
     assert t2 == pytest.approx(6 * 85)
 
 
+def test_common_tonnage_bodyweight_set_counts_as_touched_not_untouched():
+    # A completed bodyweight set (reps>0, weight=0, is_bodyweight=True) must
+    # be eligible, not misclassified as "untouched" the way a truly empty/
+    # zero-weight set would be — see the is_bodyweight field note.
+    ex1 = [ExerciseOccurrence("ex-a", False, [SetLike(12, 0, is_bodyweight=True)])]
+    ex2 = [ExerciseOccurrence("ex-a", False, [SetLike(10, 0, is_bodyweight=True)])]
+    t1, t2 = common_tonnage(ex1, ex2)
+    # ex-a is eligible in both -> counted as common (tonnage itself is still
+    # 0 since weight=0, but it's not silently excluded from the comparison).
+    assert t1 == 0
+    assert t2 == 0
+
+
+def test_common_tonnage_zero_weight_without_bodyweight_flag_still_untouched():
+    # Without is_bodyweight, a weight=0 set is indistinguishable from an
+    # untouched one — this is the known, documented approximation.
+    ex1 = [ExerciseOccurrence("ex-a", False, [SetLike(12, 0)])]
+    ex2 = [ExerciseOccurrence("ex-a", False, [SetLike(6, 85)])]
+    t1, t2 = common_tonnage(ex1, ex2)
+    assert t1 == 0
+    assert t2 == pytest.approx(6 * 85)
+
+
 # --- §1.3 per-exercise change % --------------------------------------------
 
 
