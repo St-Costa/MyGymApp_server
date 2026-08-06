@@ -226,10 +226,11 @@
       // regardless of how tall .chart-wrap is set. false lets the canvas
       // fill its container's height exactly.
       maintainAspectRatio: false,
-      // Extra left padding so a threshold glyph anchored just outside the
-      // y-axis (see thresholdAnnotations' xAdjust) has room to render
-      // instead of being clipped by the canvas edge.
-      layout: { padding: { left: 16 } },
+      // Extra left padding so thresholdGlyphPlugin's glyph (drawn just left
+      // of the y-axis's own tick-label column, see below) has room to
+      // render instead of being squeezed against — or clipped by — the
+      // canvas edge.
+      layout: { padding: { left: 14 } },
       // Legend is redundant now that every chart has its own <h4> title
       // above it (single-series charts) or an explicit dataset label already
       // conveyed by the section around it — dropped in favor of that,
@@ -256,53 +257,71 @@
     // line is a single fixed cutoff, not a live current-value state.
     const THRESHOLD_GLYPH = { warning: "△", danger: "▲" };
 
-    // Builds the two chartjs-plugin-annotation entries for one threshold:
-    // { value, severity: "warning"|"danger", label }. The glyph sits like a
-    // y-axis tick — outside the plotting area, to the left of the axis, via
-    // a negative xAdjust — while the description text stays on the line
-    // itself inside the chart.
-    function thresholdAnnotations(threshold, index) {
+    // Draws each chart's threshold glyphs directly on the canvas 2D
+    // context, positioned just left of the y-axis like an axis tick.
+    //
+    // Why not chartjs-plugin-annotation's own "label" annotation type for
+    // this: extensive testing (xValue/xScaleID combinations, clip: false,
+    // drawTime: 'afterDraw', larger layout.padding.left) never got a label
+    // annotation to render once xAdjust pushed it left of chartArea.left —
+    // it silently disappears regardless of clip/drawTime settings, which
+    // isn't documented behavior. This custom afterDraw plugin reliably
+    // works (verified visually) because it draws directly via fillText
+    // rather than going through the annotation plugin's own layout/clip
+    // pipeline. The dashed reference *line* itself still uses
+    // chartjs-plugin-annotation (that part works fine) — only the glyph
+    // moved to this custom plugin.
+    const thresholdGlyphPlugin = {
+      id: "thresholdGlyphs",
+      afterDraw(chart) {
+        const glyphs = chart.config.options.thresholdGlyphs;
+        if (!glyphs || !glyphs.length) return;
+        const ctx = chart.ctx;
+        const yScale = chart.scales.y;
+        ctx.save();
+        ctx.font = "12px -apple-system, BlinkMacSystemFont, sans-serif";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        for (const g of glyphs) {
+          ctx.fillStyle = g.color;
+          // yScale.left is where the axis's own tick labels ("60", "100",
+          // etc) start — chartArea.left is further right, past those
+          // labels. Anchoring off chartArea.left put the glyph *on top of*
+          // the tick label text (same muted gray, easy to miss); yScale.left
+          // - 8 puts it just left of the numbers instead, clear of them.
+          ctx.fillText(THRESHOLD_GLYPH[g.severity], yScale.left - 8, yScale.getPixelForValue(g.value));
+        }
+        ctx.restore();
+      },
+    };
+    Chart.register(thresholdGlyphPlugin);
+
+    // Builds one chartjs-plugin-annotation line entry for a threshold:
+    // { value, severity: "warning"|"danger", label } — the dashed
+    // reference line with its description text (the glyph is drawn
+    // separately, see thresholdGlyphPlugin above).
+    function thresholdLine(threshold, index) {
       const color = threshold.severity === "danger" ? "#e05a5a" : "#e0b23e";
-      const line = {
-        type: "line",
-        yMin: threshold.value,
-        yMax: threshold.value,
-        borderColor: color,
-        borderWidth: 1,
-        borderDash: [5, 4],
-        label: {
-          display: true,
-          content: threshold.label,
-          position: "start",
-          backgroundColor: "transparent",
-          color: color,
-          font: { size: 10, weight: "normal" },
-          padding: 0,
-          yAdjust: -8,
+      return {
+        [`thresholdLine${index}`]: {
+          type: "line",
+          yMin: threshold.value,
+          yMax: threshold.value,
+          borderColor: color,
+          borderWidth: 1,
+          borderDash: [5, 4],
+          label: {
+            display: true,
+            content: threshold.label,
+            position: "start",
+            backgroundColor: "transparent",
+            color: color,
+            font: { size: 10, weight: "normal" },
+            padding: 0,
+            yAdjust: -8,
+          },
         },
       };
-      const glyph = {
-        type: "label",
-        xScaleID: "x",
-        yScaleID: "y",
-        // The x-axis is a category scale (week/date labels), so "the first
-        // category" is what anchors this at the left edge — xValue: 0 means
-        // "index 0 of the labels array", not a numeric x position.
-        xValue: 0,
-        yValue: threshold.value,
-        content: THRESHOLD_GLYPH[threshold.severity],
-        color: color,
-        font: { size: 12 },
-        // Sits just left of the y-axis, like an axis tick, not inside the
-        // plotting area where the line's own text label already lives.
-        // clip: false is required for that — by default the plugin clips
-        // any annotation to the chart area, which silently hides anything
-        // pushed outside it via xAdjust.
-        xAdjust: -20,
-        clip: false,
-        backgroundColor: "transparent",
-      };
-      return { [`thresholdLine${index}`]: line, [`thresholdGlyph${index}`]: glyph };
     }
 
     // labelMode: "week" -> "W20", "month" -> "Aug", anything else -> raw ISO date.
@@ -332,7 +351,7 @@
 
       const annotations = {};
       (thresholds || []).forEach((t, i) => {
-        Object.assign(annotations, thresholdAnnotations(t, i));
+        Object.assign(annotations, thresholdLine(t, i));
       });
 
       new Chart(el, {
@@ -357,6 +376,9 @@
         options: {
           ...CHART_OPTIONS,
           plugins: { ...CHART_OPTIONS.plugins, annotation: { annotations } },
+          // Consumed by thresholdGlyphPlugin's afterDraw, not a Chart.js
+          // built-in option — see that plugin's registration above.
+          thresholdGlyphs: thresholds || [],
         },
       });
     }
