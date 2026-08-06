@@ -118,12 +118,32 @@
       border-radius: 10px;
       padding: 1.25rem;
       margin-bottom: 1.5rem;
-      /* Fixed height on the wrapper, not the <canvas>, since Chart.js with
-         responsive:true resizes the canvas to fill its container — sizing
-         only the canvas's height attribute gets overridden and ignored. */
-      height: 320px;
+      display: flex;
+      flex-direction: column;
     }
-    .chart-wrap canvas {
+    .chart-header {
+      display: flex;
+      align-items: baseline;
+      gap: 0.4rem;
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin: 0 0 0.35rem;
+    }
+    .chart-direction {
+      font-size: 0.9rem;
+      font-weight: 700;
+      color: var(--muted);
+    }
+    .chart-canvas-box {
+      position: relative;
+      flex: 1;
+      /* Fixed minimum height on the canvas's own box, not the <canvas>
+         element, since Chart.js with responsive:true resizes the canvas to
+         fill its container — sizing only the canvas's height attribute gets
+         overridden and ignored. */
+      min-height: 280px;
+    }
+    .chart-canvas-box canvas {
       max-height: 100%;
     }
     table {
@@ -194,29 +214,51 @@
       // regardless of how tall .chart-wrap is set. false lets the canvas
       // fill its container's height exactly.
       maintainAspectRatio: false,
-      plugins: { legend: { labels: { color: "#e6e8ec" } } },
+      // Legend is redundant now that every chart has its own <h4> title
+      // above it (single-series charts) or an explicit dataset label already
+      // conveyed by the section around it — dropped in favor of that,
+      // rather than a legend duplicating the same name inside the canvas.
+      plugins: { legend: { display: false } },
       scales: {
         x: { ticks: { color: "#8b93a7" }, grid: { color: "#262b36" } },
         y: { ticks: { color: "#8b93a7" }, grid: { color: "#262b36" } },
       },
     };
 
+    // Points need to read as distinct dots, not just a kink in the line —
+    // larger radius + a darker/lighter point color than the line itself
+    // (not just the same color at full opacity) so the eye catches
+    // individual data points even on a dense series.
+    const POINT_RADIUS = 4;
+    const POINT_HOVER_RADIUS = 6;
+
     // labelMode: "week" -> "W20", "month" -> "Aug", anything else -> raw ISO date.
-    function lineChart(canvasId, dates, values, label, color, labelMode) {
+    // series: a single {label, values, color, fill?} or an array of them for
+    // a multi-dataset chart (see the two-series body-composition chart).
+    // fill: omitted/false for a plain line, "start"/"end" to shade the area
+    // between the line and the chart's bottom/top edge (Chart.js fill modes).
+    function lineChart(canvasId, dates, series, labelMode) {
       const el = document.getElementById(canvasId);
       if (!el) return;
+      const seriesList = Array.isArray(series) ? series : [series];
       new Chart(el, {
         type: "line",
         data: {
           labels: formatLabels(dates, labelMode),
-          datasets: [{
-            label: label,
-            data: values,
-            borderColor: color,
-            backgroundColor: color + "33",
+          datasets: seriesList.map(s => ({
+            label: s.label,
+            data: s.values,
+            borderColor: s.color,
+            backgroundColor: s.fill ? s.color + "26" : s.color + "33",
+            fill: s.fill || false,
+            pointBackgroundColor: "#0f1115",
+            pointBorderColor: s.color,
+            pointBorderWidth: 2,
+            pointRadius: POINT_RADIUS,
+            pointHoverRadius: POINT_HOVER_RADIUS,
             spanGaps: true,
             tension: 0.25,
-          }],
+          })),
         },
         options: CHART_OPTIONS,
       });

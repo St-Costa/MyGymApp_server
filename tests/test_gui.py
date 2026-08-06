@@ -51,10 +51,32 @@ def test_dashboard_includes_all_weekly_cardio_charts(app_client) -> None:
         "chart-premature",
         "chart-uneven",
         "chart-bmi",
-        "chart-bodyFatPercent",
-        "chart-leanMassPercent",
+        "chart-bodyComp",  # combined body-fat%/lean-mass% chart, not two separate ones
     ):
         assert f'id="{chart_id}"' in response.text
+
+
+def test_dashboard_legend_is_disabled(app_client) -> None:
+    response = app_client.get("/")
+    assert response.status_code == 200
+    assert "legend: { display: false }" in response.text
+
+
+def test_dashboard_charts_have_direction_arrows(app_client) -> None:
+    response = app_client.get("/")
+    assert response.status_code == 200
+    # restingHr is "lower is better"; hrr60s is "higher is better".
+    assert '"restingHr"' in response.text or "restingHr:" in response.text
+    assert 'good: "down"' in response.text
+    assert 'good: "up"' in response.text
+
+
+def test_dashboard_body_composition_is_a_single_combined_chart(app_client) -> None:
+    response = app_client.get("/")
+    assert response.status_code == 200
+    assert 'id="chart-bodyComp"' in response.text
+    assert "Body fat %" in response.text
+    assert "Lean mass %" in response.text
 
 
 def test_exercises_list_empty(app_client) -> None:

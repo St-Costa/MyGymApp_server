@@ -63,30 +63,30 @@
 
 <h3>Weekly trend — last 12 weeks</h3>
 <div class="chart-grid">
-  <div class="chart-wrap">
+  <div class="chart-wrap" id="wrap-chart-afibEpisodes">
     <p class="chart-desc">
       Episodes where the beat-to-beat rhythm looked irregular enough (high variability +
       low autocorrelation over a 30-beat window) to suspect atrial fibrillation.
     </p>
-    <canvas id="chart-afibEpisodes"></canvas>
+    <div class="chart-canvas-box"><canvas id="chart-afibEpisodes"></canvas></div>
   </div>
-  <div class="chart-wrap">
+  <div class="chart-wrap" id="wrap-chart-pauses">
     <p class="chart-desc">Gaps longer than 2 seconds between consecutive heartbeats.</p>
-    <canvas id="chart-pauses"></canvas>
+    <div class="chart-canvas-box"><canvas id="chart-pauses"></canvas></div>
   </div>
-  <div class="chart-wrap">
+  <div class="chart-wrap" id="wrap-chart-premature">
     <p class="chart-desc">
       Premature (early) beats followed by a compensatory pause — the classic PAC/PVC
       signature.
     </p>
-    <canvas id="chart-premature"></canvas>
+    <div class="chart-canvas-box"><canvas id="chart-premature"></canvas></div>
   </div>
-  <div class="chart-wrap">
+  <div class="chart-wrap" id="wrap-chart-uneven">
     <p class="chart-desc">
       Consecutive beats whose spacing deviates well beyond the local average — a general
       irregularity marker distinct from a single premature beat.
     </p>
-    <canvas id="chart-uneven"></canvas>
+    <div class="chart-canvas-box"><canvas id="chart-uneven"></canvas></div>
   </div>
 </div>
 
@@ -97,80 +97,82 @@
 
 <h3>Weekly trend — last 12 weeks</h3>
 <div class="chart-grid">
-  <div class="chart-wrap">
+  <div class="chart-wrap" id="wrap-chart-restingHr">
     <p class="chart-desc">
       Heart rate at rest, measured each session. Lower generally means better
       cardiovascular fitness or recovery; a rising trend can signal fatigue or illness.
     </p>
-    <canvas id="chart-restingHr"></canvas>
+    <div class="chart-canvas-box"><canvas id="chart-restingHr"></canvas></div>
   </div>
-  <div class="chart-wrap">
+  <div class="chart-wrap" id="wrap-chart-hrr60s">
     <p class="chart-desc">
       Heart-rate recovery: how many BPM your heart rate drops in the 60 seconds after a
       session peak. Higher is better-conditioned; a chronic drop below ~12 BPM suggests
       poor recovery.
     </p>
-    <canvas id="chart-hrr60s"></canvas>
+    <div class="chart-canvas-box"><canvas id="chart-hrr60s"></canvas></div>
   </div>
-  <div class="chart-wrap">
+  <div class="chart-wrap" id="wrap-chart-rmssd">
     <p class="chart-desc">
       RMSSD: beat-to-beat heart-rate variability during the session. Higher generally
       reflects better parasympathetic (recovery) activity.
     </p>
-    <canvas id="chart-rmssd"></canvas>
+    <div class="chart-canvas-box"><canvas id="chart-rmssd"></canvas></div>
   </div>
-  <div class="chart-wrap">
+  <div class="chart-wrap" id="wrap-chart-sdnn">
     <p class="chart-desc">
       SDNN: overall heart-rate variability across the whole session, a broader HRV measure
       than RMSSD.
     </p>
-    <canvas id="chart-sdnn"></canvas>
+    <div class="chart-canvas-box"><canvas id="chart-sdnn"></canvas></div>
   </div>
-  <div class="chart-wrap">
+  <div class="chart-wrap" id="wrap-chart-drift">
     <p class="chart-desc">
       Cardiac drift: how much heart rate trends upward per minute at a steady effort — a
       sign of accumulating fatigue or heat/dehydration within a session.
     </p>
-    <canvas id="chart-drift"></canvas>
+    <div class="chart-canvas-box"><canvas id="chart-drift"></canvas></div>
   </div>
-  <div class="chart-wrap">
+  <div class="chart-wrap" id="wrap-chart-poincareRatio">
     <p class="chart-desc">
       Poincaré ratio (SD2/SD1): the balance between short-term and long-term beat-to-beat
       variability — a shape descriptor of heart-rhythm variability, not a rhythm-problem
       count.
     </p>
-    <canvas id="chart-poincareRatio"></canvas>
+    <div class="chart-canvas-box"><canvas id="chart-poincareRatio"></canvas></div>
   </div>
 </div>
 
-<h3>VO2max — 6-month, 4-week buckets</h3>
-<p class="section-desc">
-  Estimated aerobic capacity (Uth-Sørensen-Overgaard-Pedersen formula, from max/resting HR).
-  Higher indicates better cardiovascular fitness.
-</p>
-<div class="chart-wrap"><canvas id="vo2maxChart"></canvas></div>
+<h3 id="wrap-vo2maxChart-heading">VO2max — 6-month, 4-week buckets</h3>
+<div class="chart-wrap" id="wrap-vo2maxChart">
+  <p class="chart-desc">
+    Estimated aerobic capacity (Uth-Sørensen-Overgaard-Pedersen formula, from max/resting
+    HR).
+  </p>
+  <div class="chart-canvas-box"><canvas id="vo2maxChart"></canvas></div>
+</div>
 
 <h2 class="section-title">Body composition</h2>
 
-<h3>Body weight — 8-week weekly median</h3>
-<p class="section-desc">Weight measured by the smart scale, weekly median.</p>
-<div class="chart-wrap"><canvas id="weightChart"></canvas></div>
+<h3 id="wrap-weightChart-heading">Body weight — 8-week weekly median</h3>
+<div class="chart-wrap" id="wrap-weightChart">
+  <p class="chart-desc">Weight measured by the smart scale, weekly median.</p>
+  <div class="chart-canvas-box"><canvas id="weightChart"></canvas></div>
+</div>
 
 <h3>Weekly trend — last 8 weeks</h3>
 <div class="chart-grid">
-  <div class="chart-wrap">
+  <div class="chart-wrap" id="wrap-chart-bmi">
     <p class="chart-desc">Body Mass Index: weight relative to height squared.</p>
-    <canvas id="chart-bmi"></canvas>
+    <div class="chart-canvas-box"><canvas id="chart-bmi"></canvas></div>
   </div>
-  <div class="chart-wrap">
+  <div class="chart-wrap" id="wrap-chart-bodyComp">
     <p class="chart-desc">
-      Estimated body fat percentage from the scale's bioimpedance reading.
+      Estimated body fat % (red, filled from the bottom) and lean mass % (green, filled
+      from the top) from the scale's bioimpedance reading. They don't necessarily sum to
+      100% — bone/water mass isn't counted in either.
     </p>
-    <canvas id="chart-bodyFatPercent"></canvas>
-  </div>
-  <div class="chart-wrap">
-    <p class="chart-desc">Estimated lean (non-fat) mass as a percentage of body weight.</p>
-    <canvas id="chart-leanMassPercent"></canvas>
+    <div class="chart-canvas-box"><canvas id="chart-bodyComp"></canvas></div>
   </div>
 </div>
 
@@ -178,68 +180,100 @@
 
 {% block scripts %}
 <script>
-  const CARDIO_SERIES = {{ cardio_series | tojson }};
-  const CARDIO_LABELS = {
-    restingHr: "Resting HR (bpm)", hrr60s: "HRR60s (bpm)", rmssd: "RMSSD (ms)",
-    sdnn: "SDNN (ms)", drift: "Cardiac drift (bpm/min)", poincareRatio: "Poincaré ratio",
-    afibEpisodes: "AFib episodes", pauses: "Pauses", premature: "Premature beats", uneven: "Uneven beats",
+  // Every metric's display name, unit, and "which direction is good" arrow
+  // (null when there's no single good direction — e.g. Poincaré ratio is an
+  // optimal *range*, not a max/min). Rhythm counters are always red: they're
+  // suspicion counts, not fitness metrics, regardless of the "diagnostic
+  // color" rule applied below.
+  const CARDIO_META = {
+    restingHr:     { name: "Resting HR",     unit: "bpm",      good: "down", color: "#5b9dff" },
+    hrr60s:        { name: "HRR60s",         unit: "bpm",      good: "up",   color: "#3ecf7e" },
+    rmssd:         { name: "RMSSD",          unit: "ms",       good: "up",   color: "#e0b23e" },
+    sdnn:          { name: "SDNN",           unit: "ms",       good: "up",   color: "#c77dff" },
+    drift:         { name: "Cardiac drift",  unit: "bpm/min",  good: "down", color: "#4dd0e1" },
+    poincareRatio: { name: "Poincaré ratio", unit: "",         good: null,   color: "#4dd0e1" },
+    afibEpisodes:  { name: "AFib episodes",  unit: "",         good: "down", color: "#e05a5a" },
+    pauses:        { name: "Pauses",         unit: "",         good: "down", color: "#e05a5a" },
+    premature:     { name: "Premature beats",unit: "",         good: "down", color: "#e05a5a" },
+    uneven:        { name: "Uneven beats",   unit: "",         good: "down", color: "#e05a5a" },
   };
-  const CARDIO_COLORS = {
-    restingHr: "#5b9dff", hrr60s: "#3ecf7e", rmssd: "#e0b23e", sdnn: "#c77dff",
-    drift: "#e05a5a", poincareRatio: "#4dd0e1", afibEpisodes: "#e05a5a",
-    pauses: "#e05a5a", premature: "#e0b23e", uneven: "#e0b23e",
-  };
+  const DIRECTION_ARROW = { up: "↑", down: "↓" };
 
-  for (const key of Object.keys(CARDIO_LABELS)) {
+  function chartHeader(meta) {
+    const arrow = meta.good ? `<span class="chart-direction">${DIRECTION_ARROW[meta.good]}</span>` : "";
+    const unit = meta.unit ? ` (${meta.unit})` : "";
+    return `<div class="chart-header"><span>${meta.name}${unit}</span>${arrow}</div>`;
+  }
+
+  const CARDIO_SERIES = {{ cardio_series | tojson }};
+  for (const [key, meta] of Object.entries(CARDIO_META)) {
+    const wrap = document.getElementById("wrap-chart-" + key);
+    if (!wrap) continue;
+    wrap.insertAdjacentHTML("afterbegin", chartHeader(meta));
+
     const series = CARDIO_SERIES[key] || [];
     lineChart(
       "chart-" + key,
       series.map(b => b.week_start),
-      series.map(b => b.value),
-      CARDIO_LABELS[key],
-      CARDIO_COLORS[key],
+      { label: meta.name, values: series.map(b => b.value), color: meta.color },
       "week"
     );
   }
 
+  document.getElementById("wrap-vo2maxChart").insertAdjacentHTML(
+    "afterbegin",
+    chartHeader({ name: "VO2max", unit: "", good: "up" })
+  );
   lineChart(
     "vo2maxChart",
     {{ vo2max_trend | map(attribute="week_start") | list | tojson }},
-    {{ vo2max_trend | map(attribute="value") | list | tojson }},
-    "VO2max",
-    "#3ecf7e",
+    { label: "VO2max", values: {{ vo2max_trend | map(attribute="value") | list | tojson }}, color: "#3ecf7e" },
     "month"
+  );
+
+  document.getElementById("wrap-weightChart").insertAdjacentHTML(
+    "afterbegin",
+    chartHeader({ name: "Weight", unit: "kg", good: null })
   );
   lineChart(
     "weightChart",
     {{ scale_trend["weightKg"] | map(attribute="week_start") | list | tojson }},
-    {{ scale_trend["weightKg"] | map(attribute="value") | list | tojson }},
-    "Weight (kg)",
-    "#e0b23e",
+    { label: "Weight (kg)", values: {{ scale_trend["weightKg"] | map(attribute="value") | list | tojson }}, color: "#e0b23e" },
     "week"
+  );
+
+  document.getElementById("wrap-chart-bmi").insertAdjacentHTML(
+    "afterbegin",
+    chartHeader({ name: "BMI", unit: "", good: null })
   );
   lineChart(
     "chart-bmi",
     {{ scale_trend["bmi"] | map(attribute="week_start") | list | tojson }},
-    {{ scale_trend["bmi"] | map(attribute="value") | list | tojson }},
-    "BMI",
-    "#c77dff",
+    { label: "BMI", values: {{ scale_trend["bmi"] | map(attribute="value") | list | tojson }}, color: "#c77dff" },
     "week"
   );
+
+  document.getElementById("wrap-chart-bodyComp").insertAdjacentHTML(
+    "afterbegin",
+    chartHeader({ name: "Body fat % / Lean mass %", unit: "", good: null })
+  );
   lineChart(
-    "chart-bodyFatPercent",
+    "chart-bodyComp",
     {{ scale_trend["bodyFatPercent"] | map(attribute="week_start") | list | tojson }},
-    {{ scale_trend["bodyFatPercent"] | map(attribute="value") | list | tojson }},
-    "Body fat %",
-    "#e05a5a",
-    "week"
-  );
-  lineChart(
-    "chart-leanMassPercent",
-    {{ scale_trend["leanMassPercent"] | map(attribute="week_start") | list | tojson }},
-    {{ scale_trend["leanMassPercent"] | map(attribute="value") | list | tojson }},
-    "Lean mass %",
-    "#4dd0e1",
+    [
+      {
+        label: "Body fat %",
+        values: {{ scale_trend["bodyFatPercent"] | map(attribute="value") | list | tojson }},
+        color: "#e05a5a",
+        fill: "start",
+      },
+      {
+        label: "Lean mass %",
+        values: {{ scale_trend["leanMassPercent"] | map(attribute="value") | list | tojson }},
+        color: "#3ecf7e",
+        fill: "end",
+      },
+    ],
     "week"
   );
 </script>
