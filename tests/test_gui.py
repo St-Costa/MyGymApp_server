@@ -192,8 +192,20 @@ def test_dashboard_includes_threshold_reference_lines(app_client) -> None:
     response = app_client.get("/")
     assert response.status_code == 200
     assert "chartjs-plugin-annotation.min.js" in response.text
-    # Non-emoji geometric glyphs, per spec — not ⚠ or similar pictographs.
-    assert "△" in response.text
+    # Non-emoji geometric glyph, per spec — not ⚠ or similar pictographs.
+    # Both severities use the same filled ▲; color (not shape) distinguishes
+    # warning from danger.
     assert "▲" in response.text
-    assert "Bradycardia" in response.text
+    assert "Tachycardia" in response.text
     assert "Cole et al." in response.text
+
+
+def test_dashboard_includes_multi_level_thresholds(app_client) -> None:
+    response = app_client.get("/")
+    assert response.status_code == 200
+    # VO2max's ACSM 6-tier scale.
+    assert "Poor &lt; 25" in response.text or "Poor < 25" in response.text
+    assert "Superior" in response.text
+    # Poincaré ratio's shaded optimal-range band.
+    assert "THRESHOLD_BANDS" in response.text
+    assert "poincareRatio" in response.text

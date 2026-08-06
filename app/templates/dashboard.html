@@ -174,14 +174,20 @@
   // Three triangles in a row (not stacked vertically) — ▲▲▲/▼▼▼, per spec.
   const DIRECTION_ARROW = { up: "▲▲▲", down: "▼▼▼" };
 
-  // Reference-line thresholds shown on each chart. Two kinds of source:
+  // Reference-line thresholds shown on each chart. Three kinds of source:
   //
-  // - restingHr/hrr60s/vo2max/rmssd/sdnn: published clinical/sports-science
-  //   cutoffs for a generic adult (not age/sex-adjusted — this app doesn't
-  //   store either), cited inline. VO2max in particular varies a lot by
-  //   age/sex in the literature; the value here is the low end of the
-  //   commonly-cited "good cardiovascular health" range, not a precise
-  //   percentile for this specific user.
+  // - restingHr/hrr60s/vo2max/sdnn: published multi-level fitness/clinical
+  //   scales for a generic adult (not age/sex-adjusted beyond what's noted
+  //   inline — this app doesn't store sex, and only RMSSD below gets an
+  //   age adjustment). Most boundaries are "info" (a stage marker, not a
+  //   problem); only the lowest tier is "warning"/"danger".
+  // - rmssd: the literature is explicit that there's no official normative
+  //   RMSSD cutoff (unlike the others above) — only age-relative population
+  //   medians. Per user decision, approximated using a fixed assumed birth
+  //   year (2000) and the current date, recomputed each page load — NOT a
+  //   real stored birth date (this app has none), just a stand-in so the
+  //   lines have *some* age-relative basis rather than none. If a real
+  //   profile/birth-year field is ever added, replace ASSUMED_BIRTH_YEAR.
   // - afibEpisodes/pauses/premature/uneven: no published clinical threshold
   //   exists for a per-session count from a consumer single-lead ECG (the
   //   real clinical literature measures PACs etc. over continuous 24h
@@ -190,24 +196,73 @@
   //   counters, which are this app's own product thresholds, not medical
   //   guidance. Framed as such in the label text, not implied to be
   //   clinical rather than app-internal.
+  const ASSUMED_BIRTH_YEAR = 2000;
+  const currentAge = new Date().getUTCFullYear() - ASSUMED_BIRTH_YEAR;
+
+  // Age-relative RMSSD population medians (ms), commonly-cited ranges by
+  // decade. https://www.corahealth.app/blog/hrv-chart-by-age
+  function rmssdThresholdsForAge(age) {
+    const byDecade = age < 30
+      ? { low: 45, mid: 75 }
+      : age < 40
+        ? { low: 40, mid: 56 }
+        : age < 50
+          ? { low: 30, mid: 43 }
+          : age < 60
+            ? { low: 25, mid: 34 }
+            : { low: 20, mid: 31 };
+    return [
+      { value: 16, severity: "danger", label: "Worth attention < 16ms (population)" },
+      { value: byDecade.low, severity: "warning", label: `Below age-${age} median range (population)` },
+      { value: byDecade.mid, severity: "info", label: `Age-${age} median (population)` },
+    ];
+  }
+
   const THRESHOLDS = {
-    // AHA: normal resting HR 60-100 bpm; <60 = bradycardia.
-    // https://www.heart.org/en/health-topics/high-blood-pressure/the-facts-about-high-blood-pressure/all-about-heart-rate-pulse
+    // Resting HR fitness classification (athlete/excellent/good/average/
+    // below-average/poor), generic adult, not age/sex-stratified.
+    // https://www.corahealth.app/tools/resting-heart-rate
     restingHr: [
-      { value: 100, severity: "warning", label: "Tachycardia > 100 (AHA)" },
-      { value: 60, severity: "warning", label: "Bradycardia < 60 (AHA)" },
+      { value: 100, severity: "danger", label: "Tachycardia > 100 (AHA)" },
+      { value: 82, severity: "warning", label: "Below average > 82" },
+      { value: 70, severity: "info", label: "Average 70-81" },
+      { value: 62, severity: "info", label: "Good 62-69" },
+      { value: 50, severity: "info", label: "Excellent 50-61" },
+      { value: 40, severity: "info", label: "Athlete < 50" },
     ],
-    // Cole et al. 1999 / Cleveland Clinic: HRR ≤ 12 bpm after 1 min predicts
-    // higher mortality risk — the standard "abnormal HRR" clinical cutoff.
+    // HRR60s fitness classification. Cole et al. 1999 / Cleveland Clinic:
+    // <=12 bpm predicts higher mortality risk (the one clinical, not just
+    // fitness-scale, cutoff here).
     // https://www.gehealthcare.com/en-us/insights/article/heart-rate-recovery-and-risk-understanding-this-powerful-marker
-    hrr60s: [{ value: 12, severity: "danger", label: "Abnormal HRR ≤ 12 (Cole et al.)" }],
-    // ACSM generic adult "good cardiovascular health" cutoff (low end of the
-    // commonly-cited range; not age/sex-stratified here).
-    vo2max: [{ value: 30, severity: "warning", label: "Below general fitness cutoff (ACSM)" }],
-    // ~30ms is commonly cited as the low end of a normal healthy adult RMSSD.
-    rmssd: [{ value: 20, severity: "warning", label: "Low HRV < 20ms" }],
-    // ~50ms is commonly cited as the normal adult SDNN reference value.
-    sdnn: [{ value: 50, severity: "warning", label: "Below normal SDNN < 50ms" }],
+    // https://marathonhandbook.com/heart-rate-recovery/
+    hrr60s: [
+      { value: 12, severity: "danger", label: "Abnormal HRR ≤ 12 (Cole et al.)" },
+      { value: 20, severity: "warning", label: "Below average < 20" },
+      { value: 30, severity: "info", label: "Average 20-29" },
+      { value: 40, severity: "info", label: "Good 30-39" },
+      { value: 50, severity: "info", label: "Excellent 40-49" },
+    ],
+    // ACSM VO2max classification (generic adult, not age/sex-stratified —
+    // ACSM's real tables are, this is the low end of each commonly-cited
+    // band collapsed to one generic set of boundaries).
+    vo2max: [
+      { value: 25, severity: "danger", label: "Poor < 25" },
+      { value: 30, severity: "warning", label: "Fair 25-29" },
+      { value: 35, severity: "info", label: "Average 30-34" },
+      { value: 40, severity: "info", label: "Good 35-39" },
+      { value: 45, severity: "info", label: "Excellent 40-44" },
+      { value: 50, severity: "info", label: "Superior ≥ 45" },
+    ],
+    rmssd: rmssdThresholdsForAge(currentAge),
+    // SDNN risk classification — published for 24h recordings; applied
+    // here to per-session values as a rough reference only, same caveat
+    // ANALYSIS_SPEC.md already notes for other 24h-vs-per-session metrics.
+    // https://heartratehero.com/SDNN
+    sdnn: [
+      { value: 20, severity: "danger", label: "Very high risk < 20 (24h ref.)" },
+      { value: 50, severity: "warning", label: "High risk < 50 (24h ref.)" },
+      { value: 100, severity: "info", label: "Low risk > 100 (24h ref.)" },
+    ],
     // ANALYSIS_SPEC.md §11.1 rhythm-counter cutoffs (GREEN/YELLOW/RED over a
     // 4-week total) — app-internal product thresholds, not published
     // clinical guidance. Charted here as weekly series, so each cutoff is
@@ -217,6 +272,12 @@
     pauses: [{ value: 0.5, severity: "warning", label: "Any pause (app threshold)" }],
     premature: [{ value: 15, severity: "warning", label: "Elevated, ~4wk/4 (app threshold)" }],
     uneven: [{ value: 25, severity: "warning", label: "Elevated, ~4wk/4 (app threshold)" }],
+  };
+
+  // Shaded background bands. Poincaré ratio's optimal range (SD2/SD1
+  // 1.5-4.5) is ANALYSIS_SPEC.md §11.1's own GREEN cutoff for that metric.
+  const THRESHOLD_BANDS = {
+    poincareRatio: [{ min: 1.5, max: 4.5, color: "#3ecf7e" }],
   };
 
   function chartHeader(meta) {
@@ -237,7 +298,8 @@
       series.map(b => b.week_start),
       { label: meta.name, values: series.map(b => b.value), color: meta.color },
       "week",
-      THRESHOLDS[key]
+      THRESHOLDS[key],
+      THRESHOLD_BANDS[key]
     );
   }
 
