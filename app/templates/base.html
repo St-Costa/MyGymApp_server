@@ -95,12 +95,24 @@
       margin-bottom: 0.5rem;
       font-size: 0.9rem;
     }
+    .chart-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+      gap: 1rem;
+    }
     .chart-wrap {
       background: var(--panel);
       border: 1px solid var(--border);
       border-radius: 10px;
       padding: 1.25rem;
       margin-bottom: 1.5rem;
+      /* Fixed height on the wrapper, not the <canvas>, since Chart.js with
+         responsive:true resizes the canvas to fill its container — sizing
+         only the canvas's height attribute gets overridden and ignored. */
+      height: 320px;
+    }
+    .chart-wrap canvas {
+      max-height: 100%;
     }
     table {
       width: 100%;
@@ -165,6 +177,11 @@
 
     const CHART_OPTIONS = {
       responsive: true,
+      // Without this, Chart.js locks to a 2:1 aspect ratio and ignores the
+      // wrapper's actual height — the real cause of "chart is too flat"
+      // regardless of how tall .chart-wrap is set. false lets the canvas
+      // fill its container's height exactly.
+      maintainAspectRatio: false,
       plugins: { legend: { labels: { color: "#e6e8ec" } } },
       scales: {
         x: { ticks: { color: "#8b93a7" }, grid: { color: "#262b36" } },
