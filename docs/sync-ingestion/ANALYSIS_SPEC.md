@@ -1,5 +1,16 @@
 # MyGymApp server — data analysis logic (port from phone to server)
 
+> **Update (post-`isBodyweight` fix)**: the phone-side app now sends `isBodyweight: true`
+> on `exercise_sets` for genuinely bodyweight work (weight=0 by design — plank, push-ups),
+> distinct from a set that was simply never touched (also weight=0, no `isBodyweight`
+> flag). Bump `PARSER_SCHEMA_VERSION`, add `is_bodyweight` to `exercise_sets`, and update
+> §1 below's tonnage/PR/e1RM logic to treat `weight=0 AND is_bodyweight=True` as valid
+> completed work (tonnage correctly evaluates to 0, but the set is *not* filtered out as
+> incomplete) rather than silently dropping it via a `weight > 0` filter. `reparse.py --all`
+> recovers pre-existing raw files once this lands, since they already have the field if
+> sent after this change — the field was simply never present before it, which parses fine
+> under the existing "missing field defaults to false" tolerance.
+
 ## Context
 
 The MyGymApp Android app currently computes a set of derived metrics phone-side —

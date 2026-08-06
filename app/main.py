@@ -12,11 +12,14 @@ container boundary — see Dockerfile.
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.config import LOGS_DIR
+from app.gui import router as gui_router
 from app.routes import router
 from app.storage import init_db
 
@@ -32,6 +35,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(title="MyGymApp Sync Server", lifespan=lifespan)
 app.include_router(router)
+app.include_router(gui_router)
+app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
 
 
 @app.exception_handler(HTTPException)

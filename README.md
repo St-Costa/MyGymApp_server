@@ -37,6 +37,19 @@ All three POST endpoints share the same request contract: `multipart/form-data` 
 `envelope` JSON part and a `file` Markdown part, `Authorization: Bearer <shared-secret>`,
 and content-hash-based idempotency (same id + same hash → safe no-op `duplicate`).
 
+`GET /v1/analysis/*` (bearer auth, same as above) expose the ported analysis logic —
+cardio trend/alerts, weekly resting-HR/VO2max/scale trends, exercise PRs — as JSON; see
+[docs/sync-ingestion/ANALYSIS_SPEC.md](docs/sync-ingestion/ANALYSIS_SPEC.md).
+
+## Dashboard
+
+A server-rendered dashboard is available at `/` (trends) and `/exercises` (PR lookup),
+same origin as the API, no separate service or build step. Deliberately **not** behind the
+bearer token — this server is only ever reachable via Tailscale Serve on a private tailnet,
+so there's no browser-side auth flow to build for a single-user tool (see
+[app/gui.py](app/gui.py)'s module docstring for the reasoning). Just open
+`https://<your-tailscale-hostname>/` once Tailscale Serve is set up (below).
+
 ## Getting started
 
 ### Prerequisites
@@ -131,12 +144,16 @@ settings**, together with the `SYNC_SHARED_SECRET` you generated above.
 │   └── RUNBOOK.md           # operational playbook (fill in once deployed)
 ├── app/                    # FastAPI application
 │   ├── main.py               # app entrypoint, startup (DB init)
-│   ├── routes.py              # HTTP handlers (GET /health, POST /v1/sessions|readiness|scale-weighins)
-│   ├── ingestion.py            # hash verification, raw write, idempotency (steps 3-7)
-│   ├── parsing.py               # YAML frontmatter parser, shared with reparse.py
-│   ├── storage.py                # SQLite schema + upsert logic
-│   ├── security.py                # bearer-token auth
-│   └── config.py                   # env-driven configuration
+│   ├── routes.py              # API handlers (GET /health, /v1/analysis/*, POST /v1/sessions|readiness|scale-weighins)
+│   ├── gui.py                  # server-rendered dashboard routes (no auth — see module docstring)
+│   ├── templates/                # Jinja2 templates for the dashboard
+│   ├── static/                    # vendored JS (Chart.js) served at /static
+│   ├── analysis.py                 # ported trend/PR analysis logic (ANALYSIS_SPEC.md)
+│   ├── ingestion.py                 # hash verification, raw write, idempotency (steps 3-7)
+│   ├── parsing.py                    # YAML frontmatter parser, shared with reparse.py
+│   ├── storage.py                     # SQLite schema + upsert logic
+│   ├── security.py                     # bearer-token auth
+│   └── config.py                        # env-driven configuration
 ├── reparse.py               # standalone re-parse maintenance script (reuses app/parsing.py)
 ├── tests/                     # test suite
 ├── CLAUDE.md                # instructions for Claude Code and other AI agents

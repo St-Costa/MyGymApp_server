@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}MyGymApp Dashboard{% endblock %}</title>
+  <script src="/static/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #171a21;
+      --border: #262b36;
+      --text: #e6e8ec;
+      --muted: #8b93a7;
+      --accent: #5b9dff;
+      --green: #3ecf7e;
+      --yellow: #e0b23e;
+      --red: #e05a5a;
+      --gray: #4a5063;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+    }
+    nav {
+      display: flex;
+      gap: 1.5rem;
+      padding: 1rem 2rem;
+      border-bottom: 1px solid var(--border);
+      align-items: center;
+    }
+    nav a {
+      color: var(--muted);
+      text-decoration: none;
+      font-weight: 500;
+    }
+    nav a:hover, nav a.active { color: var(--text); }
+    nav .brand { color: var(--text); font-weight: 700; margin-right: auto; }
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 2rem;
+    }
+    h1 { font-size: 1.5rem; margin: 0 0 1.5rem; }
+    h2 { font-size: 1.1rem; margin: 2rem 0 1rem; color: var(--muted); font-weight: 600; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 1rem;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.25rem;
+    }
+    .metric-label {
+      font-size: 0.8rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .metric-value {
+      font-size: 1.6rem;
+      font-weight: 700;
+      margin: 0.25rem 0;
+    }
+    .metric-delta { font-size: 0.85rem; color: var(--muted); }
+    .dot {
+      display: inline-block;
+      width: 0.6rem;
+      height: 0.6rem;
+      border-radius: 50%;
+      margin-right: 0.4rem;
+    }
+    .dot.GREEN { background: var(--green); }
+    .dot.YELLOW { background: var(--yellow); }
+    .dot.RED { background: var(--red); }
+    .dot.GRAY { background: var(--gray); }
+    .alerts {
+      list-style: none;
+      padding: 0;
+      margin: 1rem 0 0;
+    }
+    .alerts li {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--yellow);
+      border-radius: 6px;
+      padding: 0.75rem 1rem;
+      margin-bottom: 0.5rem;
+      font-size: 0.9rem;
+    }
+    .chart-wrap {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    th, td {
+      text-align: left;
+      padding: 0.6rem 1rem;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.9rem;
+    }
+    th { color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: rgba(255,255,255,0.02); }
+    a.row-link { color: var(--text); text-decoration: none; display: block; }
+    .empty { color: var(--muted); font-style: italic; padding: 2rem; text-align: center; }
+    .back-link { color: var(--accent); text-decoration: none; font-size: 0.9rem; }
+  </style>
+</head>
+<body>
+  <nav>
+    <span class="brand">MyGymApp</span>
+    <a href="/">Trends</a>
+    <a href="/exercises">Exercises</a>
+  </nav>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

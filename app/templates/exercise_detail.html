@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block title %}{{ exercise_name }} — MyGymApp{% endblock %}
+{% block content %}
+<p><a class="back-link" href="/exercises">&larr; All exercises</a></p>
+<h1>{{ exercise_name }}</h1>
+
+<h2>All-time tonnage PR</h2>
+{% if all_time_pr %}
+<div class="card">
+  <div class="metric-value">{{ all_time_pr.weight }} kg &times; {{ all_time_pr.reps }}</div>
+  <div class="metric-delta">best single set, reps &times; weight, ever recorded</div>
+</div>
+{% else %}
+<p class="empty">No qualifying set found (needs weight &gt; 0, not excluded from tonnage).</p>
+{% endif %}
+
+<h2>Recent heaviest set (last 30 sessions)</h2>
+<div class="grid">
+  <div class="card">
+    <div class="metric-label">Working sets</div>
+    {% if recent_pr %}
+    <div class="metric-value">{{ recent_pr.weight }} kg &times; {{ recent_pr.reps }}</div>
+    <div class="metric-delta">{{ recent_pr.session_date }}</div>
+    {% else %}
+    <div class="metric-delta">No data</div>
+    {% endif %}
+  </div>
+  <div class="card">
+    <div class="metric-label">Warm-up sets</div>
+    {% if recent_warmup_pr %}
+    <div class="metric-value">{{ recent_warmup_pr.weight }} kg &times; {{ recent_warmup_pr.reps }}</div>
+    <div class="metric-delta">{{ recent_warmup_pr.session_date }}</div>
+    {% else %}
+    <div class="metric-delta">No data</div>
+    {% endif %}
+  </div>
+  <div class="card">
+    <div class="metric-label">Daily sets</div>
+    {% if recent_daily_pr %}
+    <div class="metric-value">{{ recent_daily_pr.weight }} kg &times; {{ recent_daily_pr.reps }}</div>
+    <div class="metric-delta">{{ recent_daily_pr.session_date }}</div>
+    {% else %}
+    <div class="metric-delta">No data</div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

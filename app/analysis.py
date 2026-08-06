@@ -489,6 +489,28 @@ def best_estimated_1rm(sets: list[SetLike]) -> float | None:
 
 
 @dataclass
+class ExerciseSummary:
+    exercise_id: str
+    exercise_name: str | None
+    set_count: int
+
+
+def list_exercises(conn: sqlite3.Connection) -> list[ExerciseSummary]:
+    """Distinct exercises with at least one synced set, most-logged first.
+    Not part of ANALYSIS_SPEC.md — added for the GUI's exercise picker, so a
+    user can find an exercise_id without knowing it in advance."""
+    rows = conn.execute(
+        """
+        SELECT exercise_id, MAX(exercise_name), COUNT(*) as c
+        FROM exercise_sets
+        GROUP BY exercise_id
+        ORDER BY c DESC
+        """
+    ).fetchall()
+    return [ExerciseSummary(exercise_id=r[0], exercise_name=r[1], set_count=r[2]) for r in rows]
+
+
+@dataclass
 class TonnagePR:
     exercise_id: str
     reps: int
