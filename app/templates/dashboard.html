@@ -10,6 +10,42 @@
 </ul>
 {% endif %}
 
+<h2 class="section-title">Readiness</h2>
+<p class="section-desc">
+  Daily HRV-based readiness measurement from the phone (separate from gym sessions) — how
+  recovered you are today, not a fitness trend.
+</p>
+
+{% if readiness %}
+{% if readiness.readiness in ("PEAK", "GOOD") %}
+{% set readiness_dot = "GREEN" %}
+{% elif readiness.readiness == "NORMAL" %}
+{% set readiness_dot = "GRAY" %}
+{% elif readiness.readiness == "LIGHT_DAY" %}
+{% set readiness_dot = "YELLOW" %}
+{% elif readiness.readiness == "DELOAD_RECOMMENDED" %}
+{% set readiness_dot = "RED" %}
+{% else %}
+{% set readiness_dot = "GRAY" %}
+{% endif %}
+<div class="card" id="readiness-card">
+  <div class="metric-label"><span class="dot {{ readiness_dot }}"></span>{{ readiness.readiness }}</div>
+  <div class="metric-value">{{ readiness.measured_at[:10] }}</div>
+  <div class="metric-delta">{{ readiness.recommendation }}</div>
+</div>
+{% else %}
+<p class="empty">No readiness measurements synced yet.</p>
+{% endif %}
+
+<div class="chart-wrap" id="wrap-readinessChart">
+  <p class="chart-desc">
+    ln(RMSSD) — the app's own readiness formula runs on this, not raw RMSSD; higher
+    generally means more recovered, but day-to-day swings matter more than the absolute
+    number.
+  </p>
+  <div class="chart-canvas-box"><canvas id="readinessChart"></canvas></div>
+</div>
+
 <h2 class="section-title">Rhythm &amp; cardiac issues</h2>
 
 <div class="chart-grid">
@@ -59,6 +95,14 @@
     <p class="chart-desc">Higher means better overall heart-rate variability.</p>
     <div class="chart-canvas-box"><canvas id="chart-sdnn"></canvas></div>
   </div>
+  <div class="chart-wrap" id="wrap-chart-pnn50">
+    <p class="chart-desc">
+      % of consecutive beat-to-beat intervals differing by more than 50ms — higher means
+      better parasympathetic (rest-and-digest) activity, and tends to be higher in
+      endurance-trained athletes.
+    </p>
+    <div class="chart-canvas-box"><canvas id="chart-pnn50"></canvas></div>
+  </div>
   <div class="chart-wrap" id="wrap-chart-drift">
     <p class="chart-desc">
       Higher means accumulating fatigue or heat/dehydration within a session.
@@ -107,6 +151,7 @@
     hrr60s:        { name: "HRR60s",                 unit: "bpm",      good: "up",   color: "#3ecf7e" },
     rmssd:         { name: "RMSSD",                  unit: "ms",       good: "up",   color: "#e0b23e" },
     sdnn:          { name: "SDNN",                   unit: "ms",       good: "up",   color: "#c77dff" },
+    pnn50:         { name: "pNN50",                  unit: "%",        good: "up",   color: "#ff9f6b" },
     drift:         { name: "Cardiac drift",          unit: "bpm/min",  good: "down", color: "#4dd0e1" },
     poincareRatio: { name: "Poincaré ratio",         unit: "",         good: null,   color: "#4dd0e1" },
     afibEpisodes:  { name: "AFib episodes",          unit: "",         good: "down", color: "#e05a5a" },
@@ -218,6 +263,15 @@
       { value: 50, severity: "warning", label: "High risk < 50 (24h ref.)" },
       { value: 100, severity: "info", label: "Low risk > 100 (24h ref.)" },
     ],
+    // pNN50 — no formal risk-tier scale like SDNN's, just commonly-cited
+    // population/athlete reference points: general-population normal is
+    // ~5-10%, elite endurance athletes commonly test noticeably higher.
+    // https://heartratehero.com/PNN50
+    pnn50: [
+      { value: 5, severity: "warning", label: "Below general-population normal < 5%" },
+      { value: 10, severity: "info", label: "General-population normal 5-10%" },
+      { value: 24, severity: "info", label: "Elite endurance athlete avg. ~24%" },
+    ],
     // afibEpisodes/pauses/premature/uneven intentionally have no threshold
     // entries — no published clinical cutoff exists for these per-session
     // counts (see comment above THRESHOLDS).
@@ -294,6 +348,24 @@
       "week",
       THRESHOLDS[key],
       THRESHOLD_BANDS[key]
+    );
+  }
+
+  const readinessWrap = document.getElementById("wrap-readinessChart");
+  if (readinessWrap) {
+    readinessWrap.insertAdjacentHTML(
+      "afterbegin",
+      chartHeader({ name: "Readiness (ln RMSSD)", unit: "", good: "up" })
+    );
+    lineChart(
+      "readinessChart",
+      {{ readiness_trend | map(attribute="date") | list | tojson }},
+      {
+        label: "ln(RMSSD)",
+        values: {{ readiness_trend | map(attribute="ln_rmssd") | list | tojson }},
+        color: "#ff9f6b",
+      },
+      "date"
     );
   }
 

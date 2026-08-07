@@ -407,6 +407,7 @@ _CARDIO_SERIES_SPECS = (
     ("vo2max", "vo2max", "median", True),
     ("rmssd", "ecg_session_rmssd", "median", True),
     ("sdnn", "sdnn", "median", True),
+    ("pnn50", "pnn50", "median", True),
     ("drift", "cardiac_drift_bpm_min", "median", False),  # can be negative
     ("poincareRatio", "poincare_ratio", "median", True),
     ("afibEpisodes", "afib_suspicion_episodes", "sum", False),
@@ -436,6 +437,68 @@ def all_cardio_metrics_weekly_trend(
         result[key] = bucket_fn(filtered, window_start=window_start, window_end=today_date)
 
     return result
+
+
+@dataclass
+class LatestReadiness:
+    measured_at: str
+    readiness: str
+    ln_rmssd: float | None
+    resting_hr: int | None
+    vo2max: float | None
+    recommendation: str
+
+
+def latest_readiness(conn: sqlite3.Connection) -> LatestReadiness | None:
+    """Most recent daily readiness measurement (a separate phone-side flow
+    from gym sessions — see docs/sync-ingestion/READINESS_SPEC.md), for a
+    single 'how am I doing today' card rather than a trend."""
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        """SELECT measured_at, readiness, ln_rmssd, resting_hr, vo2max, recommendation
+           FROM readiness_events ORDER BY measured_at DESC LIMIT 1"""
+    ).fetchone()
+    conn.row_factory = None
+    if row is None:
+        return None
+    return LatestReadiness(
+        measured_at=row["measured_at"],
+        readiness=row["readiness"],
+        ln_rmssd=row["ln_rmssd"],
+        resting_hr=row["resting_hr"],
+        vo2max=row["vo2max"],
+        recommendation=row["recommendation"],
+    )
+
+
+@dataclass
+class ReadinessPoint:
+    date: str  # calendar date (measured_at truncated to YYYY-MM-DD)
+    ln_rmssd: float | None
+
+
+def readiness_ln_rmssd_trend(
+    conn: sqlite3.Connection, *, days: int = 30, today: str | None = None
+) -> list[ReadinessPoint]:
+    """Daily ln(RMSSD) from readiness_events over the trailing `days` days —
+    unlike the weekly-bucketed cardio series above, readiness is already a
+    once-a-day measurement, so no further aggregation is needed. One row per
+    calendar day; days with no measurement are simply absent (not a null
+    placeholder), same "sparse dates, not fixed buckets" shape exercise
+    history charts already use."""
+    today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
+    window_start = today_date - timedelta(days=days)
+
+    rows = conn.execute(
+        """SELECT measured_at, ln_rmssd FROM readiness_events
+           WHERE substr(measured_at, 1, 10) >= ? AND substr(measured_at, 1, 10) <= ?
+           ORDER BY measured_at""",
+        (window_start.isoformat(), today_date.isoformat()),
+    ).fetchall()
+
+    return [
+        ReadinessPoint(date=measured_at[:10], ln_rmssd=ln_rmssd) for measured_at, ln_rmssd in rows
+    ]
 
 
 def vo2max_4week_trend(conn: sqlite3.Connection, *, today: str | None = None) -> list[WeeklyBucket]:

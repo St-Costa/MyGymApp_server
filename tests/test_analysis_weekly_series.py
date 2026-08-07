@@ -7,7 +7,12 @@ import sqlite3
 
 import pytest
 
-from app.analysis import all_cardio_metrics_weekly_trend, exercise_history
+from app.analysis import (
+    all_cardio_metrics_weekly_trend,
+    exercise_history,
+    latest_readiness,
+    readiness_ln_rmssd_trend,
+)
 from app.storage import init_db
 
 
@@ -56,6 +61,7 @@ def test_all_cardio_metrics_weekly_trend_covers_every_metric_and_rhythm_counter(
         "vo2max",
         "rmssd",
         "sdnn",
+        "pnn50",
         "drift",
         "poincareRatio",
         "afibEpisodes",
@@ -127,3 +133,69 @@ def test_exercise_history_excludes_exclude_from_tonnage_sets(conn):
 
 def test_exercise_history_no_data_is_empty_list(conn):
     assert exercise_history(conn, "ex-nonexistent", today="2026-08-01") == []
+
+
+def _insert_readiness(conn, event_id, measured_at, **fields):
+    columns = {
+        "id": event_id,
+        "measured_at": measured_at,
+        "content_hash": "sha256:x",
+        "raw_path": f"{event_id}.md",
+        "received_at": "2026-01-01T00:00:00Z",
+        "schema_version": 1,
+        **fields,
+    }
+    cols = ", ".join(columns)
+    placeholders = ", ".join("?" for _ in columns)
+    conn.execute(
+        f"INSERT INTO readiness_events ({cols}) VALUES ({placeholders})", list(columns.values())
+    )
+    conn.commit()
+
+
+def test_latest_readiness_returns_most_recent_event(conn):
+    _insert_readiness(
+        conn,
+        "r1",
+        "2026-08-01T07:00:00",
+        readiness="NORMAL",
+        ln_rmssd=4.0,
+        resting_hr=60,
+        vo2max=45.0,
+        recommendation="Normal day.",
+    )
+    _insert_readiness(
+        conn,
+        "r2",
+        "2026-08-05T07:00:00",
+        readiness="GOOD",
+        ln_rmssd=4.3,
+        resting_hr=58,
+        vo2max=45.5,
+        recommendation="HRV above baseline. Good day to push intensity.",
+    )
+
+    result = latest_readiness(conn)
+    assert result.measured_at == "2026-08-05T07:00:00"
+    assert result.readiness == "GOOD"
+    assert result.recommendation == "HRV above baseline. Good day to push intensity."
+
+
+def test_latest_readiness_no_data_returns_none(conn):
+    assert latest_readiness(conn) is None
+
+
+def test_readiness_ln_rmssd_trend_returns_one_point_per_day(conn):
+    _insert_readiness(conn, "r1", "2026-07-20T07:00:00", ln_rmssd=4.0)
+    _insert_readiness(conn, "r2", "2026-07-25T07:00:00", ln_rmssd=4.2)
+
+    trend = readiness_ln_rmssd_trend(conn, today="2026-08-01")
+    assert [p.date for p in trend] == ["2026-07-20", "2026-07-25"]
+    assert [p.ln_rmssd for p in trend] == [4.0, 4.2]
+
+
+def test_readiness_ln_rmssd_trend_excludes_events_outside_window(conn):
+    _insert_readiness(conn, "r1", "2026-01-01T07:00:00", ln_rmssd=4.0)
+
+    trend = readiness_ln_rmssd_trend(conn, days=30, today="2026-08-01")
+    assert trend == []
