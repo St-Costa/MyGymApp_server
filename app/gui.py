@@ -25,7 +25,7 @@ from app.analysis import (
     exercise_history,
     latest_readiness,
     list_exercises,
-    readiness_ln_rmssd_trend,
+    readiness_daily_trend,
     recent_heaviest_set_pr,
     resting_hr_weekly_trend,
     scale_weekly_trend,
@@ -48,7 +48,7 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
         vo2max = vo2max_4week_trend(conn, today=today)
         scale = scale_weekly_trend(conn, today=today)
         readiness = latest_readiness(conn)
-        readiness_trend = readiness_ln_rmssd_trend(conn, today=today)
+        readiness_trend = readiness_daily_trend(conn, today=today)
 
     return templates.TemplateResponse(
         request,

@@ -38,18 +38,16 @@ def test_dashboard_readiness_section_reflects_latest_event(app_client) -> None:
     assert 'id="readinessChart"' in response.text
 
 
-def test_dashboard_readiness_chart_colors_points_by_state(app_client) -> None:
+def test_dashboard_readiness_chart_plots_state_not_a_number(app_client) -> None:
     post_readiness(app_client)
     response = app_client.get("/")
     assert response.status_code == 200
-    # The chart plots z-score against a 14-day rolling baseline (the same
-    # basis the app's own DELOAD_RECOMMENDED..PEAK classification uses),
-    # colors each point by that day's readiness state, AND shades the whole
-    # chart background with the app's fixed z-score cutoffs — the
-    # state->color map and the 5-state legend must both be present.
+    # The chart plots the phone's own classification directly (an ordinal
+    # category axis: DELOAD_RECOMMENDED..PEAK), not a recalculated number —
+    # the state->color map, the ordered level list, and the 5-state legend
+    # must all be present.
     assert "READINESS_STATE_COLOR" in response.text
-    assert "pointColors" in response.text
-    assert "THRESHOLD_BANDS.readinessZScore" in response.text
+    assert "READINESS_LEVELS" in response.text
     for label in ("Deload recommended", "Light day", "Normal", "Good", "Peak"):
         assert label in response.text
 
