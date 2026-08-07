@@ -2,7 +2,7 @@
 docstring for why), so these tests just check the pages render successfully
 and reflect ingested data, not auth behavior (covered elsewhere)."""
 
-from tests.conftest import post_session
+from tests.conftest import post_readiness, post_session
 
 
 def test_dashboard_renders_with_no_data(app_client) -> None:
@@ -20,6 +20,22 @@ def test_dashboard_reflects_ingested_session(app_client) -> None:
     response = app_client.get("/", params={"today": "2025-04-20"})
     assert response.status_code == 200
     assert "Only 1 session(s) in last 4 weeks" in response.text
+
+
+def test_dashboard_readiness_section_shows_empty_state_with_no_data(app_client) -> None:
+    response = app_client.get("/")
+    assert response.status_code == 200
+    assert "No readiness measurements synced yet" in response.text
+
+
+def test_dashboard_readiness_section_reflects_latest_event(app_client) -> None:
+    # READINESS_MD: readiness=GOOD, lnRmssd=4.30, dated 2026-08-05.
+    post_readiness(app_client)
+    response = app_client.get("/")
+    assert response.status_code == 200
+    assert "GOOD" in response.text
+    assert "HRV above baseline. Good day to push intensity." in response.text
+    assert 'id="readinessChart"' in response.text
 
 
 def test_dashboard_has_dedicated_rhythm_and_cardiac_issues_section(app_client) -> None:
@@ -65,6 +81,7 @@ def test_dashboard_includes_all_weekly_cardio_charts(app_client) -> None:
         "chart-hrr60s",
         "chart-rmssd",
         "chart-sdnn",
+        "chart-pnn50",
         "chart-drift",
         "chart-poincareRatio",
         "chart-afibEpisodes",
