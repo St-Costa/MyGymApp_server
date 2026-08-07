@@ -226,6 +226,14 @@
       // regardless of how tall .chart-wrap is set. false lets the canvas
       // fill its container's height exactly.
       maintainAspectRatio: false,
+      // Disabled rather than left to run: an in-progress entry animation
+      // (points sliding in from a compressed starting layout) was caught
+      // mid-flight by an automated screenshot and looked like a genuine
+      // layout bug — real browsers finish it in well under a second, but
+      // there's no upside to an animation here (this is historical data,
+      // not a live-updating value) and it removes any chance of a chart
+      // reading as "broken" during that window.
+      animation: false,
       // Extra left padding so thresholdGlyphPlugin's glyph (drawn just left
       // of the y-axis's own tick-label column, see below) has room to
       // render instead of being squeezed against — or clipped by — the
