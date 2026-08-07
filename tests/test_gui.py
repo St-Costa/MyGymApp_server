@@ -38,6 +38,19 @@ def test_dashboard_readiness_section_reflects_latest_event(app_client) -> None:
     assert 'id="readinessChart"' in response.text
 
 
+def test_dashboard_readiness_chart_colors_points_by_state(app_client) -> None:
+    post_readiness(app_client)
+    response = app_client.get("/")
+    assert response.status_code == 200
+    # The chart colors each point by that day's readiness state, not a
+    # fixed value threshold — the state->color map and the 5-state legend
+    # must both be present.
+    assert "READINESS_STATE_COLOR" in response.text
+    assert "pointColors" in response.text
+    for label in ("Deload recommended", "Light day", "Normal", "Good", "Peak"):
+        assert label in response.text
+
+
 def test_dashboard_has_dedicated_rhythm_and_cardiac_issues_section(app_client) -> None:
     response = app_client.get("/")
     assert response.status_code == 200

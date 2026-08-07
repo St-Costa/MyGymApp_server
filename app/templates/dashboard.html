@@ -44,6 +44,13 @@
     number.
   </p>
   <div class="chart-canvas-box"><canvas id="readinessChart"></canvas></div>
+  <div class="readiness-legend">
+    <span><span class="dot RED"></span>Deload recommended</span>
+    <span><span class="dot YELLOW"></span>Light day</span>
+    <span><span class="dot GRAY"></span>Normal</span>
+    <span><span class="dot GREEN"></span>Good</span>
+    <span><span class="dot BLUE"></span>Peak</span>
+  </div>
 </div>
 
 <h2 class="section-title">Rhythm &amp; cardiac issues</h2>
@@ -351,12 +358,25 @@
     );
   }
 
+  // Per-day readiness state color, not a fixed threshold — each point is
+  // colored by that day's own DELOAD_RECOMMENDED..PEAK category (see
+  // READINESS_SPEC.md), not by where its ln(RMSSD) value falls on a scale.
+  const READINESS_STATE_COLOR = {
+    DELOAD_RECOMMENDED: "#e05a5a",
+    LIGHT_DAY: "#e0b23e",
+    NORMAL: "#8b93a7",
+    GOOD: "#3ecf7e",
+    PEAK: "#5b9dff",
+    NO_BASELINE: "#4a5063",
+  };
+
   const readinessWrap = document.getElementById("wrap-readinessChart");
   if (readinessWrap) {
     readinessWrap.insertAdjacentHTML(
       "afterbegin",
       chartHeader({ name: "Readiness (ln RMSSD)", unit: "", good: "up" })
     );
+    const readinessStates = {{ readiness_trend | map(attribute="readiness") | list | tojson }};
     lineChart(
       "readinessChart",
       {{ readiness_trend | map(attribute="date") | list | tojson }},
@@ -364,6 +384,7 @@
         label: "ln(RMSSD)",
         values: {{ readiness_trend | map(attribute="ln_rmssd") | list | tojson }},
         color: "#ff9f6b",
+        pointColors: readinessStates.map(s => READINESS_STATE_COLOR[s] || "#ff9f6b"),
       },
       "date"
     );
