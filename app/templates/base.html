@@ -396,7 +396,11 @@
       return { min: min - margin, max: max + margin };
     }
 
-    function lineChart(canvasId, dates, series, labelMode, thresholds, bands) {
+    // yRange: optional explicit {min, max} overriding dataDrivenYRange —
+    // for charts like body composition where the axis has to stay fixed
+    // (0-100%) for an above/below fill split to mean anything, rather than
+    // auto-zooming to wherever the data happens to sit.
+    function lineChart(canvasId, dates, series, labelMode, thresholds, bands, yRange) {
       const el = document.getElementById(canvasId);
       if (!el) return;
       const seriesList = Array.isArray(series) ? series : [series];
@@ -430,7 +434,12 @@
             label: s.label,
             data: s.values,
             borderColor: s.color,
-            backgroundColor: s.fill ? s.color + "26" : s.color + "33",
+            // fill can be a plain value ("start"/"end"/false, the existing
+            // cases) or {above, below} for a single line split into two
+            // fill colors relative to the origin (see the body-composition
+            // chart) — only set backgroundColor for the plain-color case,
+            // since {above, below} carries its own colors instead.
+            backgroundColor: typeof s.fill === "object" ? undefined : s.fill ? s.color + "26" : s.color + "33",
             fill: s.fill || false,
             pointBackgroundColor: "#0f1115",
             pointBorderColor: s.color,
@@ -446,7 +455,7 @@
           plugins: { ...CHART_OPTIONS.plugins, annotation: { annotations } },
           scales: {
             ...CHART_OPTIONS.scales,
-            y: { ...CHART_OPTIONS.scales.y, ...dataDrivenYRange(seriesList) },
+            y: { ...CHART_OPTIONS.scales.y, ...(yRange || dataDrivenYRange(seriesList)) },
           },
           // Consumed by thresholdGlyphPlugin's afterDraw, not a Chart.js
           // built-in option — see that plugin's registration above.
