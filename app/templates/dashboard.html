@@ -333,6 +333,18 @@
   // 1.5-4.5) is ANALYSIS_SPEC.md §11.1's own GREEN cutoff for that metric.
   const THRESHOLD_BANDS = {
     poincareRatio: [{ min: 1.5, max: 4.5, color: "#3ecf7e" }],
+    // Readiness ln(RMSSD) bands — fixed value ranges spanning the whole
+    // chart regardless of where the actual data points fall, one band per
+    // readiness state, in the same DELOAD..PEAK order/colors as
+    // READINESS_STATE_COLOR below. These boundaries are a stand-in scale
+    // (per user decision), not a published ln(RMSSD) clinical cutoff.
+    readiness: [
+      { min: 0, max: 2, color: "#e05a5a" },
+      { min: 2, max: 4, color: "#e0b23e" },
+      { min: 4, max: 6, color: "#8b93a7" },
+      { min: 6, max: 8, color: "#3ecf7e" },
+      { min: 8, max: 10, color: "#5b9dff" },
+    ],
   };
 
   function chartHeader(meta) {
@@ -386,9 +398,11 @@
         values: {{ readiness_trend | map(attribute="ln_rmssd") | list | tojson }},
         color: "#ff9f6b",
         pointColors: readinessColors,
-        columnColors: readinessColors,
       },
-      "date"
+      "date",
+      null,
+      THRESHOLD_BANDS.readiness,
+      { min: 0, max: 10 }
     );
   }
 

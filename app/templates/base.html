@@ -406,28 +406,6 @@
       };
     }
 
-    // One vertical background band per data point, colored by a per-point
-    // category rather than a y-value range (e.g. the readiness chart's
-    // daily DELOAD/LIGHT_DAY/NORMAL/GOOD/PEAK state) — same "box" type as
-    // thresholdBand above, but spanning the full y-range at a given x
-    // (category-scale index ± 0.5) instead of a y-range across all x.
-    // Adjacent same-color points aren't merged; each still gets its own box,
-    // which is harmless (they simply overlap/abut with identical fill).
-    function columnBands(colors) {
-      const annotations = {};
-      colors.forEach((color, i) => {
-        if (!color) return;
-        annotations[`columnBand${i}`] = {
-          type: "box",
-          xMin: i - 0.5,
-          xMax: i + 0.5,
-          backgroundColor: color + "26",
-          borderWidth: 0,
-        };
-      });
-      return annotations;
-    }
-
     // labelMode: "week" -> "W20", "month" -> "Aug", anything else -> raw ISO date.
     // series: a single {label, values, color, fill?} or an array of them for
     // a multi-dataset chart (see the two-series body-composition chart).
@@ -487,12 +465,6 @@
       // are drawn behind the dataset lines by chartjs-plugin-annotation's
       // default drawTime, beforeDatasetsDraw).
       (bands || []).forEach((b, i) => { Object.assign(annotations, thresholdBand(b, i)); });
-      // Per-point vertical background bands (e.g. readiness chart's daily
-      // state) — read off the first series, same series whose pointColors
-      // drives the point/segment coloring.
-      if (seriesList[0] && seriesList[0].columnColors) {
-        Object.assign(annotations, columnBands(seriesList[0].columnColors));
-      }
       (thresholds || []).forEach((t, i) => {
         Object.assign(annotations, thresholdLine(t, i));
       });
