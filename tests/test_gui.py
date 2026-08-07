@@ -42,14 +42,14 @@ def test_dashboard_readiness_chart_colors_points_by_state(app_client) -> None:
     post_readiness(app_client)
     response = app_client.get("/")
     assert response.status_code == 200
-    # The chart colors each point by that day's readiness state, AND shades
-    # the whole chart background with fixed horizontal bands (one per
-    # state, spanning the full ln(RMSSD) range regardless of where data
-    # points fall) — the state->color map and the 5-state legend must both
-    # be present.
+    # The chart plots z-score against a 14-day rolling baseline (the same
+    # basis the app's own DELOAD_RECOMMENDED..PEAK classification uses),
+    # colors each point by that day's readiness state, AND shades the whole
+    # chart background with the app's fixed z-score cutoffs — the
+    # state->color map and the 5-state legend must both be present.
     assert "READINESS_STATE_COLOR" in response.text
     assert "pointColors" in response.text
-    assert "THRESHOLD_BANDS.readiness" in response.text
+    assert "THRESHOLD_BANDS.readinessZScore" in response.text
     for label in ("Deload recommended", "Light day", "Normal", "Good", "Peak"):
         assert label in response.text
 
