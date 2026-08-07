@@ -3,19 +3,6 @@
 {% block content %}
 <h1>Cardio trend — last 4 weeks (as of {{ cardio.window_end }})</h1>
 
-<div class="grid">
-  {% for key, m in cardio.metrics.items() %}
-  <div class="card">
-    <div class="metric-label"><span class="dot {{ m.semaphore }}"></span>{{ key }}</div>
-    <div class="metric-value">{{ "%.1f"|format(m.current) }}</div>
-    <div class="metric-delta">
-      {{ m.direction }}
-      {% if m.baseline_avg %} · baseline {{ "%.1f"|format(m.baseline_avg) }}{% endif %}
-    </div>
-  </div>
-  {% endfor %}
-</div>
-
 {% if cardio.alerts %}
 <h3>Alerts</h3>
 <p class="section-desc">
@@ -36,26 +23,6 @@
   medical diagnosis — persistent or rising counts are worth mentioning to a doctor, not a
   cause for alarm on their own.
 </p>
-
-<h3>Last 4 weeks</h3>
-<div class="grid">
-  <div class="card">
-    <div class="metric-label"><span class="dot {{ cardio.rhythm.afib_semaphore }}"></span>AFib episodes</div>
-    <div class="metric-value">{{ cardio.rhythm.afib_episodes }}</div>
-  </div>
-  <div class="card">
-    <div class="metric-label"><span class="dot {{ cardio.rhythm.pauses_semaphore }}"></span>Pauses</div>
-    <div class="metric-value">{{ cardio.rhythm.pauses }}</div>
-  </div>
-  <div class="card">
-    <div class="metric-label"><span class="dot {{ cardio.rhythm.premature_semaphore }}"></span>Premature beats</div>
-    <div class="metric-value">{{ cardio.rhythm.premature }}</div>
-  </div>
-  <div class="card">
-    <div class="metric-label"><span class="dot {{ cardio.rhythm.uneven_semaphore }}"></span>Uneven beats</div>
-    <div class="metric-value">{{ cardio.rhythm.uneven }}</div>
-  </div>
-</div>
 
 <div class="chart-grid">
   <div class="chart-wrap" id="wrap-chart-afibEpisodes">
