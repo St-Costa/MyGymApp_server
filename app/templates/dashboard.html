@@ -39,17 +39,17 @@
 
 <div class="chart-wrap" id="wrap-readinessChart">
   <p class="chart-desc">
-    ln(RMSSD) — the app's own readiness formula runs on this, not raw RMSSD; higher
-    generally means more recovered, but day-to-day swings matter more than the absolute
-    number.
+    How many standard deviations today's ln(RMSSD) is from your own 14-day rolling
+    baseline — the same z-score the app's DELOAD/LIGHT DAY/NORMAL/GOOD/PEAK
+    classification is based on, not a fixed HRV value.
   </p>
   <div class="chart-canvas-box"><canvas id="readinessChart"></canvas></div>
   <div class="readiness-legend">
-    <span><span class="dot RED"></span>Deload recommended</span>
-    <span><span class="dot YELLOW"></span>Light day</span>
-    <span><span class="dot GRAY"></span>Normal</span>
-    <span><span class="dot GREEN"></span>Good</span>
-    <span><span class="dot BLUE"></span>Peak</span>
+    <span><span class="dot RED"></span>Deload recommended (z &lt; -1.5)</span>
+    <span><span class="dot YELLOW"></span>Light day (-1.5 to -1.0)</span>
+    <span><span class="dot GRAY"></span>Normal (-1.0 to 1.0)</span>
+    <span><span class="dot GREEN"></span>Good (1.0 to 1.5)</span>
+    <span><span class="dot PURPLE"></span>Peak (z &gt; 1.5)</span>
   </div>
 </div>
 
@@ -333,17 +333,20 @@
   // 1.5-4.5) is ANALYSIS_SPEC.md §11.1's own GREEN cutoff for that metric.
   const THRESHOLD_BANDS = {
     poincareRatio: [{ min: 1.5, max: 4.5, color: "#3ecf7e" }],
-    // Readiness ln(RMSSD) bands — fixed value ranges spanning the whole
-    // chart regardless of where the actual data points fall, one band per
-    // readiness state, in the same DELOAD..PEAK order/colors as
-    // READINESS_STATE_COLOR below. These boundaries are a stand-in scale
-    // (per user decision), not a published ln(RMSSD) clinical cutoff.
-    readiness: [
-      { min: 0, max: 2, color: "#e05a5a" },
-      { min: 2, max: 4, color: "#e0b23e" },
-      { min: 4, max: 6, color: "#8b93a7" },
-      { min: 6, max: 8, color: "#3ecf7e" },
-      { min: 8, max: 10, color: "#5b9dff" },
+    // Readiness z-score bands — the app's own DELOAD_RECOMMENDED..PEAK
+    // classification cutoffs, applied to (ln_rmssd - 14-day rolling
+    // baseline mean) / stdev (see readiness_ln_rmssd_trend's z_score,
+    // computed server-side to mirror the phone app's own formula — not a
+    // fixed ln(RMSSD) value, since the baseline itself moves over time).
+    // Source: MyGymApp Android repo, implementation-guide.md:736-744
+    // (Plews et al. 2013 — LnRMSSD > 1SD below baseline indicates
+    // parasympathetic suppression).
+    readinessZScore: [
+      { min: -4, max: -1.5, color: "#e05a5a" },
+      { min: -1.5, max: -1.0, color: "#e0b23e" },
+      { min: -1.0, max: 1.0, color: "#8b93a7" },
+      { min: 1.0, max: 1.5, color: "#3ecf7e" },
+      { min: 1.5, max: 4, color: "#c77dff" },
     ],
   };
 
@@ -378,7 +381,7 @@
     LIGHT_DAY: "#e0b23e",
     NORMAL: "#8b93a7",
     GOOD: "#3ecf7e",
-    PEAK: "#5b9dff",
+    PEAK: "#c77dff",
     NO_BASELINE: "#4a5063",
   };
 
@@ -386,7 +389,7 @@
   if (readinessWrap) {
     readinessWrap.insertAdjacentHTML(
       "afterbegin",
-      chartHeader({ name: "Readiness (ln RMSSD)", unit: "", good: "up" })
+      chartHeader({ name: "Readiness (HRV z-score vs. 14-day baseline)", unit: "", good: "up" })
     );
     const readinessStates = {{ readiness_trend | map(attribute="readiness") | list | tojson }};
     const readinessColors = readinessStates.map(s => READINESS_STATE_COLOR[s] || "#ff9f6b");
@@ -394,15 +397,15 @@
       "readinessChart",
       {{ readiness_trend | map(attribute="date") | list | tojson }},
       {
-        label: "ln(RMSSD)",
-        values: {{ readiness_trend | map(attribute="ln_rmssd") | list | tojson }},
+        label: "z-score",
+        values: {{ readiness_trend | map(attribute="z_score") | list | tojson }},
         color: "#ff9f6b",
         pointColors: readinessColors,
       },
       "date",
       null,
-      THRESHOLD_BANDS.readiness,
-      { min: 0, max: 10 }
+      THRESHOLD_BANDS.readinessZScore,
+      { min: -4, max: 4 }
     );
   }
 
