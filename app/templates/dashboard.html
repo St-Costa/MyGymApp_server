@@ -233,18 +233,9 @@
       { value: 0.5, severity: "warning", label: "Elevated 0.5-1.0 (app threshold)" },
       { value: -0.5, severity: "info", label: "Low/stable < 0.5 (app threshold)" },
     ],
-    // Poincaré SD2/SD1 ratio — same caveat as drift above: no published
-    // clinical scale for this specific ratio, only general "typical in
-    // healthy adults" ranges cited by HRV vendors. Same 3-tier structure as
-    // the shaded band below, reusing ANALYSIS_SPEC.md §11.1's own
-    // GREEN/RED cutoffs (app-internal, not medical guidance).
-    poincareRatio: [
-      { value: 6.0, severity: "danger", label: "Out of typical range > 6.0 (app threshold)" },
-      { value: 4.5, severity: "warning", label: "Borderline 4.5-6.0 (app threshold)" },
-      { value: 1.5, severity: "info", label: "Typical range 1.5-4.5 (app threshold)" },
-      { value: 1.0, severity: "warning", label: "Borderline 1.0-1.5 (app threshold)" },
-      { value: 0, severity: "danger", label: "Out of typical range < 1.0 (app threshold)" },
-    ],
+    // poincareRatio intentionally has no threshold-line entries — no
+    // published clinical scale exists for this ratio, only the shaded
+    // optimal-range band below (THRESHOLD_BANDS), which is enough.
     // CDC/WHO adult BMI classification (Western population thresholds —
     // WHO's Asian-population table uses lower cutoffs, not used here since
     // this app has no way to know which applies).
