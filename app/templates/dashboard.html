@@ -1,14 +1,8 @@
 {% extends "base.html" %}
 {% block title %}Trends — MyGymApp{% endblock %}
 {% block content %}
-<h1>Cardio trend — last 4 weeks (as of {{ cardio.window_end }})</h1>
-
 {% if cardio.alerts %}
-<h3>Alerts</h3>
-<p class="section-desc">
-  Automatically generated call-outs when a rhythm counter or recovery metric crosses a
-  threshold worth noticing — not a diagnosis, just a flag to pay attention.
-</p>
+<h1>Alerts</h1>
 <ul class="alerts">
   {% for alert in cardio.alerts %}
   <li>{{ alert }}</li>
@@ -17,12 +11,6 @@
 {% endif %}
 
 <h2 class="section-title">Rhythm &amp; cardiac issues</h2>
-<p class="section-desc">
-  Arrhythmia markers detected by the phone's offline ECG analysis of each session's Polar
-  H10 recording. These are suspicion counts from a consumer-grade single-lead signal, not a
-  medical diagnosis — persistent or rising counts are worth mentioning to a doctor, not a
-  cause for alarm on their own.
-</p>
 
 <div class="chart-grid">
   <div class="chart-wrap" id="wrap-chart-afibEpisodes">

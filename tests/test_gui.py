@@ -9,7 +9,7 @@ def test_dashboard_renders_with_no_data(app_client) -> None:
     response = app_client.get("/")
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
-    assert "Cardio trend" in response.text
+    assert "<h1>Alerts</h1>" in response.text
 
 
 def test_dashboard_reflects_ingested_session(app_client) -> None:
