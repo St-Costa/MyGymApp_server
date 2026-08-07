@@ -186,12 +186,15 @@ def test_latest_readiness_no_data_returns_none(conn):
 
 
 def test_readiness_ln_rmssd_trend_returns_one_point_per_day(conn):
-    _insert_readiness(conn, "r1", "2026-07-20T07:00:00", ln_rmssd=4.0)
-    _insert_readiness(conn, "r2", "2026-07-25T07:00:00", ln_rmssd=4.2)
+    _insert_readiness(conn, "r1", "2026-07-20T07:00:00", ln_rmssd=4.0, readiness="NORMAL")
+    _insert_readiness(conn, "r2", "2026-07-25T07:00:00", ln_rmssd=4.2, readiness="GOOD")
 
     trend = readiness_ln_rmssd_trend(conn, today="2026-08-01")
     assert [p.date for p in trend] == ["2026-07-20", "2026-07-25"]
     assert [p.ln_rmssd for p in trend] == [4.0, 4.2]
+    # Each point carries its own state, not just the raw ln(RMSSD) number —
+    # the dashboard chart colors points by this, not a fixed value cutoff.
+    assert [p.readiness for p in trend] == ["NORMAL", "GOOD"]
 
 
 def test_readiness_ln_rmssd_trend_excludes_events_outside_window(conn):

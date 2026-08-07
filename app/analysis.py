@@ -475,6 +475,7 @@ def latest_readiness(conn: sqlite3.Connection) -> LatestReadiness | None:
 class ReadinessPoint:
     date: str  # calendar date (measured_at truncated to YYYY-MM-DD)
     ln_rmssd: float | None
+    readiness: str | None  # DELOAD_RECOMMENDED|LIGHT_DAY|NORMAL|GOOD|PEAK|NO_BASELINE
 
 
 def readiness_ln_rmssd_trend(
@@ -485,19 +486,22 @@ def readiness_ln_rmssd_trend(
     once-a-day measurement, so no further aggregation is needed. One row per
     calendar day; days with no measurement are simply absent (not a null
     placeholder), same "sparse dates, not fixed buckets" shape exercise
-    history charts already use."""
+    history charts already use. Each point carries its own readiness state
+    too, so the chart can color-code by state rather than just plot the raw
+    number."""
     today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
     window_start = today_date - timedelta(days=days)
 
     rows = conn.execute(
-        """SELECT measured_at, ln_rmssd FROM readiness_events
+        """SELECT measured_at, ln_rmssd, readiness FROM readiness_events
            WHERE substr(measured_at, 1, 10) >= ? AND substr(measured_at, 1, 10) <= ?
            ORDER BY measured_at""",
         (window_start.isoformat(), today_date.isoformat()),
     ).fetchall()
 
     return [
-        ReadinessPoint(date=measured_at[:10], ln_rmssd=ln_rmssd) for measured_at, ln_rmssd in rows
+        ReadinessPoint(date=measured_at[:10], ln_rmssd=ln_rmssd, readiness=readiness)
+        for measured_at, ln_rmssd, readiness in rows
     ]
 
 

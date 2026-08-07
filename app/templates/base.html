@@ -98,6 +98,15 @@
     .dot.YELLOW { background: var(--yellow); }
     .dot.RED { background: var(--red); }
     .dot.GRAY { background: var(--gray); }
+    .dot.BLUE { background: var(--accent); }
+    .readiness-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.25rem 1.25rem;
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin: 0.75rem 0 0;
+    }
     .alerts {
       list-style: none;
       padding: 0;
@@ -471,11 +480,21 @@
         // split-fill approach).
         backgroundColor: s.fillColor || (s.fill ? s.color + "26" : s.color + "33"),
         fill: s.fill || false,
+        // pointColors: optional array parallel to s.values, one color per
+        // point — overrides the single s.color for both the point and the
+        // line segment leading into it (e.g. readiness state per day isn't
+        // a single line color, it's a per-point category). Falls back to
+        // the plain single-color line when absent.
         pointBackgroundColor: s.hidden_line ? "transparent" : "#0f1115",
-        pointBorderColor: s.hidden_line ? "transparent" : s.color,
+        pointBorderColor: s.hidden_line
+          ? "transparent"
+          : (s.pointColors || s.values.map(() => s.color)),
         pointBorderWidth: 2,
         pointRadius: s.hidden_line ? 0 : POINT_RADIUS,
         pointHoverRadius: s.hidden_line ? 0 : POINT_HOVER_RADIUS,
+        segment: s.pointColors
+          ? { borderColor: ctx => s.pointColors[ctx.p1DataIndex] || s.color }
+          : undefined,
         spanGaps: true,
         tension: 0.25,
       }));
