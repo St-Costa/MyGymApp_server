@@ -332,24 +332,53 @@
     "afterbegin",
     chartHeader({ name: "Body fat % / Lean mass %", unit: "", good: null })
   );
-  // Single body-fat% line splitting the chart in two: green above it (the
-  // lean-mass share) and red below it (the fat share) — not two separate
-  // curves anymore. Fixed 0-100% y-axis (yRange, bypassing the usual
-  // data-driven centering) so those two fill colors represent the actual
-  // proportions rather than an arbitrarily zoomed-in slice.
-  lineChart(
-    "chart-bodyComp",
-    {{ scale_trend["bodyFatPercent"] | map(attribute="week_start") | list | tojson }},
-    {
-      label: "Body fat %",
-      values: {{ scale_trend["bodyFatPercent"] | map(attribute="value") | list | tojson }},
-      color: "#8b93a7",
-      fill: { target: "origin", above: "#3ecf7e40", below: "#e05a5a40" },
-    },
-    "week",
-    null,
-    null,
-    { min: 0, max: 100 }
-  );
+  // Single body-fat% line splitting the chart in two: red below it (the
+  // fat share, down to 0%) and green above it (the lean-mass share, up to
+  // 100%) — not two separate curves anymore. Fixed 0-100% y-axis (yRange,
+  // bypassing the usual data-driven centering) so those two fill colors
+  // represent the actual proportions rather than an arbitrarily zoomed-in
+  // slice.
+  //
+  // Chart.js's fill: {target: 'origin', above, below} does NOT do this —
+  // it fills a single region (line-to-origin) and picks one of the two
+  // colors depending on whether the value is above/below zero, not "fill
+  // both sides of the line to the chart's own top/bottom edges". Achieving
+  // that needs two overlapping datasets sharing the same line: one filled
+  // down to the axis minimum (red), one filled up to the axis maximum
+  // (green) — verified visually, not just by reasoning about the API,
+  // after the single-dataset version rendered green-only-below in
+  // practice.
+  {
+    const bfValues = {{ scale_trend["bodyFatPercent"] | map(attribute="value") | list | tojson }};
+    const bfDates = {{ scale_trend["bodyFatPercent"] | map(attribute="week_start") | list | tojson }};
+    lineChart(
+      "chart-bodyComp",
+      bfDates,
+      [
+        {
+          label: "Body fat %",
+          values: bfValues,
+          color: "#8b93a7",
+          fill: "start", // down to the axis minimum (0) — red
+          fillColor: "#e05a5a40",
+        },
+        {
+          // hidden_line suppresses this dataset's own line/points — it
+          // exists only to fill upward; the one visible line is the first
+          // dataset's.
+          label: "Lean mass % (fill only)",
+          values: bfValues,
+          color: "#3ecf7e",
+          fill: "end", // up to the axis maximum (100) — green
+          fillColor: "#3ecf7e40",
+          hidden_line: true,
+        },
+      ],
+      "week",
+      null,
+      null,
+      { min: 0, max: 100 }
+    );
+  }
 </script>
 {% endblock %}
