@@ -292,6 +292,21 @@
     // assumed birth year. Replace ASSUMED_HEIGHT_M if a real profile field
     // is ever added; these are NOT this user's actual measurements.
     weightKg: weightThresholdsFromBmi(),
+    // ACE (American Council on Exercise) body fat % classification — men's
+    // table (Essential/Athletes/Fitness/Average/Obese cutoffs are very
+    // different for women, e.g. 18% is "average" for a man but "athletic"
+    // for a woman; this app stores no sex, so unlike BMI's smaller
+    // cross-population gap, picking a table here is a real assumption, not
+    // a minor rounding choice — men's table used per user decision, NOT
+    // necessarily this user's actual classification).
+    // https://www.acefitness.org/about-ace/press-room/in-the-news/8602/
+    bodyFatPercent: [
+      { value: 25, severity: "danger", label: "Obese ≥ 25% (ACE, men's table)" },
+      { value: 18, severity: "warning", label: "Average 18-24% (ACE, men's table)" },
+      { value: 14, severity: "info", label: "Fitness 14-17% (ACE, men's table)" },
+      { value: 6, severity: "info", label: "Athletes 6-13% (ACE, men's table)" },
+      { value: 2, severity: "info", label: "Essential fat 2-5% (ACE, men's table)" },
+    ],
   };
 
   // Shaded background bands. Poincaré ratio's optimal range (SD2/SD1
@@ -406,7 +421,7 @@
         },
       ],
       "week",
-      null,
+      THRESHOLDS.bodyFatPercent,
       null,
       { min: 0, max: 100 }
     );
