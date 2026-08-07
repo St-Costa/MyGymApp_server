@@ -39,17 +39,17 @@
 
 <div class="chart-wrap" id="wrap-readinessChart">
   <p class="chart-desc">
-    How many standard deviations today's ln(RMSSD) is from your own 14-day rolling
-    baseline — the same z-score the app's DELOAD/LIGHT DAY/NORMAL/GOOD/PEAK
-    classification is based on, not a fixed HRV value.
+    Daily readiness state exactly as the phone classified it, worst to best — the phone
+    computes this from a rolling baseline the server doesn't have access to, so this is
+    not a recalculation.
   </p>
   <div class="chart-canvas-box"><canvas id="readinessChart"></canvas></div>
   <div class="readiness-legend">
-    <span><span class="dot RED"></span>Deload recommended (z &lt; -1.5)</span>
-    <span><span class="dot YELLOW"></span>Light day (-1.5 to -1.0)</span>
-    <span><span class="dot GRAY"></span>Normal (-1.0 to 1.0)</span>
-    <span><span class="dot GREEN"></span>Good (1.0 to 1.5)</span>
-    <span><span class="dot PURPLE"></span>Peak (z &gt; 1.5)</span>
+    <span><span class="dot RED"></span>Deload recommended</span>
+    <span><span class="dot YELLOW"></span>Light day</span>
+    <span><span class="dot GRAY"></span>Normal</span>
+    <span><span class="dot GREEN"></span>Good</span>
+    <span><span class="dot PURPLE"></span>Peak</span>
   </div>
 </div>
 
@@ -333,21 +333,6 @@
   // 1.5-4.5) is ANALYSIS_SPEC.md §11.1's own GREEN cutoff for that metric.
   const THRESHOLD_BANDS = {
     poincareRatio: [{ min: 1.5, max: 4.5, color: "#3ecf7e" }],
-    // Readiness z-score bands — the app's own DELOAD_RECOMMENDED..PEAK
-    // classification cutoffs, applied to (ln_rmssd - 14-day rolling
-    // baseline mean) / stdev (see readiness_ln_rmssd_trend's z_score,
-    // computed server-side to mirror the phone app's own formula — not a
-    // fixed ln(RMSSD) value, since the baseline itself moves over time).
-    // Source: MyGymApp Android repo, implementation-guide.md:736-744
-    // (Plews et al. 2013 — LnRMSSD > 1SD below baseline indicates
-    // parasympathetic suppression).
-    readinessZScore: [
-      { min: -4, max: -1.5, color: "#e05a5a" },
-      { min: -1.5, max: -1.0, color: "#e0b23e" },
-      { min: -1.0, max: 1.0, color: "#8b93a7" },
-      { min: 1.0, max: 1.5, color: "#3ecf7e" },
-      { min: 1.5, max: 4, color: "#c77dff" },
-    ],
   };
 
   function chartHeader(meta) {
@@ -385,28 +370,92 @@
     NO_BASELINE: "#4a5063",
   };
 
+  // Readiness states in worst-to-best order — this is what the y-axis
+  // plots, as an ordinal category scale (0..4), not a number. The phone
+  // sends this classification as-is (readiness_events.readiness); the
+  // server has no access to the rolling baseline/RR history the phone used
+  // to compute it, so this chart shows exactly what the phone decided, not
+  // a server-side re-derivation.
+  const READINESS_LEVELS = ["DELOAD_RECOMMENDED", "LIGHT_DAY", "NORMAL", "GOOD", "PEAK"];
+
   const readinessWrap = document.getElementById("wrap-readinessChart");
   if (readinessWrap) {
     readinessWrap.insertAdjacentHTML(
       "afterbegin",
-      chartHeader({ name: "Readiness (HRV z-score vs. 14-day baseline)", unit: "", good: "up" })
+      chartHeader({ name: "Readiness", unit: "", good: "up" })
     );
-    const readinessStates = {{ readiness_trend | map(attribute="readiness") | list | tojson }};
-    const readinessColors = readinessStates.map(s => READINESS_STATE_COLOR[s] || "#ff9f6b");
-    lineChart(
-      "readinessChart",
-      {{ readiness_trend | map(attribute="date") | list | tojson }},
-      {
-        label: "z-score",
-        values: {{ readiness_trend | map(attribute="z_score") | list | tojson }},
-        color: "#ff9f6b",
-        pointColors: readinessColors,
-      },
-      "date",
-      null,
-      THRESHOLD_BANDS.readinessZScore,
-      { min: -4, max: 4 }
-    );
+    const dates = {{ readiness_trend | map(attribute="date") | list | tojson }};
+    const states = {{ readiness_trend | map(attribute="readiness") | list | tojson }};
+    const el = document.getElementById("readinessChart");
+    const known = states.some(s => READINESS_LEVELS.includes(s));
+    if (!el) {
+      // no-op: element missing
+    } else if (!known) {
+      el.replaceWith(Object.assign(document.createElement("div"), {
+        className: "chart-no-data",
+        textContent: "No data yet",
+      }));
+    } else {
+      const levelIndex = states.map(s => {
+        const i = READINESS_LEVELS.indexOf(s);
+        return i === -1 ? null : i;
+      });
+      const pointColors = states.map(s => READINESS_STATE_COLOR[s] || "#8b93a7");
+      const bandAnnotations = {};
+      READINESS_LEVELS.forEach((level, i) => {
+        bandAnnotations[`readinessBand${i}`] = {
+          type: "box",
+          yMin: i - 0.5,
+          yMax: i + 0.5,
+          backgroundColor: READINESS_STATE_COLOR[level] + "26",
+          borderWidth: 0,
+        };
+      });
+      new Chart(el, {
+        type: "line",
+        data: {
+          labels: formatLabels(dates, "date"),
+          datasets: [{
+            data: levelIndex,
+            borderColor: "#8b93a7",
+            pointBackgroundColor: "#0f1115",
+            pointBorderColor: pointColors,
+            pointBorderWidth: 2,
+            pointRadius: POINT_RADIUS,
+            pointHoverRadius: POINT_HOVER_RADIUS,
+            segment: { borderColor: ctx => pointColors[ctx.p1DataIndex] || "#8b93a7" },
+            spanGaps: true,
+            tension: 0,
+          }],
+        },
+        options: {
+          ...CHART_OPTIONS,
+          plugins: { ...CHART_OPTIONS.plugins, annotation: { annotations: bandAnnotations } },
+          scales: {
+            ...CHART_OPTIONS.scales,
+            y: {
+              ...CHART_OPTIONS.scales.y,
+              min: -0.5,
+              max: 4.5,
+              ticks: {
+                ...CHART_OPTIONS.scales.y.ticks,
+                // Chart.js's default "nice number" tick spacing doesn't
+                // land on the integer level indices (0..4) that
+                // READINESS_LEVELS is keyed by — force exactly those 5
+                // ticks so every label actually resolves to a level name,
+                // not a blank string from a fractional in-between tick.
+                stepSize: 1,
+                autoSkip: false,
+                callback: v => READINESS_LEVELS[v] ?? "",
+              },
+              afterBuildTicks: axis => {
+                axis.ticks = READINESS_LEVELS.map((_, i) => ({ value: i }));
+              },
+            },
+          },
+        },
+      });
+    }
   }
 
   document.getElementById("wrap-vo2maxChart").insertAdjacentHTML(

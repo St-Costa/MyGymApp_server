@@ -11,7 +11,7 @@ from app.analysis import (
     all_cardio_metrics_weekly_trend,
     exercise_history,
     latest_readiness,
-    readiness_ln_rmssd_trend,
+    readiness_daily_trend,
 )
 from app.storage import init_db
 
@@ -185,46 +185,20 @@ def test_latest_readiness_no_data_returns_none(conn):
     assert latest_readiness(conn) is None
 
 
-def test_readiness_ln_rmssd_trend_returns_one_point_per_day(conn):
-    _insert_readiness(conn, "r1", "2026-07-20T07:00:00", ln_rmssd=4.0, readiness="NORMAL")
-    _insert_readiness(conn, "r2", "2026-07-25T07:00:00", ln_rmssd=4.2, readiness="GOOD")
+def test_readiness_daily_trend_returns_one_point_per_day(conn):
+    _insert_readiness(conn, "r1", "2026-07-20T07:00:00", readiness="NORMAL")
+    _insert_readiness(conn, "r2", "2026-07-25T07:00:00", readiness="GOOD")
 
-    trend = readiness_ln_rmssd_trend(conn, today="2026-08-01")
+    trend = readiness_daily_trend(conn, today="2026-08-01")
     assert [p.date for p in trend] == ["2026-07-20", "2026-07-25"]
-    assert [p.ln_rmssd for p in trend] == [4.0, 4.2]
-    # Each point carries its own state, not just the raw ln(RMSSD) number —
-    # the dashboard chart colors points by this, not a fixed value cutoff.
+    # Plots exactly the phone's own classification — no server-side
+    # recalculation (the phone doesn't send the rolling-baseline history
+    # needed to reproduce its z-score formula).
     assert [p.readiness for p in trend] == ["NORMAL", "GOOD"]
 
 
-def test_readiness_ln_rmssd_trend_excludes_events_outside_window(conn):
-    _insert_readiness(conn, "r1", "2026-01-01T07:00:00", ln_rmssd=4.0)
+def test_readiness_daily_trend_excludes_events_outside_window(conn):
+    _insert_readiness(conn, "r1", "2026-01-01T07:00:00", readiness="NORMAL")
 
-    trend = readiness_ln_rmssd_trend(conn, days=30, today="2026-08-01")
+    trend = readiness_daily_trend(conn, days=30, today="2026-08-01")
     assert trend == []
-
-
-def test_readiness_ln_rmssd_trend_z_score_none_without_enough_baseline(conn):
-    # A single prior point isn't enough to compute a stdev from (needs >=2).
-    _insert_readiness(conn, "r1", "2026-07-25T07:00:00", ln_rmssd=4.0)
-    _insert_readiness(conn, "r2", "2026-07-26T07:00:00", ln_rmssd=4.2)
-
-    trend = readiness_ln_rmssd_trend(conn, today="2026-08-01")
-    assert trend[0].z_score is None
-    assert trend[1].z_score is None
-
-
-def test_readiness_ln_rmssd_trend_z_score_matches_app_classification(conn):
-    # 14 baseline days oscillating around mean=4.0 (nonzero stdev, so the
-    # z-score is well-defined), then a day clearly above baseline — mirrors
-    # the app's own rolling-baseline z-score formula (Plews et al. 2013),
-    # not a fixed ln(RMSSD) cutoff.
-    for day in range(1, 15):
-        wobble = 0.1 if day % 2 == 0 else -0.1
-        _insert_readiness(conn, f"base{day}", f"2026-07-{day:02d}T07:00:00", ln_rmssd=4.0 + wobble)
-    _insert_readiness(conn, "peak", "2026-07-20T07:00:00", ln_rmssd=4.6)
-
-    trend = readiness_ln_rmssd_trend(conn, today="2026-08-01")
-    peak_point = next(p for p in trend if p.date == "2026-07-20")
-    assert peak_point.z_score is not None
-    assert peak_point.z_score > 0

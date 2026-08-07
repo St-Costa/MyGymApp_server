@@ -474,79 +474,36 @@ def latest_readiness(conn: sqlite3.Connection) -> LatestReadiness | None:
 @dataclass
 class ReadinessPoint:
     date: str  # calendar date (measured_at truncated to YYYY-MM-DD)
-    ln_rmssd: float | None
     readiness: str | None  # DELOAD_RECOMMENDED|LIGHT_DAY|NORMAL|GOOD|PEAK|NO_BASELINE
-    z_score: float | None  # (ln_rmssd - 14-day rolling baseline mean) / stdev
 
 
-_READINESS_BASELINE_DAYS = 14
-
-
-def _stdev(values: list[float], mean: float) -> float:
-    if len(values) < 2:
-        return 0.0
-    variance = sum((v - mean) ** 2 for v in values) / (len(values) - 1)
-    return variance**0.5
-
-
-def readiness_ln_rmssd_trend(
+def readiness_daily_trend(
     conn: sqlite3.Connection, *, days: int = 30, today: str | None = None
 ) -> list[ReadinessPoint]:
-    """Daily ln(RMSSD) from readiness_events over the trailing `days` days —
-    unlike the weekly-bucketed cardio series above, readiness is already a
-    once-a-day measurement, so no further aggregation is needed. One row per
-    calendar day; days with no measurement are simply absent (not a null
-    placeholder), same "sparse dates, not fixed buckets" shape exercise
-    history charts already use. Each point carries its own readiness state
-    too, so the chart can color-code by state rather than just plot the raw
-    number.
-
-    Also computes each point's z-score against a trailing 14-day rolling
-    baseline (mean/stdev of the ln_rmssd values in the 14 days *before* that
-    point) — this is the actual basis the phone app uses to classify
-    DELOAD_RECOMMENDED..PEAK (z < -1.5 / -1.5..-1.0 / -1.0..1.0 / 1.0..1.5 /
-    > 1.5), not a fixed ln(RMSSD) value. Recomputed here (not read from the
-    stored `readiness` field) so the chart can draw the same fixed z-score
-    bands the app's own classification uses, regardless of which absolute
-    ln(RMSSD) values happen to fall in the visible window."""
+    """Daily readiness state from readiness_events over the trailing `days`
+    days. Plots the phone's own classification (readiness_events.readiness)
+    as-is — the phone computes this from a rolling baseline it doesn't send
+    us the history for, so the server has no way to recompute it; showing
+    the raw ln(RMSSD) number or trying to re-derive a z-score from
+    server-side history alone was tried and was wrong (too little history
+    synced yet to match the phone's baseline, and it hid data that does
+    exist). This is a category, not a number: DELOAD_RECOMMENDED < LIGHT_DAY
+    < NORMAL < GOOD < PEAK — the dashboard plots it on an ordinal axis, not
+    a continuous one."""
     today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
     window_start = today_date - timedelta(days=days)
-    # Fetch extra lead-in so the first visible point still has up to 14
-    # days of prior history to compute its own baseline from.
-    fetch_start = window_start - timedelta(days=_READINESS_BASELINE_DAYS)
 
     rows = conn.execute(
-        """SELECT measured_at, ln_rmssd, readiness FROM readiness_events
+        """SELECT measured_at, readiness FROM readiness_events
            WHERE substr(measured_at, 1, 10) >= ? AND substr(measured_at, 1, 10) <= ?
            ORDER BY measured_at""",
-        (fetch_start.isoformat(), today_date.isoformat()),
+        (window_start.isoformat(), today_date.isoformat()),
     ).fetchall()
 
-    points: list[ReadinessPoint] = []
-    for i, (measured_at, ln_rmssd, readiness) in enumerate(rows):
-        date = measured_at[:10]
-        current_date = datetime.strptime(date, "%Y-%m-%d").date()
-
-        baseline_values = []
-        for prior_measured_at, prior_ln_rmssd, _prior_readiness in rows[:i]:
-            if prior_ln_rmssd is None:
-                continue
-            prior_date = datetime.strptime(prior_measured_at[:10], "%Y-%m-%d").date()
-            days_before = (current_date - prior_date).days
-            if 0 < days_before <= _READINESS_BASELINE_DAYS:
-                baseline_values.append(prior_ln_rmssd)
-
-        z_score = None
-        if ln_rmssd is not None and len(baseline_values) >= 2:
-            mean = sum(baseline_values) / len(baseline_values)
-            stdev = _stdev(baseline_values, mean)
-            z_score = (ln_rmssd - mean) / stdev if stdev > 0 else None
-
-        if date >= window_start.isoformat():
-            points.append(
-                ReadinessPoint(date=date, ln_rmssd=ln_rmssd, readiness=readiness, z_score=z_score)
-            )
-    return points
+    return [
+        ReadinessPoint(date=measured_at[:10], readiness=readiness)
+        for measured_at, readiness in rows
+    ]
 
 
 def vo2max_4week_trend(conn: sqlite3.Connection, *, today: str | None = None) -> list[WeeklyBucket]:
