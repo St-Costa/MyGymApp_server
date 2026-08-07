@@ -62,8 +62,11 @@
     .chart-desc { margin-bottom: 0.75rem; }
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      grid-template-columns: repeat(2, minmax(220px, 1fr));
       gap: 1rem;
+    }
+    @media (max-width: 460px) {
+      .grid { grid-template-columns: 1fr; }
     }
     .card {
       background: var(--panel);
@@ -110,8 +113,11 @@
     }
     .chart-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+      grid-template-columns: repeat(2, minmax(420px, 1fr));
       gap: 1rem;
+    }
+    @media (max-width: 900px) {
+      .chart-grid { grid-template-columns: 1fr; }
     }
     .chart-wrap {
       background: var(--panel);
