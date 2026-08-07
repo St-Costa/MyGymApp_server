@@ -379,11 +379,13 @@
     chartHeader({ name: "Body fat % / Lean mass %", unit: "", good: null })
   );
   // Single body-fat% line splitting the chart in two: red below it (the
-  // fat share, down to 0%) and green above it (the lean-mass share, up to
-  // 100%) — not two separate curves anymore. Fixed 0-100% y-axis (yRange,
-  // bypassing the usual data-driven centering) so those two fill colors
-  // represent the actual proportions rather than an arbitrarily zoomed-in
-  // slice.
+  // fat share, down to 0%) and green above it (up to the axis max) — not
+  // two separate curves anymore. Fixed 0-50% y-axis (yRange, bypassing the
+  // usual data-driven centering) rather than the full 0-100% — per user
+  // decision, 50%+ body fat isn't a realistic range to plan for, and fixing
+  // it at 50 instead lets the line use far more of the chart's vertical
+  // space while red/below and green/above still read as real absolute
+  // percentages (just of a 0-50 scale, not 0-100).
   //
   // Chart.js's fill: {target: 'origin', above, below} does NOT do this —
   // it fills a single region (line-to-origin) and picks one of the two
@@ -415,7 +417,7 @@
           label: "Lean mass % (fill only)",
           values: bfValues,
           color: "#3ecf7e",
-          fill: "end", // up to the axis maximum (100) — green
+          fill: "end", // up to the axis maximum (50) — green
           fillColor: "#3ecf7e40",
           hidden_line: true,
         },
@@ -423,7 +425,7 @@
       "week",
       THRESHOLDS.bodyFatPercent,
       null,
-      { min: 0, max: 100 }
+      { min: 0, max: 50 }
     );
   }
 </script>
