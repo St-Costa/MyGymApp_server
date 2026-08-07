@@ -13,10 +13,13 @@ def test_dashboard_renders_with_no_data(app_client) -> None:
 
 
 def test_dashboard_reflects_ingested_session(app_client) -> None:
-    post_session(app_client)  # SESSION_MD: restingHr=58, dated 2025-04-15
+    response = app_client.get("/", params={"today": "2025-04-20"})
+    assert "Only 0 session(s) in last 4 weeks" in response.text
+
+    post_session(app_client)  # SESSION_MD: dated 2025-04-15
     response = app_client.get("/", params={"today": "2025-04-20"})
     assert response.status_code == 200
-    assert "58.0" in response.text
+    assert "Only 1 session(s) in last 4 weeks" in response.text
 
 
 def test_dashboard_has_dedicated_rhythm_and_cardiac_issues_section(app_client) -> None:
