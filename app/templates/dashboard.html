@@ -332,24 +332,24 @@
     "afterbegin",
     chartHeader({ name: "Body fat % / Lean mass %", unit: "", good: null })
   );
+  // Single body-fat% line splitting the chart in two: green above it (the
+  // lean-mass share) and red below it (the fat share) — not two separate
+  // curves anymore. Fixed 0-100% y-axis (yRange, bypassing the usual
+  // data-driven centering) so those two fill colors represent the actual
+  // proportions rather than an arbitrarily zoomed-in slice.
   lineChart(
     "chart-bodyComp",
     {{ scale_trend["bodyFatPercent"] | map(attribute="week_start") | list | tojson }},
-    [
-      {
-        label: "Body fat %",
-        values: {{ scale_trend["bodyFatPercent"] | map(attribute="value") | list | tojson }},
-        color: "#e05a5a",
-        fill: "start",
-      },
-      {
-        label: "Lean mass %",
-        values: {{ scale_trend["leanMassPercent"] | map(attribute="value") | list | tojson }},
-        color: "#3ecf7e",
-        fill: "end",
-      },
-    ],
-    "week"
+    {
+      label: "Body fat %",
+      values: {{ scale_trend["bodyFatPercent"] | map(attribute="value") | list | tojson }},
+      color: "#8b93a7",
+      fill: { target: "origin", above: "#3ecf7e40", below: "#e05a5a40" },
+    },
+    "week",
+    null,
+    null,
+    { min: 0, max: 100 }
   );
 </script>
 {% endblock %}

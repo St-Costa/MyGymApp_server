@@ -93,8 +93,11 @@ def test_dashboard_body_composition_is_a_single_combined_chart(app_client) -> No
     response = app_client.get("/")
     assert response.status_code == 200
     assert 'id="chart-bodyComp"' in response.text
+    # Single body-fat% line, green fill above / red fill below (not two
+    # separate curves), on a fixed 0-100% axis.
     assert "Body fat %" in response.text
-    assert "Lean mass %" in response.text
+    assert '"above": "#3ecf7e40"' in response.text or "above: \"#3ecf7e40\"" in response.text
+    assert '"below": "#e05a5a40"' in response.text or "below: \"#e05a5a40\"" in response.text
 
 
 def test_dashboard_charts_show_empty_state_when_series_is_all_null(app_client) -> None:
