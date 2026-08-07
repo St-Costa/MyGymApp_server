@@ -89,11 +89,10 @@ def test_dashboard_charts_have_direction_arrows(app_client) -> None:
     assert 'good: "up"' in response.text
 
 
-def test_dashboard_charts_include_moving_average_trend_line(app_client) -> None:
+def test_dashboard_charts_include_linear_regression_trend_line(app_client) -> None:
     response = app_client.get("/")
     assert response.status_code == 200
-    assert "movingAverage" in response.text
-    assert "TREND_WINDOW = 3" in response.text
+    assert "linearRegressionLine" in response.text
     assert "(trend)" in response.text
 
 

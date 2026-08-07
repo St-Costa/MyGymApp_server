@@ -257,23 +257,31 @@
     const POINT_RADIUS = 4;
     const POINT_HOVER_RADIUS = 6;
 
-    const TREND_WINDOW = 3;
+    // Least-squares linear regression over the whole series (x = point
+    // index, skipping null/undefined values), returned as one y value per
+    // original index — a single straight trend line across the full
+    // range, not a per-point smoothing. null input (fewer than 2 usable
+    // points — no line is determined by 0 or 1 point) returns an
+    // all-null array so the caller can skip drawing it.
+    function linearRegressionLine(values) {
+      const points = values
+        .map((v, i) => [i, v])
+        .filter(([, v]) => v !== null && v !== undefined);
+      if (points.length < 2) return values.map(() => null);
 
-    // Centered N-point moving average, null wherever there isn't a full
-    // window of non-null values available (rather than a shorter average
-    // at the edges, which would read as more confident than it is). null
-    // gaps break the line there — spanGaps still lets it pick back up once
-    // a full window becomes available again.
-    function movingAverage(values, window) {
-      const half = Math.floor(window / 2);
-      return values.map((_, i) => {
-        const start = i - half;
-        const end = start + window;
-        if (start < 0 || end > values.length) return null;
-        const slice = values.slice(start, end);
-        if (slice.some(v => v === null || v === undefined)) return null;
-        return slice.reduce((a, b) => a + b, 0) / window;
-      });
+      const n = points.length;
+      const sumX = points.reduce((s, [x]) => s + x, 0);
+      const sumY = points.reduce((s, [, y]) => s + y, 0);
+      const sumXY = points.reduce((s, [x, y]) => s + x * y, 0);
+      const sumXX = points.reduce((s, [x]) => s + x * x, 0);
+      const denom = n * sumXX - sumX * sumX;
+      // denom is 0 only if every point shares the same x — impossible here
+      // since x is the distinct point index, so no guard needed beyond the
+      // n < 2 check above.
+      const slope = (n * sumXY - sumX * sumY) / denom;
+      const intercept = (sumY - slope * sumX) / n;
+
+      return values.map((_, i) => slope * i + intercept);
     }
 
     // Reference-line glyphs, plain Unicode geometric shapes (not emoji —
@@ -465,19 +473,21 @@
         tension: 0.25,
       }));
 
-      // A faint trend line per visible series: a centered 3-point moving
-      // average, layered on top of the real data rather than replacing it.
-      // Skipped for hidden_line series (the body-composition chart's
-      // fill-only second dataset — no line to smooth) and for series too
-      // short to produce any non-null averaged points.
+      // A faint straight trend line per visible series: least-squares
+      // linear regression over the whole series, layered on top of the
+      // real data rather than replacing it — a single straight line
+      // showing overall direction, not a per-point smoothing. Skipped for
+      // hidden_line series (the body-composition chart's fill-only second
+      // dataset — no line to fit) and for series with fewer than 2 usable
+      // points (linearRegressionLine returns all-null in that case).
       const trendDatasets = seriesList
         .filter(s => !s.hidden_line)
         .map(s => {
-          const averaged = movingAverage(s.values, TREND_WINDOW);
-          if (!averaged.some(v => v !== null)) return null;
+          const regression = linearRegressionLine(s.values);
+          if (!regression.some(v => v !== null)) return null;
           return {
             label: s.label + " (trend)",
-            data: averaged,
+            data: regression,
             borderColor: s.color + "80", // ~50% opacity — present but subordinate to the real line
             backgroundColor: "transparent",
             fill: false,
@@ -485,8 +495,7 @@
             pointHoverRadius: 0,
             borderWidth: 2,
             borderDash: [2, 3],
-            spanGaps: false, // a gap here means "not enough data for this window", worth showing as a break
-            tension: 0.25,
+            tension: 0, // straight line, not curved like the real-data line
           };
         })
         .filter(Boolean);
