@@ -257,6 +257,25 @@
     const POINT_RADIUS = 4;
     const POINT_HOVER_RADIUS = 6;
 
+    const TREND_WINDOW = 3;
+
+    // Centered N-point moving average, null wherever there isn't a full
+    // window of non-null values available (rather than a shorter average
+    // at the edges, which would read as more confident than it is). null
+    // gaps break the line there — spanGaps still lets it pick back up once
+    // a full window becomes available again.
+    function movingAverage(values, window) {
+      const half = Math.floor(window / 2);
+      return values.map((_, i) => {
+        const start = i - half;
+        const end = start + window;
+        if (start < 0 || end > values.length) return null;
+        const slice = values.slice(start, end);
+        if (slice.some(v => v === null || v === undefined)) return null;
+        return slice.reduce((a, b) => a + b, 0) / window;
+      });
+    }
+
     // Reference-line glyphs, plain Unicode geometric shapes (not emoji —
     // these have no emoji presentation form, so they render as text glyphs
     // in every font/OS rather than a colored pictograph). Both severities
@@ -426,29 +445,57 @@
         Object.assign(annotations, thresholdLine(t, i));
       });
 
+      const mainDatasets = seriesList.map(s => ({
+        label: s.label,
+        data: s.values,
+        borderColor: s.hidden_line ? "transparent" : s.color,
+        // fillColor overrides the default "derive from line color"
+        // background — needed when a dataset exists purely to fill one
+        // side of a shared line at a different color than the visible
+        // line itself (see the body-composition chart's two-dataset
+        // split-fill approach).
+        backgroundColor: s.fillColor || (s.fill ? s.color + "26" : s.color + "33"),
+        fill: s.fill || false,
+        pointBackgroundColor: s.hidden_line ? "transparent" : "#0f1115",
+        pointBorderColor: s.hidden_line ? "transparent" : s.color,
+        pointBorderWidth: 2,
+        pointRadius: s.hidden_line ? 0 : POINT_RADIUS,
+        pointHoverRadius: s.hidden_line ? 0 : POINT_HOVER_RADIUS,
+        spanGaps: true,
+        tension: 0.25,
+      }));
+
+      // A faint trend line per visible series: a centered 3-point moving
+      // average, layered on top of the real data rather than replacing it.
+      // Skipped for hidden_line series (the body-composition chart's
+      // fill-only second dataset — no line to smooth) and for series too
+      // short to produce any non-null averaged points.
+      const trendDatasets = seriesList
+        .filter(s => !s.hidden_line)
+        .map(s => {
+          const averaged = movingAverage(s.values, TREND_WINDOW);
+          if (!averaged.some(v => v !== null)) return null;
+          return {
+            label: s.label + " (trend)",
+            data: averaged,
+            borderColor: s.color + "80", // ~50% opacity — present but subordinate to the real line
+            backgroundColor: "transparent",
+            fill: false,
+            pointRadius: 0,
+            pointHoverRadius: 0,
+            borderWidth: 2,
+            borderDash: [2, 3],
+            spanGaps: false, // a gap here means "not enough data for this window", worth showing as a break
+            tension: 0.25,
+          };
+        })
+        .filter(Boolean);
+
       new Chart(el, {
         type: "line",
         data: {
           labels: formatLabels(dates, labelMode),
-          datasets: seriesList.map(s => ({
-            label: s.label,
-            data: s.values,
-            borderColor: s.hidden_line ? "transparent" : s.color,
-            // fillColor overrides the default "derive from line color"
-            // background — needed when a dataset exists purely to fill one
-            // side of a shared line at a different color than the visible
-            // line itself (see the body-composition chart's two-dataset
-            // split-fill approach).
-            backgroundColor: s.fillColor || (s.fill ? s.color + "26" : s.color + "33"),
-            fill: s.fill || false,
-            pointBackgroundColor: s.hidden_line ? "transparent" : "#0f1115",
-            pointBorderColor: s.hidden_line ? "transparent" : s.color,
-            pointBorderWidth: 2,
-            pointRadius: s.hidden_line ? 0 : POINT_RADIUS,
-            pointHoverRadius: s.hidden_line ? 0 : POINT_HOVER_RADIUS,
-            spanGaps: true,
-            tension: 0.25,
-          })),
+          datasets: [...mainDatasets, ...trendDatasets],
         },
         options: {
           ...CHART_OPTIONS,
