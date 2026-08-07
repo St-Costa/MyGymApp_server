@@ -47,6 +47,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   received_at              TEXT NOT NULL,
   schema_version           INTEGER NOT NULL
 );
+-- Every app.analysis query and dashboard page load filters/orders sessions
+-- by date range (WHERE date >= ? AND date <= ? ORDER BY date) — without this,
+-- each of those is a full table scan that gets slower as history accumulates.
+CREATE INDEX IF NOT EXISTS idx_sessions_date ON sessions(date);
 
 CREATE TABLE IF NOT EXISTS exercise_sets (
   session_id            TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -62,6 +66,10 @@ CREATE TABLE IF NOT EXISTS exercise_sets (
   is_bodyweight         INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_exercise_sets_session ON exercise_sets(session_id);
+-- app.analysis filters on exercise_id in PR lookups (all_time_tonnage_pr,
+-- recent_heaviest_set_pr), exercise_history, and list_exercises' GROUP BY —
+-- without this, each of those does a full table scan of exercise_sets.
+CREATE INDEX IF NOT EXISTS idx_exercise_sets_exercise ON exercise_sets(exercise_id);
 
 CREATE TABLE IF NOT EXISTS tonnage_by_bodypart (
   session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -86,6 +94,8 @@ CREATE TABLE IF NOT EXISTS readiness_events (
   received_at     TEXT NOT NULL,
   schema_version  INTEGER NOT NULL
 );
+-- latest_readiness/readiness_daily_trend order/filter by measured_at.
+CREATE INDEX IF NOT EXISTS idx_readiness_events_measured_at ON readiness_events(measured_at);
 
 -- Scale weigh-ins (docs/sync-ingestion/SCALE_SPEC.md). `id` is an ISO date
 -- string (at most one weigh-in per day), not the 8-hex scheme used
@@ -103,6 +113,8 @@ CREATE TABLE IF NOT EXISTS scale_weighins (
   received_at        TEXT NOT NULL,
   schema_version     INTEGER NOT NULL
 );
+-- scale_weekly_trend filters/orders by date over an 8-week window.
+CREATE INDEX IF NOT EXISTS idx_scale_weighins_date ON scale_weighins(date);
 
 -- Records whose raw file was stored but whose parse step failed (step 6
 -- "on failure" case in the spec). schema_version = 0 on the corresponding
