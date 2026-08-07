@@ -221,6 +221,30 @@
     // afibEpisodes/pauses/premature/uneven intentionally have no threshold
     // entries — no published clinical cutoff exists for these per-session
     // counts (see comment above THRESHOLDS).
+    // Cardiac drift (bpm/min, this session's HR-vs-time regression slope) —
+    // no published clinical/fitness scale exists for a per-minute slope
+    // specifically (the literature discusses total drift over 30-60min
+    // sessions, in bpm or %, not bpm/min). These 3 tiers reuse
+    // ANALYSIS_SPEC.md §11.1's own GREEN/RED cutoffs for this metric
+    // (app-internal design thresholds, not medical guidance), with a
+    // YELLOW tier interpolated between them.
+    drift: [
+      { value: 1.0, severity: "danger", label: "High drift > 1.0 (app threshold)" },
+      { value: 0.5, severity: "warning", label: "Elevated 0.5-1.0 (app threshold)" },
+      { value: -0.5, severity: "info", label: "Low/stable < 0.5 (app threshold)" },
+    ],
+    // Poincaré SD2/SD1 ratio — same caveat as drift above: no published
+    // clinical scale for this specific ratio, only general "typical in
+    // healthy adults" ranges cited by HRV vendors. Same 3-tier structure as
+    // the shaded band below, reusing ANALYSIS_SPEC.md §11.1's own
+    // GREEN/RED cutoffs (app-internal, not medical guidance).
+    poincareRatio: [
+      { value: 6.0, severity: "danger", label: "Out of typical range > 6.0 (app threshold)" },
+      { value: 4.5, severity: "warning", label: "Borderline 4.5-6.0 (app threshold)" },
+      { value: 1.5, severity: "info", label: "Typical range 1.5-4.5 (app threshold)" },
+      { value: 1.0, severity: "warning", label: "Borderline 1.0-1.5 (app threshold)" },
+      { value: 0, severity: "danger", label: "Out of typical range < 1.0 (app threshold)" },
+    ],
     // CDC/WHO adult BMI classification (Western population thresholds —
     // WHO's Asian-population table uses lower cutoffs, not used here since
     // this app has no way to know which applies).
