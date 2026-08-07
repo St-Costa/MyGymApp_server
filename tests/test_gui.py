@@ -228,3 +228,12 @@ def test_dashboard_bmi_and_weight_have_cdc_who_thresholds(app_client) -> None:
     # height, since this app stores no real height.
     assert "ASSUMED_HEIGHT_M" in response.text
     assert "weightThresholdsFromBmi" in response.text
+
+
+def test_dashboard_body_fat_chart_has_ace_thresholds(app_client) -> None:
+    response = app_client.get("/")
+    assert response.status_code == 200
+    # ACE's men's-table body fat % classification.
+    assert "Essential fat" in response.text
+    assert "Athletes" in response.text
+    assert "ACE, men's table" in response.text
