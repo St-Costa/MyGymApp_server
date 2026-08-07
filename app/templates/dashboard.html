@@ -377,6 +377,7 @@
       chartHeader({ name: "Readiness (ln RMSSD)", unit: "", good: "up" })
     );
     const readinessStates = {{ readiness_trend | map(attribute="readiness") | list | tojson }};
+    const readinessColors = readinessStates.map(s => READINESS_STATE_COLOR[s] || "#ff9f6b");
     lineChart(
       "readinessChart",
       {{ readiness_trend | map(attribute="date") | list | tojson }},
@@ -384,7 +385,8 @@
         label: "ln(RMSSD)",
         values: {{ readiness_trend | map(attribute="ln_rmssd") | list | tojson }},
         color: "#ff9f6b",
-        pointColors: readinessStates.map(s => READINESS_STATE_COLOR[s] || "#ff9f6b"),
+        pointColors: readinessColors,
+        columnColors: readinessColors,
       },
       "date"
     );

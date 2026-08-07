@@ -47,6 +47,7 @@ def test_dashboard_readiness_chart_colors_points_by_state(app_client) -> None:
     # must both be present.
     assert "READINESS_STATE_COLOR" in response.text
     assert "pointColors" in response.text
+    assert "columnColors" in response.text
     for label in ("Deload recommended", "Light day", "Normal", "Good", "Peak"):
         assert label in response.text
 
