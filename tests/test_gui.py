@@ -215,3 +215,16 @@ def test_dashboard_includes_multi_level_thresholds(app_client) -> None:
     # Poincaré ratio's shaded optimal-range band.
     assert "THRESHOLD_BANDS" in response.text
     assert "poincareRatio" in response.text
+
+
+def test_dashboard_bmi_and_weight_have_cdc_who_thresholds(app_client) -> None:
+    response = app_client.get("/")
+    assert response.status_code == 200
+    # BMI chart: CDC/WHO cutoffs used directly.
+    assert "Obese" in response.text
+    assert "Overweight" in response.text
+    assert "CDC/WHO" in response.text
+    # Weight chart: same cutoffs converted to kg via an assumed fixed
+    # height, since this app stores no real height.
+    assert "ASSUMED_HEIGHT_M" in response.text
+    assert "weightThresholdsFromBmi" in response.text

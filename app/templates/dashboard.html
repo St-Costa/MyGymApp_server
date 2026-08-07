@@ -209,6 +209,20 @@
     ];
   }
 
+  // Assumed fixed height for converting BMI cutoffs to kg thresholds on the
+  // Weight chart — this app has no real stored height, same stand-in
+  // approach as ASSUMED_BIRTH_YEAR above. NOT this user's actual height.
+  const ASSUMED_HEIGHT_M = 1.70;
+
+  function weightThresholdsFromBmi() {
+    const kgFor = (bmi) => Math.round(bmi * ASSUMED_HEIGHT_M * ASSUMED_HEIGHT_M * 10) / 10;
+    return [
+      { value: kgFor(30), severity: "danger", label: `Obese ≥ 30 BMI @ ${ASSUMED_HEIGHT_M}m (CDC/WHO)` },
+      { value: kgFor(25), severity: "warning", label: `Overweight 25-29.9 BMI @ ${ASSUMED_HEIGHT_M}m (CDC/WHO)` },
+      { value: kgFor(18.5), severity: "info", label: `Normal 18.5-24.9 BMI @ ${ASSUMED_HEIGHT_M}m (CDC/WHO)` },
+    ];
+  }
+
   const THRESHOLDS = {
     // Resting HR fitness classification (athlete/excellent/good/average/
     // below-average/poor), generic adult, not age/sex-stratified.
@@ -263,6 +277,21 @@
     pauses: [{ value: 0.5, severity: "warning", label: "Any pause (app threshold)" }],
     premature: [{ value: 15, severity: "warning", label: "Elevated, ~4wk/4 (app threshold)" }],
     uneven: [{ value: 25, severity: "warning", label: "Elevated, ~4wk/4 (app threshold)" }],
+    // CDC/WHO adult BMI classification (Western population thresholds —
+    // WHO's Asian-population table uses lower cutoffs, not used here since
+    // this app has no way to know which applies).
+    // https://www.cdc.gov/bmi/adult-calculator/index.html
+    bmi: [
+      { value: 30, severity: "danger", label: "Obese ≥ 30 (CDC/WHO)" },
+      { value: 25, severity: "warning", label: "Overweight 25-29.9 (CDC/WHO)" },
+      { value: 18.5, severity: "info", label: "Normal 18.5-24.9 (CDC/WHO)" },
+    ],
+    // Same CDC/WHO BMI cutoffs, converted to kg via weight = BMI × height²
+    // using an assumed fixed height (ASSUMED_HEIGHT_M below) — this app
+    // doesn't store a real height, same stand-in approach as RMSSD's
+    // assumed birth year. Replace ASSUMED_HEIGHT_M if a real profile field
+    // is ever added; these are NOT this user's actual measurements.
+    weightKg: weightThresholdsFromBmi(),
   };
 
   // Shaded background bands. Poincaré ratio's optimal range (SD2/SD1
@@ -314,7 +343,8 @@
     "weightChart",
     {{ scale_trend["weightKg"] | map(attribute="week_start") | list | tojson }},
     { label: "Weight (kg)", values: {{ scale_trend["weightKg"] | map(attribute="value") | list | tojson }}, color: "#e0b23e" },
-    "week"
+    "week",
+    THRESHOLDS.weightKg
   );
 
   document.getElementById("wrap-chart-bmi").insertAdjacentHTML(
@@ -325,7 +355,8 @@
     "chart-bmi",
     {{ scale_trend["bmi"] | map(attribute="week_start") | list | tojson }},
     { label: "BMI", values: {{ scale_trend["bmi"] | map(attribute="value") | list | tojson }}, color: "#c77dff" },
-    "week"
+    "week",
+    THRESHOLDS.bmi
   );
 
   document.getElementById("wrap-chart-bodyComp").insertAdjacentHTML(
