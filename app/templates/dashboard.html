@@ -182,11 +182,9 @@
   // - afibEpisodes/pauses/premature/uneven: no published clinical threshold
   //   exists for a per-session count from a consumer single-lead ECG (the
   //   real clinical literature measures PACs etc. over continuous 24h
-  //   monitoring, not comparable to our windows) — these reuse the
-  //   YELLOW/RED cutoffs already defined in ANALYSIS_SPEC.md §11.1's rhythm
-  //   counters, which are this app's own product thresholds, not medical
-  //   guidance. Framed as such in the label text, not implied to be
-  //   clinical rather than app-internal.
+  //   monitoring, not comparable to our windows), and the app's own internal
+  //   design cutoffs (ANALYSIS_SPEC.md §11.1) aren't medical guidance either
+  //   — so these 4 charts intentionally have no reference lines at all.
   const ASSUMED_BIRTH_YEAR = 2000;
   const currentAge = new Date().getUTCFullYear() - ASSUMED_BIRTH_YEAR;
 
@@ -268,15 +266,9 @@
       { value: 50, severity: "warning", label: "High risk < 50 (24h ref.)" },
       { value: 100, severity: "info", label: "Low risk > 100 (24h ref.)" },
     ],
-    // ANALYSIS_SPEC.md §11.1 rhythm-counter cutoffs (GREEN/YELLOW/RED over a
-    // 4-week total) — app-internal product thresholds, not published
-    // clinical guidance. Charted here as weekly series, so each cutoff is
-    // the spec's 4-week YELLOW boundary divided by 4 — an approximation for
-    // a weekly reference line, not itself a value from the spec.
-    afibEpisodes: [{ value: 0.5, severity: "danger", label: "Any episode (app threshold)" }],
-    pauses: [{ value: 0.5, severity: "warning", label: "Any pause (app threshold)" }],
-    premature: [{ value: 15, severity: "warning", label: "Elevated, ~4wk/4 (app threshold)" }],
-    uneven: [{ value: 25, severity: "warning", label: "Elevated, ~4wk/4 (app threshold)" }],
+    // afibEpisodes/pauses/premature/uneven intentionally have no threshold
+    // entries — no published clinical cutoff exists for these per-session
+    // counts (see comment above THRESHOLDS).
     // CDC/WHO adult BMI classification (Western population thresholds —
     // WHO's Asian-population table uses lower cutoffs, not used here since
     // this app has no way to know which applies).
