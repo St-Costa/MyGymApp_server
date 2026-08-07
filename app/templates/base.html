@@ -433,19 +433,19 @@
           datasets: seriesList.map(s => ({
             label: s.label,
             data: s.values,
-            borderColor: s.color,
-            // fill can be a plain value ("start"/"end"/false, the existing
-            // cases) or {above, below} for a single line split into two
-            // fill colors relative to the origin (see the body-composition
-            // chart) — only set backgroundColor for the plain-color case,
-            // since {above, below} carries its own colors instead.
-            backgroundColor: typeof s.fill === "object" ? undefined : s.fill ? s.color + "26" : s.color + "33",
+            borderColor: s.hidden_line ? "transparent" : s.color,
+            // fillColor overrides the default "derive from line color"
+            // background — needed when a dataset exists purely to fill one
+            // side of a shared line at a different color than the visible
+            // line itself (see the body-composition chart's two-dataset
+            // split-fill approach).
+            backgroundColor: s.fillColor || (s.fill ? s.color + "26" : s.color + "33"),
             fill: s.fill || false,
-            pointBackgroundColor: "#0f1115",
-            pointBorderColor: s.color,
+            pointBackgroundColor: s.hidden_line ? "transparent" : "#0f1115",
+            pointBorderColor: s.hidden_line ? "transparent" : s.color,
             pointBorderWidth: 2,
-            pointRadius: POINT_RADIUS,
-            pointHoverRadius: POINT_HOVER_RADIUS,
+            pointRadius: s.hidden_line ? 0 : POINT_RADIUS,
+            pointHoverRadius: s.hidden_line ? 0 : POINT_HOVER_RADIUS,
             spanGaps: true,
             tension: 0.25,
           })),
