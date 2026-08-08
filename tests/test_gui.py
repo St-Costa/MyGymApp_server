@@ -79,6 +79,21 @@ def test_dashboard_training_load_section_includes_rpe_acwr_chart(app_client) -> 
     assert 'id="chart-rpeAcwr"' in response.text
 
 
+def test_dashboard_rpe_acwr_chart_has_no_threshold_lines_or_band(app_client) -> None:
+    # Regression test: an earlier version reused the tonnage ACWR's
+    # 0.8/1.3/1.5/0.5 literature-derived thresholds on this chart too, which
+    # is unvalidated for a subjective RPE×duration ratio (see
+    # ANALYSIS_SPEC.md §13.1's "No semaphore/thresholds" note). The
+    # lineChart() call for chart-rpeAcwr must pass no thresholds/bands args
+    # at all, not just non-matching ones.
+    response = app_client.get("/")
+    assert response.status_code == 200
+    idx = response.text.rfind('"chart-rpeAcwr"')
+    call = response.text[idx : idx + 400]
+    assert "app threshold" not in call
+    assert "#3ecf7e" not in call  # the green band color used by every other ACWR-style chart
+
+
 def test_dashboard_rpe_acwr_chart_reflects_ingested_session_load(app_client) -> None:
     md = SESSION_MD.replace("hrr60s: 28\n", "hrr60s: 28\nsessionRpe: 7\nsessionLoad: 315.0\n")
     post_session(app_client, md_bytes=md.encode())

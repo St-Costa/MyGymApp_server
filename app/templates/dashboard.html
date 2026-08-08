@@ -106,8 +106,10 @@
 <div class="chart-wrap" id="wrap-chart-rpeAcwr">
   <p class="chart-desc">
     Same idea, but from how hard sessions felt (1-10 self-rating × duration) instead of
-    how much weight you moved. Rising here while the chart above stays flat means you're
-    working harder for the same output — an early fatigue signal weight alone won't show.
+    how much weight you moved. No injury/detraining bands here — those cutoffs are only
+    validated for weight-based load, not a subjective rating. Useful mainly to compare
+    against the chart above: rising here while that one stays flat means you're working
+    harder for the same output.
   </p>
   <div class="chart-canvas-box"><canvas id="chart-rpeAcwr"></canvas></div>
 </div>
@@ -483,10 +485,14 @@
     [{ min: 0.8, max: 1.3, color: "#3ecf7e" }]
   );
 
-  // §13.1: same acute:chronic ratio and bands as the tonnage ACWR above,
-  // computed on session_load (RPE × duration) instead — the "internal load"
-  // counterpart, meant to be read side by side with the chart above rather
-  // than in isolation.
+  // §13.1: same acute:chronic ratio as the tonnage ACWR above, computed on
+  // session_load (RPE × duration) instead — the "internal load" counterpart,
+  // meant to be read side by side with the chart above rather than in
+  // isolation. No threshold lines/band here, unlike the tonnage chart — the
+  // 0.8-1.3/1.5 cutoffs come from literature on external load (kg lifted,
+  // distance covered); nothing validates the same numeric bands for a
+  // subjective RPE×duration ratio, so showing them here would imply a
+  // medical basis this metric doesn't have.
   document.getElementById("wrap-chart-rpeAcwr").insertAdjacentHTML(
     "afterbegin",
     chartHeader({ name: "RPE-based ACWR", unit: "", good: null })
@@ -495,12 +501,7 @@
     "chart-rpeAcwr",
     {{ rpe_acwr_trend | map(attribute="date") | list | tojson }},
     { label: "RPE-based ACWR", values: {{ rpe_acwr_trend | map(attribute="acwr") | list | tojson }}, color: "#c77dff" },
-    "week",
-    [
-      { value: 1.5, severity: "danger", label: "Spike > 1.5 (app threshold)" },
-      { value: 0.5, severity: "danger", label: "Undertraining < 0.5 (app threshold)" },
-    ],
-    [{ min: 0.8, max: 1.3, color: "#3ecf7e" }]
+    "week"
   );
 
   // Sparse series: only sessions where the RPE prompt was actually answered

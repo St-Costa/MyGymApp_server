@@ -545,13 +545,24 @@ threshold for RPE×duration) — kept mainly so individual ratings are visible a
 not as the primary training-load signal from this section.
 
 **RPE-based ACWR** (§13.1, added after the raw chart's limited standalone value was
-flagged): the same §12 acute:chronic ratio and GRAY/GREEN/YELLOW/RED semaphore, computed
-on `sessionLoad` instead of `total_tonnage` — this is how session-RPE is actually used for
-training-load monitoring in the literature (an "internal load" ACWR compared against the
-tonnage-based "external load" one, not looked at as a bare number). A separate chart/card
-from the tonnage ACWR, not a replacement — divergence between the two (e.g. tonnage steady
-but RPE-ACWR climbing) is itself a signal worth seeing, since it means effort is rising
-without a matching rise in weight moved.
+flagged): the same §12 acute:chronic ratio, computed on `sessionLoad` instead of
+`total_tonnage` — this is how session-RPE is actually used for training-load monitoring in
+the literature (an "internal load" ACWR compared against the tonnage-based "external load"
+one, not looked at as a bare number). A separate chart/card from the tonnage ACWR, not a
+replacement — divergence between the two (e.g. tonnage steady but RPE-ACWR climbing) is
+itself a signal worth seeing, since it means effort is rising without a matching rise in
+weight moved.
+
+**No semaphore/thresholds on this chart** (2026-08 correction — the first version reused
+§12's `_acwr_semaphore` and 0.8/1.3/1.5/0.5 GRAY/GREEN/YELLOW/RED cutoffs here too, which
+was wrong): those bands come from ACWR literature on *external* load (kg lifted, distance
+covered), not on a subjective RPE×duration ratio — nothing validates the same numeric
+cutoffs apply to this scale. `compute_rpe_acwr_trend`/`rpe_acwr_daily_trend` still return
+`AcwrTrend.semaphore` (the dataclass is shared with §12's implementation), but the
+dashboard must not render it as a colored dot or draw threshold lines/bands on this
+chart's line — plot the raw ratio only. If a validated threshold for RPE-based ACWR ever
+surfaces in the literature, revisit; until then, showing a semaphore here would imply a
+medical basis this metric doesn't have.
 
 ---
 
