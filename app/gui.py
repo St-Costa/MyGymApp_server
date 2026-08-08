@@ -12,6 +12,7 @@ consumer of the same analysis layer, not a proxy in front of the API.
 """
 
 from dataclasses import asdict
+from datetime import date as date_cls
 from pathlib import Path
 
 from fastapi import APIRouter, Query, Request
@@ -35,6 +36,7 @@ from app.analysis import (
 )
 from app.config import DB_PATH
 from app.storage import connect
+from app.weekly_report import build_weekly_report
 
 router = APIRouter()
 
@@ -72,6 +74,20 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
             "rpe_acwr_trend": [asdict(p) for p in rpe_acwr_trend],
         },
     )
+
+
+@router.get("/weekly-report", response_class=HTMLResponse)
+def weekly_report_preview(request: Request, week_end: str | None = Query(default=None)):
+    """Manual preview of the deterministic weekly report content
+    (app.weekly_report) — lets the user eyeball what a given week's ntfy
+    notification would say before any send/schedule infrastructure exists.
+    `week_end` (ISO date, the Sunday of the reported week) is optional and
+    defaults to the most recently completed week, same as build_weekly_report."""
+    parsed_week_end = date_cls.fromisoformat(week_end) if week_end else None
+    with connect(DB_PATH) as conn:
+        report = build_weekly_report(conn, week_end=parsed_week_end)
+
+    return templates.TemplateResponse(request, "weekly_report.html", {"report": report})
 
 
 @router.get("/exercises", response_class=HTMLResponse)
