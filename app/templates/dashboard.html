@@ -475,7 +475,7 @@
     "chart-acwr",
     {{ acwr_trend | map(attribute="date") | list | tojson }},
     { label: "ACWR", values: {{ acwr_trend | map(attribute="acwr") | list | tojson }}, color: "#4dd0e1" },
-    "date",
+    "week",
     [
       { value: 1.5, severity: "danger", label: "Spike > 1.5 (app threshold)" },
       { value: 0.5, severity: "danger", label: "Undertraining < 0.5 (app threshold)" },
@@ -495,7 +495,7 @@
     "chart-rpeAcwr",
     {{ rpe_acwr_trend | map(attribute="date") | list | tojson }},
     { label: "RPE-based ACWR", values: {{ rpe_acwr_trend | map(attribute="acwr") | list | tojson }}, color: "#c77dff" },
-    "date",
+    "week",
     [
       { value: 1.5, severity: "danger", label: "Spike > 1.5 (app threshold)" },
       { value: 0.5, severity: "danger", label: "Undertraining < 0.5 (app threshold)" },

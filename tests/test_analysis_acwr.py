@@ -2,10 +2,11 @@
 (docs/sync-ingestion/ANALYSIS_SPEC.md)."""
 
 import sqlite3
+from datetime import date as date_cls
 
 import pytest
 
-from app.analysis import compute_acwr_trend
+from app.analysis import acwr_daily_trend, compute_acwr_trend
 from app.storage import init_db
 
 
@@ -110,3 +111,27 @@ def test_zero_tonnage_sessions_excluded_from_window(conn):
     trend = compute_acwr_trend(conn, today="2026-08-08")
     assert trend.acute_load == 0.0
     assert trend.semaphore == "GRAY"
+
+
+def test_daily_trend_samples_one_point_per_monday_not_per_day(conn):
+    # 2026-08-08 is a Saturday (today); 2026-08-03 is the preceding Monday.
+    # A 12-week series should have one point per Monday, not one per day.
+    trend = acwr_daily_trend(conn, today="2026-08-08")
+    assert len(trend) == 13  # 12 weeks + the partial/current week's Monday
+    for point in trend:
+        assert date_cls.fromisoformat(point.date).weekday() == 0  # every point is a Monday
+
+
+def test_daily_trend_monday_point_only_sees_sessions_up_to_that_monday(conn):
+    # A session dated the day after a sampled Monday must not appear in that
+    # Monday's acute window — the series must not "see into the future"
+    # relative to each sample point.
+    _insert_session(conn, "s1", "2026-08-04", 1000.0)  # Tuesday, day after Monday 08-03
+
+    trend = acwr_daily_trend(conn, today="2026-08-08")
+    monday_08_03 = next(p for p in trend if p.date == "2026-08-03")
+    assert monday_08_03.acute_load == 0.0
+
+    monday_08_10 = acwr_daily_trend(conn, today="2026-08-10")
+    later_point = next(p for p in monday_08_10 if p.date == "2026-08-10")
+    assert later_point.acute_load == 1000.0

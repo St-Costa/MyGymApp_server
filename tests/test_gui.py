@@ -82,7 +82,10 @@ def test_dashboard_training_load_section_includes_rpe_acwr_chart(app_client) -> 
 def test_dashboard_rpe_acwr_chart_reflects_ingested_session_load(app_client) -> None:
     md = SESSION_MD.replace("hrr60s: 28\n", "hrr60s: 28\nsessionRpe: 7\nsessionLoad: 315.0\n")
     post_session(app_client, md_bytes=md.encode())
-    response = app_client.get("/", params={"today": "2025-04-20"})
+    # The chart samples one point per Monday; 2025-04-21 is the first Monday
+    # on/after SESSION_MD's date (2025-04-15, a Tuesday) so that week's
+    # sample point actually sees the session in its acute window.
+    response = app_client.get("/", params={"today": "2025-04-21"})
     assert response.status_code == 200
     # A single session is both the entire acute and chronic window for the
     # RPE-ACWR series too -> acwr == 1.0 shows up in the lineChart() call

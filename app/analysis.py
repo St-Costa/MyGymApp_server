@@ -978,14 +978,17 @@ def _acwr_daily_trend(
     conn: sqlite3.Connection, column: str, *, today: str | None = None
 ) -> list[AcwrPoint]:
     """Shared implementation behind acwr_daily_trend (tonnage, §12) and
-    rpe_acwr_daily_trend (session_load, §13). One AcwrPoint per day over a
-    12-week window, each computed from its own rolling 7-day/28-day means
-    (so the chronic lookback for the first days in the window reaches
-    earlier than the 12-week fetch itself — same as _compute_acwr_trend for
-    a single day)."""
+    rpe_acwr_daily_trend (session_load, §13). One AcwrPoint per Monday-keyed
+    week over a 12-week window (same weekly cadence as the other trend
+    charts, e.g. resting_hr_weekly_trend) — each point is still the same
+    7-day-acute/28-day-chronic ratio evaluated *as of* that Monday, just
+    sampled weekly instead of daily. A daily-resolution ACWR line is noisier
+    than the "this week vs last month" framing in the chart's own
+    description warrants; the underlying ratio and windows are unchanged,
+    only the sampling cadence is coarser."""
     today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
     series_start = today_date - timedelta(weeks=_ACWR_SERIES_WEEKS)
-    fetch_start = series_start - timedelta(days=28)  # cover the earliest day's chronic lookback
+    fetch_start = series_start - timedelta(days=28)  # cover the earliest week's chronic lookback
 
     # (date, value) pairs, one per qualifying session, ordered by date —
     # matches _load_values_in_window's per-session values (a day with
@@ -1001,7 +1004,7 @@ def _acwr_daily_trend(
     ).fetchall()
 
     points: list[AcwrPoint] = []
-    cursor = series_start
+    cursor = _monday_of(series_start)
     while cursor <= today_date:
         acute_start = cursor - timedelta(days=7)
         chronic_start = cursor - timedelta(days=28)
@@ -1024,7 +1027,7 @@ def _acwr_daily_trend(
                 semaphore=_acwr_semaphore(acwr),
             )
         )
-        cursor += timedelta(days=1)
+        cursor += timedelta(days=7)
 
     return points
 

@@ -498,6 +498,14 @@ today) — same two windows already fetched for the cardio card, just a differen
 not the cardio card's non-overlapping recent-14/baseline-14 split, since ACWR is defined
 specifically as acute-window-nested-inside-chronic-window, not two disjoint halves).
 
+**Chart sampling cadence**: the single current-value endpoint (`compute_acwr_trend`)
+evaluates exactly at `today`; the 12-week chart series samples one point per Monday-keyed
+week (same cadence as `resting_hr_weekly_trend` and the other weekly trend charts), each
+still the full 7-day-acute/28-day-chronic ratio evaluated as of that Monday — not a
+different aggregation, just a coarser sampling rate than daily. A daily-resolution line
+was tried first and dropped: it reads noisier than the "this week vs last month" framing
+in the chart's own description implies, since day-to-day the acute window barely moves.
+
 **Green band note**: research (see review note) reports 0.8–1.5 as the commonly-cited
 "safe" range with >1.5 flagged as elevated risk, but doesn't establish a single accepted
 cutoff for a finer-grained good/caution split. Treat 0.8–1.3 (green) / 1.3–1.5 (yellow) as
