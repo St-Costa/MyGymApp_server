@@ -26,6 +26,10 @@ SCALE_SPEC.md "Field notes" sections for the source of truth):
   for why this distinction matters (a completed bodyweight set and an
   untouched/empty one both have weight=0 today, indistinguishable without
   this field).
+- `sessionRpe`/`sessionLoad` (ANALYSIS_SPEC.md §13): unlike the space-saving
+  "missing means 0" numeric fields above, these stay `None` when absent —
+  0 is not a valid RPE value, so "not answered" must be distinguishable from
+  a reported effort. Use `_optional_int`/`_optional_num`, not `_int`/`_num`.
 """
 
 import yaml
@@ -133,6 +137,8 @@ def parse_session_file(raw_bytes: bytes) -> ParsedSession:
         cardiac_drift_bpm_min=_num(data, "cardiacDriftBpmMin"),
         resting_hr=_int(data, "restingHr"),
         hrr60s=_int(data, "hrr60s"),
+        session_rpe=_optional_int(data, "sessionRpe"),
+        session_load=_optional_num(data, "sessionLoad"),
         notes=body.strip(),
         tonnage_by_bodypart=tonnage_by_bodypart,
         exercise_sets=exercise_sets,
@@ -267,3 +273,18 @@ def _num(data: dict, key: str) -> float:
 
 def _int(data: dict, key: str) -> int:
     return int(data.get(key) or 0)
+
+
+def _optional_int(data: dict, key: str) -> int | None:
+    """Like _int, but missing/None stays None rather than collapsing to 0 —
+    for fields where 0 is a meaningfully different value from "not sent"
+    (e.g. sessionRpe: an optional 1-10 rating, not a space-saving-omitted
+    counter)."""
+    value = data.get(key)
+    return None if value is None else int(value)
+
+
+def _optional_num(data: dict, key: str) -> float | None:
+    """Float counterpart to _optional_int — see its docstring."""
+    value = data.get(key)
+    return None if value is None else float(value)

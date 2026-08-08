@@ -510,6 +510,36 @@ medical claim, same posture as the cardio card's existing "not a diagnosis" fram
 
 ---
 
+## 13. Session-RPE (Foster method) — subjective training load
+
+New addition (2026-08), phone-side field added specifically to feed this — see the
+research note's session-RPE section for why: it's the standard "internal load" measure
+complementary to §12's tonnage-based "external load," and the app previously collected
+nothing subjective at all.
+
+**Fields synced as-is** (phone computes and sends both — no server-side recomputation
+needed, same "already computed" posture as §2/§3/§4's cardio formulas):
+
+```
+sessionRpe: Int | None      # 1-10, user's post-session effort rating; None if skipped
+sessionLoad: Float | None   # Foster: sessionRpe * durationMinutes; None if sessionRpe is None
+```
+
+**Parsing convention** (see `app/parsing.py`'s `_optional_int`/`_optional_num`): unlike
+every other numeric session field, a missing value stays `None`, not 0 — 0 isn't a valid
+RPE, so "not answered" must stay distinguishable from an (invalid) reported effort of
+zero. `sessions.session_rpe`/`session_load` are nullable columns for the same reason.
+
+**Chart series**: same 12-week window as §1.6's tonnage/e1RM trend and §12's ACWR chart,
+plotting `sessionLoad` per session (skipping sessions where it's `None`) — no derived
+semaphore for this pass, since there's no published RPE-based threshold as directly
+applicable as ACWR's 0.8-1.5 band (session-RPE is normally compared against an athlete's
+own history, not an absolute scale). A future pass could compute an ACWR-style
+acute:chronic ratio on `sessionLoad` the same way §12 does on tonnage, once enough
+history has accumulated to judge whether it adds signal beyond the tonnage-based one.
+
+---
+
 ## Server-side data availability gaps to resolve before implementing
 
 1. **7-day resting-HR baseline for VO2max** (§4.2) and **14-day LnRMSSD baseline for

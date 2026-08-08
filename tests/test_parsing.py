@@ -48,6 +48,30 @@ def test_exclude_from_tonnage_and_is_daily_default_to_false_when_omitted() -> No
     assert parsed.exercise_sets[0].is_daily is False
 
 
+def test_session_rpe_defaults_to_none_when_omitted() -> None:
+    # SESSION_MD (§13's new field) doesn't send sessionRpe/sessionLoad — must
+    # stay None, not collapse to 0 like the other numeric session fields.
+    parsed = parse_session_file(SESSION_MD.encode())
+    assert parsed.session_rpe is None
+    assert parsed.session_load is None
+
+
+def test_session_rpe_parsed_when_present() -> None:
+    md = SESSION_MD.replace("hrr60s: 28\n", "hrr60s: 28\nsessionRpe: 7\nsessionLoad: 315.0\n")
+    parsed = parse_session_file(md.encode())
+    assert parsed.session_rpe == 7
+    assert parsed.session_load == 315.0
+
+
+def test_session_rpe_zero_is_distinguishable_from_omitted() -> None:
+    # Not a realistic rating (Foster's scale starts at 1), but the parser
+    # must not treat an explicit 0 the same as "field absent" — this is
+    # exactly the distinction _optional_int exists to preserve.
+    md = SESSION_MD.replace("hrr60s: 28\n", "hrr60s: 28\nsessionRpe: 0\n")
+    parsed = parse_session_file(md.encode())
+    assert parsed.session_rpe == 0
+
+
 def test_is_bodyweight_defaults_to_false_when_omitted() -> None:
     # isBodyweight isn't sent by the phone yet — must not error, must default False.
     md = (

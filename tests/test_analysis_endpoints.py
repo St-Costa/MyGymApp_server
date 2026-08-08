@@ -1,7 +1,7 @@
 """HTTP-level tests for the GET /v1/analysis/* endpoints — auth, shape, and
 that they reflect data ingested through the normal POST endpoints."""
 
-from tests.conftest import auth_headers, post_session
+from tests.conftest import SESSION_MD, auth_headers, post_session
 
 
 def test_cardio_trend_requires_auth(app_client) -> None:
@@ -48,6 +48,39 @@ def test_acwr_trend_reflects_ingested_session(app_client) -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["acute_load"] == 12450.0
+
+
+def test_session_load_trend_requires_auth(app_client) -> None:
+    response = app_client.get("/v1/analysis/session-load-trend")
+    assert response.status_code == 401
+
+
+def test_session_load_trend_empty_db_returns_empty_list(app_client) -> None:
+    response = app_client.get("/v1/analysis/session-load-trend", headers=auth_headers())
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_session_load_trend_excludes_session_without_rpe(app_client) -> None:
+    post_session(app_client)  # SESSION_MD has no sessionRpe field
+    response = app_client.get(
+        "/v1/analysis/session-load-trend", params={"today": "2025-04-20"}, headers=auth_headers()
+    )
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_session_load_trend_reflects_ingested_rpe(app_client) -> None:
+    md = SESSION_MD.replace("hrr60s: 28\n", "hrr60s: 28\nsessionRpe: 7\nsessionLoad: 315.0\n")
+    post_session(app_client, md_bytes=md.encode())
+    response = app_client.get(
+        "/v1/analysis/session-load-trend", params={"today": "2025-04-20"}, headers=auth_headers()
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["session_rpe"] == 7
+    assert body[0]["session_load"] == 315.0
 
 
 def test_resting_hr_trend_requires_auth(app_client) -> None:

@@ -30,6 +30,7 @@ from app.analysis import (
     recent_heaviest_set_pr,
     resting_hr_weekly_trend,
     scale_weekly_trend,
+    session_load_trend,
     vo2max_4week_trend,
 )
 from app.config import DB_PATH
@@ -51,6 +52,7 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
         readiness_trend = readiness_daily_trend(conn, today=today)
         acwr = compute_acwr_trend(conn, today=today)
         acwr_trend = acwr_daily_trend(conn, today=today)
+        session_load = session_load_trend(conn, today=today)
 
     return templates.TemplateResponse(
         request,
@@ -67,6 +69,7 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
             "readiness_trend": [asdict(p) for p in readiness_trend],
             "acwr": acwr,
             "acwr_trend": [asdict(p) for p in acwr_trend],
+            "session_load_trend": [asdict(p) for p in session_load],
         },
     )
 
