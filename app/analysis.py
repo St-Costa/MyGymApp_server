@@ -22,6 +22,7 @@ app.parsing/app.ingestion.
 """
 
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -911,7 +912,8 @@ def _load_values_in_window(
     return [r[0] for r in rows]
 
 
-def _acwr_semaphore(acwr: float | None) -> str:
+def _tonnage_acwr_semaphore(acwr: float | None) -> str:
+    """§12: literature-derived cutoffs (external load — kg lifted)."""
     if acwr is None:
         return "GRAY"
     if 0.8 <= acwr <= 1.3:
@@ -921,12 +923,33 @@ def _acwr_semaphore(acwr: float | None) -> str:
     return "RED"
 
 
+def _rpe_acwr_semaphore(acwr: float | None) -> str:
+    """§13.1: a deliberately wider band than §12's, NOT a literature cutoff —
+    nothing validates the tonnage ACWR's numeric thresholds for a subjective
+    RPE×duration ratio (see ANALYSIS_SPEC.md §13.1). Widened specifically to
+    reflect that lower confidence, so this semaphore reads as a looser
+    heuristic rather than borrowing tonnage's bands wholesale."""
+    if acwr is None:
+        return "GRAY"
+    if 0.7 <= acwr <= 1.4:
+        return "GREEN"
+    if 0.4 <= acwr < 0.7 or 1.4 < acwr <= 1.7:
+        return "YELLOW"
+    return "RED"
+
+
 def _compute_acwr_trend(
-    conn: sqlite3.Connection, column: str, *, today: str | None = None
+    conn: sqlite3.Connection,
+    column: str,
+    semaphore_fn: Callable[[float | None], str],
+    *,
+    today: str | None = None,
 ) -> AcwrTrend:
     """Shared implementation behind compute_acwr_trend (tonnage, §12) and
     compute_rpe_acwr_trend (session_load, §13) — same 7-day/28-day rolling
-    ratio, just a different source column. `today` is an ISO date string
+    ratio, just a different source column and semaphore band (see
+    _tonnage_acwr_semaphore vs _rpe_acwr_semaphore — deliberately different
+    cutoffs, not the same function reused). `today` is an ISO date string
     (YYYY-MM-DD); defaults to the current UTC date. Acute = last 7 days,
     chronic = last 28 days, both inclusive of `today` and rolling (not the
     cardio card's disjoint recent/baseline split)."""
@@ -950,13 +973,13 @@ def _compute_acwr_trend(
         acute_load=acute_load,
         chronic_load=chronic_load,
         acwr=acwr,
-        semaphore=_acwr_semaphore(acwr),
+        semaphore=semaphore_fn(acwr),
     )
 
 
 def compute_acwr_trend(conn: sqlite3.Connection, *, today: str | None = None) -> AcwrTrend:
     """§12: tonnage-based ACWR (the "external load" version)."""
-    return _compute_acwr_trend(conn, "total_tonnage", today=today)
+    return _compute_acwr_trend(conn, "total_tonnage", _tonnage_acwr_semaphore, today=today)
 
 
 # 12-week chart window, matching the existing session tonnage/e1RM trend
@@ -975,7 +998,11 @@ class AcwrPoint:
 
 
 def _acwr_daily_trend(
-    conn: sqlite3.Connection, column: str, *, today: str | None = None
+    conn: sqlite3.Connection,
+    column: str,
+    semaphore_fn: Callable[[float | None], str],
+    *,
+    today: str | None = None,
 ) -> list[AcwrPoint]:
     """Shared implementation behind acwr_daily_trend (tonnage, §12) and
     rpe_acwr_daily_trend (session_load, §13). One AcwrPoint per Monday-keyed
@@ -1024,7 +1051,7 @@ def _acwr_daily_trend(
                 acute_load=acute_load,
                 chronic_load=chronic_load,
                 acwr=acwr,
-                semaphore=_acwr_semaphore(acwr),
+                semaphore=semaphore_fn(acwr),
             )
         )
         cursor += timedelta(days=7)
@@ -1034,7 +1061,7 @@ def _acwr_daily_trend(
 
 def acwr_daily_trend(conn: sqlite3.Connection, *, today: str | None = None) -> list[AcwrPoint]:
     """§12: tonnage-based ACWR chart series (the "external load" version)."""
-    return _acwr_daily_trend(conn, "total_tonnage", today=today)
+    return _acwr_daily_trend(conn, "total_tonnage", _tonnage_acwr_semaphore, today=today)
 
 
 # ---------------------------------------------------------------------------
@@ -1087,10 +1114,13 @@ def session_load_trend(
 # replacement for it, since the raw per-session ratings are still useful to
 # see on their own.
 def compute_rpe_acwr_trend(conn: sqlite3.Connection, *, today: str | None = None) -> AcwrTrend:
-    """§13: session-load-based ACWR (the "internal load" version of §12)."""
-    return _compute_acwr_trend(conn, "session_load", today=today)
+    """§13.1: session-load-based ACWR (the "internal load" version of §12).
+    Uses _rpe_acwr_semaphore's wider, non-literature band — see that
+    function's docstring and ANALYSIS_SPEC.md §13.1 for why it isn't
+    _tonnage_acwr_semaphore's cutoffs reused."""
+    return _compute_acwr_trend(conn, "session_load", _rpe_acwr_semaphore, today=today)
 
 
 def rpe_acwr_daily_trend(conn: sqlite3.Connection, *, today: str | None = None) -> list[AcwrPoint]:
-    """§13 chart series: session-load-based ACWR, same shape as acwr_daily_trend."""
-    return _acwr_daily_trend(conn, "session_load", today=today)
+    """§13.1 chart series: session-load-based ACWR, same shape as acwr_daily_trend."""
+    return _acwr_daily_trend(conn, "session_load", _rpe_acwr_semaphore, today=today)
