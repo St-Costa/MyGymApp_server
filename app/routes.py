@@ -23,6 +23,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from fastapi.responses import JSONResponse
 
 from app.analysis import (
+    acwr_daily_trend,
     all_time_tonnage_pr,
     compute_acwr_trend,
     compute_cardio_trend_card,
@@ -188,6 +189,14 @@ def get_acwr_trend(today: str | None = Query(default=None)) -> dict:
     with connect(DB_PATH) as conn:
         trend = compute_acwr_trend(conn, today=today)
     return asdict(trend)
+
+
+@router.get("/v1/analysis/acwr-daily-trend", dependencies=[Depends(require_valid_bearer_token)])
+def get_acwr_daily_trend(today: str | None = Query(default=None)) -> list[dict]:
+    """§12 chart series: 12-week window, one ACWR point per day."""
+    with connect(DB_PATH) as conn:
+        points = acwr_daily_trend(conn, today=today)
+    return [asdict(p) for p in points]
 
 
 @router.get("/v1/analysis/resting-hr-trend", dependencies=[Depends(require_valid_bearer_token)])

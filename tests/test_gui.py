@@ -56,6 +56,23 @@ def test_dashboard_has_dedicated_rhythm_and_cardiac_issues_section(app_client) -
         assert f'id="{chart_id}"' in response.text
 
 
+def test_dashboard_has_training_load_section_with_acwr_chart(app_client) -> None:
+    response = app_client.get("/")
+    assert response.status_code == 200
+    assert "Training load" in response.text
+    assert 'id="chart-acwr"' in response.text
+    assert 'class="dot GRAY"' in response.text  # no sessions yet -> GRAY semaphore
+
+
+def test_dashboard_acwr_chart_reflects_ingested_session(app_client) -> None:
+    post_session(app_client)  # SESSION_MD: totalTonnage=12450.0, dated 2025-04-15
+    response = app_client.get("/", params={"today": "2025-04-20"})
+    assert response.status_code == 200
+    # A single session is both the entire acute and chronic window -> acwr == 1.0,
+    # which falls in the 0.8-1.3 green band.
+    assert 'class="dot GREEN"' in response.text
+
+
 def test_dashboard_charts_have_a_description(app_client) -> None:
     response = app_client.get("/")
     assert response.status_code == 200
