@@ -24,11 +24,13 @@ from app.analysis import (
     all_time_tonnage_pr,
     compute_acwr_trend,
     compute_cardio_trend_card,
+    compute_rpe_acwr_trend,
     exercise_history,
     list_exercises,
     readiness_daily_trend,
     recent_heaviest_set_pr,
     resting_hr_weekly_trend,
+    rpe_acwr_daily_trend,
     scale_weekly_trend,
     session_load_trend,
     vo2max_4week_trend,
@@ -53,6 +55,8 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
         acwr = compute_acwr_trend(conn, today=today)
         acwr_trend = acwr_daily_trend(conn, today=today)
         session_load = session_load_trend(conn, today=today)
+        rpe_acwr = compute_rpe_acwr_trend(conn, today=today)
+        rpe_acwr_trend = rpe_acwr_daily_trend(conn, today=today)
 
     return templates.TemplateResponse(
         request,
@@ -70,6 +74,8 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
             "acwr": acwr,
             "acwr_trend": [asdict(p) for p in acwr_trend],
             "session_load_trend": [asdict(p) for p in session_load],
+            "rpe_acwr": rpe_acwr,
+            "rpe_acwr_trend": [asdict(p) for p in rpe_acwr_trend],
         },
     )
 

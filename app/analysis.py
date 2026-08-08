@@ -894,12 +894,17 @@ class AcwrTrend:
     semaphore: str  # GRAY | RED | YELLOW | GREEN
 
 
-def _tonnage_values_in_window(conn: sqlite3.Connection, start: str, end: str) -> list[float]:
+def _load_values_in_window(
+    conn: sqlite3.Connection, column: str, start: str, end: str
+) -> list[float]:
+    """column is one of a fixed internal caller set (total_tonnage,
+    session_load) — never user input, so this isn't a string-formatting
+    injection risk despite not being a bind parameter."""
     rows = conn.execute(
-        """
-        SELECT total_tonnage FROM sessions
+        f"""
+        SELECT {column} FROM sessions  -- noqa: S608
         WHERE date >= ? AND date <= ? AND schema_version > 0
-          AND total_tonnage IS NOT NULL AND total_tonnage > 0
+          AND {column} IS NOT NULL AND {column} > 0
         """,
         (start, end),
     ).fetchall()
@@ -916,17 +921,24 @@ def _acwr_semaphore(acwr: float | None) -> str:
     return "RED"
 
 
-def compute_acwr_trend(conn: sqlite3.Connection, *, today: str | None = None) -> AcwrTrend:
-    """§12. `today` is an ISO date string (YYYY-MM-DD); defaults to the current
-    UTC date. Acute = last 7 days, chronic = last 28 days, both inclusive of
-    `today` and rolling (not the cardio card's disjoint recent/baseline split)."""
+def _compute_acwr_trend(
+    conn: sqlite3.Connection, column: str, *, today: str | None = None
+) -> AcwrTrend:
+    """Shared implementation behind compute_acwr_trend (tonnage, §12) and
+    compute_rpe_acwr_trend (session_load, §13) — same 7-day/28-day rolling
+    ratio, just a different source column. `today` is an ISO date string
+    (YYYY-MM-DD); defaults to the current UTC date. Acute = last 7 days,
+    chronic = last 28 days, both inclusive of `today` and rolling (not the
+    cardio card's disjoint recent/baseline split)."""
     today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
     acute_start = today_date - timedelta(days=7)
     chronic_start = today_date - timedelta(days=28)
 
-    acute_values = _tonnage_values_in_window(conn, acute_start.isoformat(), today_date.isoformat())
-    chronic_values = _tonnage_values_in_window(
-        conn, chronic_start.isoformat(), today_date.isoformat()
+    acute_values = _load_values_in_window(
+        conn, column, acute_start.isoformat(), today_date.isoformat()
+    )
+    chronic_values = _load_values_in_window(
+        conn, column, chronic_start.isoformat(), today_date.isoformat()
     )
 
     acute_load = _mean(acute_values)
@@ -940,6 +952,11 @@ def compute_acwr_trend(conn: sqlite3.Connection, *, today: str | None = None) ->
         acwr=acwr,
         semaphore=_acwr_semaphore(acwr),
     )
+
+
+def compute_acwr_trend(conn: sqlite3.Connection, *, today: str | None = None) -> AcwrTrend:
+    """§12: tonnage-based ACWR (the "external load" version)."""
+    return _compute_acwr_trend(conn, "total_tonnage", today=today)
 
 
 # 12-week chart window, matching the existing session tonnage/e1RM trend
@@ -957,23 +974,27 @@ class AcwrPoint:
     semaphore: str
 
 
-def acwr_daily_trend(conn: sqlite3.Connection, *, today: str | None = None) -> list[AcwrPoint]:
-    """§12 chart series: one AcwrPoint per day over a 12-week window, each
-    computed from its own rolling 7-day/28-day tonnage means (so the chronic
-    lookback for the first days in the window reaches earlier than the
-    12-week fetch itself — same as compute_acwr_trend for a single day)."""
+def _acwr_daily_trend(
+    conn: sqlite3.Connection, column: str, *, today: str | None = None
+) -> list[AcwrPoint]:
+    """Shared implementation behind acwr_daily_trend (tonnage, §12) and
+    rpe_acwr_daily_trend (session_load, §13). One AcwrPoint per day over a
+    12-week window, each computed from its own rolling 7-day/28-day means
+    (so the chronic lookback for the first days in the window reaches
+    earlier than the 12-week fetch itself — same as _compute_acwr_trend for
+    a single day)."""
     today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
     series_start = today_date - timedelta(weeks=_ACWR_SERIES_WEEKS)
     fetch_start = series_start - timedelta(days=28)  # cover the earliest day's chronic lookback
 
-    # (date, tonnage) pairs, one per qualifying session, ordered by date —
-    # matches _tonnage_values_in_window's per-session values (a day with
+    # (date, value) pairs, one per qualifying session, ordered by date —
+    # matches _load_values_in_window's per-session values (a day with
     # multiple sessions contributes each one separately to the mean).
     rows: list[tuple[str, float]] = conn.execute(
-        """
-        SELECT date, total_tonnage FROM sessions
+        f"""
+        SELECT date, {column} FROM sessions  -- noqa: S608 — column from a fixed internal caller set
         WHERE date >= ? AND date <= ? AND schema_version > 0
-          AND total_tonnage IS NOT NULL AND total_tonnage > 0
+          AND {column} IS NOT NULL AND {column} > 0
         ORDER BY date
         """,
         (fetch_start.isoformat(), today_date.isoformat()),
@@ -1006,6 +1027,11 @@ def acwr_daily_trend(conn: sqlite3.Connection, *, today: str | None = None) -> l
         cursor += timedelta(days=1)
 
     return points
+
+
+def acwr_daily_trend(conn: sqlite3.Connection, *, today: str | None = None) -> list[AcwrPoint]:
+    """§12: tonnage-based ACWR chart series (the "external load" version)."""
+    return _acwr_daily_trend(conn, "total_tonnage", today=today)
 
 
 # ---------------------------------------------------------------------------
@@ -1048,3 +1074,20 @@ def session_load_trend(
         SessionLoadPoint(date=date_str, session_rpe=rpe, session_load=load)
         for date_str, rpe, load in rows
     ]
+
+
+# ACWR applied to session_load instead of total_tonnage — the standard way
+# session-RPE is actually used for injury/overtraining monitoring in the
+# literature (an absolute RPE×duration number has no meaning on its own;
+# the acute:chronic ratio is what's normally tracked). A second, separate
+# chart from the raw session_load_trend above, per user decision — not a
+# replacement for it, since the raw per-session ratings are still useful to
+# see on their own.
+def compute_rpe_acwr_trend(conn: sqlite3.Connection, *, today: str | None = None) -> AcwrTrend:
+    """§13: session-load-based ACWR (the "internal load" version of §12)."""
+    return _compute_acwr_trend(conn, "session_load", today=today)
+
+
+def rpe_acwr_daily_trend(conn: sqlite3.Connection, *, today: str | None = None) -> list[AcwrPoint]:
+    """§13 chart series: session-load-based ACWR, same shape as acwr_daily_trend."""
+    return _acwr_daily_trend(conn, "session_load", today=today)

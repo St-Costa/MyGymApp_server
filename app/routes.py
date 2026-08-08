@@ -27,8 +27,10 @@ from app.analysis import (
     all_time_tonnage_pr,
     compute_acwr_trend,
     compute_cardio_trend_card,
+    compute_rpe_acwr_trend,
     recent_heaviest_set_pr,
     resting_hr_weekly_trend,
+    rpe_acwr_daily_trend,
     scale_weekly_trend,
     session_load_trend,
     vo2max_4week_trend,
@@ -205,6 +207,22 @@ def get_session_load_trend(today: str | None = Query(default=None)) -> list[dict
     """§13: session-RPE / Foster session-load, 12-week window."""
     with connect(DB_PATH) as conn:
         points = session_load_trend(conn, today=today)
+    return [asdict(p) for p in points]
+
+
+@router.get("/v1/analysis/rpe-acwr-trend", dependencies=[Depends(require_valid_bearer_token)])
+def get_rpe_acwr_trend(today: str | None = Query(default=None)) -> dict:
+    """§13.1: acute:chronic session-load ratio, the "internal load" ACWR."""
+    with connect(DB_PATH) as conn:
+        trend = compute_rpe_acwr_trend(conn, today=today)
+    return asdict(trend)
+
+
+@router.get("/v1/analysis/rpe-acwr-daily-trend", dependencies=[Depends(require_valid_bearer_token)])
+def get_rpe_acwr_daily_trend(today: str | None = Query(default=None)) -> list[dict]:
+    """§13.1 chart series: 12-week window, one RPE-ACWR point per day."""
+    with connect(DB_PATH) as conn:
+        points = rpe_acwr_daily_trend(conn, today=today)
     return [asdict(p) for p in points]
 
 

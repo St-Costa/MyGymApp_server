@@ -530,13 +530,20 @@ every other numeric session field, a missing value stays `None`, not 0 — 0 isn
 RPE, so "not answered" must stay distinguishable from an (invalid) reported effort of
 zero. `sessions.session_rpe`/`session_load` are nullable columns for the same reason.
 
-**Chart series**: same 12-week window as §1.6's tonnage/e1RM trend and §12's ACWR chart,
-plotting `sessionLoad` per session (skipping sessions where it's `None`) — no derived
-semaphore for this pass, since there's no published RPE-based threshold as directly
-applicable as ACWR's 0.8-1.5 band (session-RPE is normally compared against an athlete's
-own history, not an absolute scale). A future pass could compute an ACWR-style
-acute:chronic ratio on `sessionLoad` the same way §12 does on tonnage, once enough
-history has accumulated to judge whether it adds signal beyond the tonnage-based one.
+**Raw chart series**: same 12-week window as §1.6's tonnage/e1RM trend and §12's ACWR
+chart, plotting `sessionLoad` per session (skipping sessions where it's `None`). A raw
+number on its own has limited diagnostic value (there's no published absolute-scale
+threshold for RPE×duration) — kept mainly so individual ratings are visible at a glance,
+not as the primary training-load signal from this section.
+
+**RPE-based ACWR** (§13.1, added after the raw chart's limited standalone value was
+flagged): the same §12 acute:chronic ratio and GRAY/GREEN/YELLOW/RED semaphore, computed
+on `sessionLoad` instead of `total_tonnage` — this is how session-RPE is actually used for
+training-load monitoring in the literature (an "internal load" ACWR compared against the
+tonnage-based "external load" one, not looked at as a bare number). A separate chart/card
+from the tonnage ACWR, not a replacement — divergence between the two (e.g. tonnage steady
+but RPE-ACWR climbing) is itself a signal worth seeing, since it means effort is rising
+without a matching rise in weight moved.
 
 ---
 

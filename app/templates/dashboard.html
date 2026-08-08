@@ -96,19 +96,26 @@
 
 <div class="chart-wrap" id="wrap-chart-acwr">
   <p class="chart-desc">
-    Acute (7-day) vs chronic (28-day) tonnage — a load-monitoring signal borrowed from
-    team-sport injury research, not a diagnosis. 0.8-1.3 is the steady-state band; above
-    1.5 or below 0.5 means load changed sharply relative to the last month
-    (ANALYSIS_SPEC.md §12).
+    How much you've lifted this week vs your last month's average. Too high, too fast is
+    linked to injury risk; too low for too long means you're detraining. 0.8-1.3 is the
+    steady zone.
   </p>
   <div class="chart-canvas-box"><canvas id="chart-acwr"></canvas></div>
 </div>
 
+<div class="chart-wrap" id="wrap-chart-rpeAcwr">
+  <p class="chart-desc">
+    Same idea, but from how hard sessions felt (1-10 self-rating × duration) instead of
+    how much weight you moved. Rising here while the chart above stays flat means you're
+    working harder for the same output — an early fatigue signal weight alone won't show.
+  </p>
+  <div class="chart-canvas-box"><canvas id="chart-rpeAcwr"></canvas></div>
+</div>
+
 <div class="chart-wrap" id="wrap-chart-sessionLoad">
   <p class="chart-desc">
-    Session-RPE (1-10 self-reported effort) × duration — Foster method, the standard
-    "internal load" measure, self-reported per session rather than derived from tonnage.
-    Only sessions with a recorded rating are plotted (ANALYSIS_SPEC.md §13).
+    Your raw effort rating per session, for reference — the chart above is the more useful
+    trend view.
   </p>
   <div class="chart-canvas-box"><canvas id="chart-sessionLoad"></canvas></div>
 </div>
@@ -468,6 +475,26 @@
     "chart-acwr",
     {{ acwr_trend | map(attribute="date") | list | tojson }},
     { label: "ACWR", values: {{ acwr_trend | map(attribute="acwr") | list | tojson }}, color: "#4dd0e1" },
+    "date",
+    [
+      { value: 1.5, severity: "danger", label: "Spike > 1.5 (app threshold)" },
+      { value: 0.5, severity: "danger", label: "Undertraining < 0.5 (app threshold)" },
+    ],
+    [{ min: 0.8, max: 1.3, color: "#3ecf7e" }]
+  );
+
+  // §13.1: same acute:chronic ratio and bands as the tonnage ACWR above,
+  // computed on session_load (RPE × duration) instead — the "internal load"
+  // counterpart, meant to be read side by side with the chart above rather
+  // than in isolation.
+  document.getElementById("wrap-chart-rpeAcwr").insertAdjacentHTML(
+    "afterbegin",
+    chartHeader({ name: "RPE-based ACWR", unit: "", good: null })
+  );
+  lineChart(
+    "chart-rpeAcwr",
+    {{ rpe_acwr_trend | map(attribute="date") | list | tojson }},
+    { label: "RPE-based ACWR", values: {{ rpe_acwr_trend | map(attribute="acwr") | list | tojson }}, color: "#c77dff" },
     "date",
     [
       { value: 1.5, severity: "danger", label: "Spike > 1.5 (app threshold)" },
