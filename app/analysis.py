@@ -878,3 +878,65 @@ def per_exercise_change(
         change_percent=change_percent,
         is_first_time=is_first_time,
     )
+
+
+# ---------------------------------------------------------------------------
+# §12 Acute:Chronic Workload Ratio (ACWR) — training-load semaphore
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class AcwrTrend:
+    window_end: str  # ISO date
+    acute_load: float  # mean total_tonnage, last 7 days
+    chronic_load: float  # mean total_tonnage, last 28 days
+    acwr: float | None  # None if chronic_load == 0 (not enough data)
+    semaphore: str  # GRAY | RED | YELLOW | GREEN
+
+
+def _tonnage_values_in_window(conn: sqlite3.Connection, start: str, end: str) -> list[float]:
+    rows = conn.execute(
+        """
+        SELECT total_tonnage FROM sessions
+        WHERE date >= ? AND date <= ? AND schema_version > 0
+          AND total_tonnage IS NOT NULL AND total_tonnage > 0
+        """,
+        (start, end),
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def _acwr_semaphore(acwr: float | None) -> str:
+    if acwr is None:
+        return "GRAY"
+    if 0.8 <= acwr <= 1.3:
+        return "GREEN"
+    if 0.5 <= acwr < 0.8 or 1.3 < acwr <= 1.5:
+        return "YELLOW"
+    return "RED"
+
+
+def compute_acwr_trend(conn: sqlite3.Connection, *, today: str | None = None) -> AcwrTrend:
+    """§12. `today` is an ISO date string (YYYY-MM-DD); defaults to the current
+    UTC date. Acute = last 7 days, chronic = last 28 days, both inclusive of
+    `today` and rolling (not the cardio card's disjoint recent/baseline split)."""
+    today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
+    acute_start = today_date - timedelta(days=7)
+    chronic_start = today_date - timedelta(days=28)
+
+    acute_values = _tonnage_values_in_window(conn, acute_start.isoformat(), today_date.isoformat())
+    chronic_values = _tonnage_values_in_window(
+        conn, chronic_start.isoformat(), today_date.isoformat()
+    )
+
+    acute_load = _mean(acute_values)
+    chronic_load = _mean(chronic_values)
+    acwr = acute_load / chronic_load if chronic_load > 0 else None
+
+    return AcwrTrend(
+        window_end=today_date.isoformat(),
+        acute_load=acute_load,
+        chronic_load=chronic_load,
+        acwr=acwr,
+        semaphore=_acwr_semaphore(acwr),
+    )

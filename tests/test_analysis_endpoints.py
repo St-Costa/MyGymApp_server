@@ -27,6 +27,29 @@ def test_cardio_trend_reflects_ingested_session(app_client) -> None:
     assert body["metrics"]["restingHr"]["current"] == 58.0
 
 
+def test_acwr_trend_requires_auth(app_client) -> None:
+    response = app_client.get("/v1/analysis/acwr-trend")
+    assert response.status_code == 401
+
+
+def test_acwr_trend_empty_db_returns_gray_semaphore(app_client) -> None:
+    response = app_client.get("/v1/analysis/acwr-trend", headers=auth_headers())
+    assert response.status_code == 200
+    body = response.json()
+    assert body["semaphore"] == "GRAY"
+    assert body["acwr"] is None
+
+
+def test_acwr_trend_reflects_ingested_session(app_client) -> None:
+    post_session(app_client)  # SESSION_MD: totalTonnage=12450.0, dated 2025-04-15
+    response = app_client.get(
+        "/v1/analysis/acwr-trend", params={"today": "2025-04-20"}, headers=auth_headers()
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["acute_load"] == 12450.0
+
+
 def test_resting_hr_trend_requires_auth(app_client) -> None:
     response = app_client.get("/v1/analysis/resting-hr-trend")
     assert response.status_code == 401

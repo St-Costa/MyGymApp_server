@@ -24,6 +24,7 @@ from fastapi.responses import JSONResponse
 
 from app.analysis import (
     all_time_tonnage_pr,
+    compute_acwr_trend,
     compute_cardio_trend_card,
     recent_heaviest_set_pr,
     resting_hr_weekly_trend,
@@ -179,6 +180,14 @@ def get_cardio_trend(today: str | None = Query(default=None)) -> dict:
     with connect(DB_PATH) as conn:
         card = compute_cardio_trend_card(conn, today=today)
     return asdict(card)
+
+
+@router.get("/v1/analysis/acwr-trend", dependencies=[Depends(require_valid_bearer_token)])
+def get_acwr_trend(today: str | None = Query(default=None)) -> dict:
+    """§12: acute:chronic tonnage workload ratio, 7-day vs 28-day rolling mean."""
+    with connect(DB_PATH) as conn:
+        trend = compute_acwr_trend(conn, today=today)
+    return asdict(trend)
 
 
 @router.get("/v1/analysis/resting-hr-trend", dependencies=[Depends(require_valid_bearer_token)])
