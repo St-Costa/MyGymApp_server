@@ -11,46 +11,9 @@
 {% endif %}
 
 <h2 class="section-title">Readiness</h2>
-<p class="section-desc">
-  Daily HRV-based readiness measurement from the phone (separate from gym sessions) — how
-  recovered you are today, not a fitness trend.
-</p>
-
-{% if readiness %}
-{% if readiness.readiness in ("PEAK", "GOOD") %}
-{% set readiness_dot = "GREEN" %}
-{% elif readiness.readiness == "NORMAL" %}
-{% set readiness_dot = "GRAY" %}
-{% elif readiness.readiness == "LIGHT_DAY" %}
-{% set readiness_dot = "YELLOW" %}
-{% elif readiness.readiness == "DELOAD_RECOMMENDED" %}
-{% set readiness_dot = "RED" %}
-{% else %}
-{% set readiness_dot = "GRAY" %}
-{% endif %}
-<div class="card" id="readiness-card">
-  <div class="metric-label"><span class="dot {{ readiness_dot }}"></span>{{ readiness.readiness }}</div>
-  <div class="metric-value">{{ readiness.measured_at[:10] }}</div>
-  <div class="metric-delta">{{ readiness.recommendation }}</div>
-</div>
-{% else %}
-<p class="empty">No readiness measurements synced yet.</p>
-{% endif %}
 
 <div class="chart-wrap" id="wrap-readinessChart">
-  <p class="chart-desc">
-    Daily readiness state exactly as the phone classified it, worst to best — the phone
-    computes this from a rolling baseline the server doesn't have access to, so this is
-    not a recalculation.
-  </p>
   <div class="chart-canvas-box"><canvas id="readinessChart"></canvas></div>
-  <div class="readiness-legend">
-    <span><span class="dot RED"></span>Deload recommended</span>
-    <span><span class="dot YELLOW"></span>Light day</span>
-    <span><span class="dot GRAY"></span>Normal</span>
-    <span><span class="dot GREEN"></span>Good</span>
-    <span><span class="dot PURPLE"></span>Peak</span>
-  </div>
 </div>
 
 <h2 class="section-title">Rhythm &amp; cardiac issues</h2>

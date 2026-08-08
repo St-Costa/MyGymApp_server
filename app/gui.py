@@ -23,7 +23,6 @@ from app.analysis import (
     all_time_tonnage_pr,
     compute_cardio_trend_card,
     exercise_history,
-    latest_readiness,
     list_exercises,
     readiness_daily_trend,
     recent_heaviest_set_pr,
@@ -47,7 +46,6 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
         resting_hr = resting_hr_weekly_trend(conn, today=today)
         vo2max = vo2max_4week_trend(conn, today=today)
         scale = scale_weekly_trend(conn, today=today)
-        readiness = latest_readiness(conn)
         readiness_trend = readiness_daily_trend(conn, today=today)
 
     return templates.TemplateResponse(
@@ -62,7 +60,6 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
             "resting_hr_trend": resting_hr,
             "vo2max_trend": vo2max,
             "scale_trend": scale,
-            "readiness": readiness,
             "readiness_trend": [asdict(p) for p in readiness_trend],
         },
     )

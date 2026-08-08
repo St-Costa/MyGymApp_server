@@ -22,19 +22,17 @@ def test_dashboard_reflects_ingested_session(app_client) -> None:
     assert "Only 1 session(s) in last 4 weeks" in response.text
 
 
-def test_dashboard_readiness_section_shows_empty_state_with_no_data(app_client) -> None:
+def test_dashboard_readiness_chart_renders_with_no_data(app_client) -> None:
     response = app_client.get("/")
     assert response.status_code == 200
-    assert "No readiness measurements synced yet" in response.text
+    assert 'id="wrap-readinessChart"' in response.text
 
 
-def test_dashboard_readiness_section_reflects_latest_event(app_client) -> None:
-    # READINESS_MD: readiness=GOOD, lnRmssd=4.30, dated 2026-08-05.
+def test_dashboard_readiness_chart_reflects_latest_event(app_client) -> None:
+    # READINESS_MD: readiness=GOOD, dated 2026-08-05.
     post_readiness(app_client)
     response = app_client.get("/")
     assert response.status_code == 200
-    assert "GOOD" in response.text
-    assert "HRV above baseline. Good day to push intensity." in response.text
     assert 'id="readinessChart"' in response.text
 
 
@@ -43,13 +41,9 @@ def test_dashboard_readiness_chart_plots_state_not_a_number(app_client) -> None:
     response = app_client.get("/")
     assert response.status_code == 200
     # The chart plots the phone's own classification directly (an ordinal
-    # category axis: DELOAD_RECOMMENDED..PEAK), not a recalculated number —
-    # the state->color map, the ordered level list, and the 5-state legend
-    # must all be present.
+    # category axis: DELOAD_RECOMMENDED..PEAK), not a recalculated number.
     assert "READINESS_STATE_COLOR" in response.text
     assert "READINESS_LEVELS" in response.text
-    for label in ("Deload recommended", "Light day", "Normal", "Good", "Peak"):
-        assert label in response.text
 
 
 def test_dashboard_has_dedicated_rhythm_and_cardiac_issues_section(app_client) -> None:
