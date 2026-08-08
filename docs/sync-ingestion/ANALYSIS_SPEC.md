@@ -472,6 +472,44 @@ endpoints matter, not each individual delta.
 
 ---
 
+## 12. Acute:Chronic Workload Ratio (ACWR) — training-load semaphore for the strength side
+
+New addition (2026-08), not ported from the phone — the phone never computed this. Added
+as the strength-side counterpart to §11.1's cardio trend card, on the same recent-vs-
+baseline semaphore idea, after a research pass turned up ACWR as the one training-load
+metric with a direct, low-friction mapping onto data already stored (`sessions.total_tonnage`).
+See the research note for the full literature review and the other candidates considered
+(session-RPE, bilateral asymmetry, dynapenia) and why they weren't picked for this pass.
+
+```
+acute_load   = mean(total_tonnage over the last 7 days, sessions with tonnage > 0)
+chronic_load = mean(total_tonnage over the last 28 days, sessions with tonnage > 0)
+acwr = acute_load / chronic_load     if chronic_load > 0 else None
+
+semaphore = GRAY   if acute_load == 0 or chronic_load == 0   # not enough data yet
+          = GREEN  if 0.8 <= acwr <= 1.3
+          = YELLOW if 0.5 <= acwr < 0.8 or 1.3 < acwr <= 1.5
+          = RED    if acwr < 0.5 or acwr > 1.5
+```
+
+**Window**: acute = last 7 days (inclusive of today), chronic = last 28 days (inclusive of
+today) — same two windows already fetched for the cardio card, just a different aggregate
+(mean tonnage instead of mean HR/HRV) and a different bucketing (rolling 7/28 from `today`,
+not the cardio card's non-overlapping recent-14/baseline-14 split, since ACWR is defined
+specifically as acute-window-nested-inside-chronic-window, not two disjoint halves).
+
+**Green band note**: research (see review note) reports 0.8–1.5 as the commonly-cited
+"safe" range with >1.5 flagged as elevated risk, but doesn't establish a single accepted
+cutoff for a finer-grained good/caution split. Treat 0.8–1.3 (green) / 1.3–1.5 (yellow) as
+a deliberately conservative choice for a single-user tool with no coach oversight, not a
+literature-derived threshold — reconsider if it proves too twitchy in practice.
+
+**Caveat to preserve in any UI copy**: ACWR predictive validity for injury risk is
+contested (see research note's sources) — surface this as an informational trend, not a
+medical claim, same posture as the cardio card's existing "not a diagnosis" framing.
+
+---
+
 ## Server-side data availability gaps to resolve before implementing
 
 1. **7-day resting-HR baseline for VO2max** (§4.2) and **14-day LnRMSSD baseline for
