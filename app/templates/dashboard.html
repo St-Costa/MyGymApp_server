@@ -90,6 +90,20 @@
   <div class="chart-canvas-box"><canvas id="vo2maxChart"></canvas></div>
 </div>
 
+<h2 class="section-title">
+  <span class="dot {{ acwr.semaphore }}"></span>Training load
+</h2>
+
+<div class="chart-wrap" id="wrap-chart-acwr">
+  <p class="chart-desc">
+    Acute (7-day) vs chronic (28-day) tonnage — a load-monitoring signal borrowed from
+    team-sport injury research, not a diagnosis. 0.8-1.3 is the steady-state band; above
+    1.5 or below 0.5 means load changed sharply relative to the last month
+    (ANALYSIS_SPEC.md §12).
+  </p>
+  <div class="chart-canvas-box"><canvas id="chart-acwr"></canvas></div>
+</div>
+
 <h2 class="section-title">Body composition</h2>
 
 <div class="chart-wrap" id="wrap-weightChart">
@@ -431,6 +445,26 @@
     { label: "VO2max", values: {{ vo2max_trend | map(attribute="value") | list | tojson }}, color: "#3ecf7e" },
     "month",
     THRESHOLDS.vo2max
+  );
+
+  // ACWR band/thresholds mirror ANALYSIS_SPEC.md §12's own semaphore cutoffs
+  // (app-internal design thresholds adapted from the commonly-cited 0.8-1.5
+  // "safe" literature range, not a single accepted clinical scale — same
+  // "not medical guidance" caveat as the cardio card's own cutoffs).
+  document.getElementById("wrap-chart-acwr").insertAdjacentHTML(
+    "afterbegin",
+    chartHeader({ name: "ACWR", unit: "", good: null })
+  );
+  lineChart(
+    "chart-acwr",
+    {{ acwr_trend | map(attribute="date") | list | tojson }},
+    { label: "ACWR", values: {{ acwr_trend | map(attribute="acwr") | list | tojson }}, color: "#4dd0e1" },
+    "date",
+    [
+      { value: 1.5, severity: "danger", label: "Spike > 1.5 (app threshold)" },
+      { value: 0.5, severity: "danger", label: "Undertraining < 0.5 (app threshold)" },
+    ],
+    [{ min: 0.8, max: 1.3, color: "#3ecf7e" }]
   );
 
   document.getElementById("wrap-weightChart").insertAdjacentHTML(

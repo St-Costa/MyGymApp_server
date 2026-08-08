@@ -940,3 +940,69 @@ def compute_acwr_trend(conn: sqlite3.Connection, *, today: str | None = None) ->
         acwr=acwr,
         semaphore=_acwr_semaphore(acwr),
     )
+
+
+# 12-week chart window, matching the existing session tonnage/e1RM trend
+# convention (ANALYSIS_SPEC.md §1.6) so this chart spans the same period as
+# the other trend charts already on the dashboard.
+_ACWR_SERIES_WEEKS = 12
+
+
+@dataclass
+class AcwrPoint:
+    date: str  # ISO date
+    acute_load: float
+    chronic_load: float
+    acwr: float | None
+    semaphore: str
+
+
+def acwr_daily_trend(conn: sqlite3.Connection, *, today: str | None = None) -> list[AcwrPoint]:
+    """§12 chart series: one AcwrPoint per day over a 12-week window, each
+    computed from its own rolling 7-day/28-day tonnage means (so the chronic
+    lookback for the first days in the window reaches earlier than the
+    12-week fetch itself — same as compute_acwr_trend for a single day)."""
+    today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
+    series_start = today_date - timedelta(weeks=_ACWR_SERIES_WEEKS)
+    fetch_start = series_start - timedelta(days=28)  # cover the earliest day's chronic lookback
+
+    # (date, tonnage) pairs, one per qualifying session, ordered by date —
+    # matches _tonnage_values_in_window's per-session values (a day with
+    # multiple sessions contributes each one separately to the mean).
+    rows: list[tuple[str, float]] = conn.execute(
+        """
+        SELECT date, total_tonnage FROM sessions
+        WHERE date >= ? AND date <= ? AND schema_version > 0
+          AND total_tonnage IS NOT NULL AND total_tonnage > 0
+        ORDER BY date
+        """,
+        (fetch_start.isoformat(), today_date.isoformat()),
+    ).fetchall()
+
+    points: list[AcwrPoint] = []
+    cursor = series_start
+    while cursor <= today_date:
+        acute_start = cursor - timedelta(days=7)
+        chronic_start = cursor - timedelta(days=28)
+
+        acute_values = [v for d, v in rows if acute_start.isoformat() <= d <= cursor.isoformat()]
+        chronic_values = [
+            v for d, v in rows if chronic_start.isoformat() <= d <= cursor.isoformat()
+        ]
+
+        acute_load = _mean(acute_values)
+        chronic_load = _mean(chronic_values)
+        acwr = acute_load / chronic_load if chronic_load > 0 else None
+
+        points.append(
+            AcwrPoint(
+                date=cursor.isoformat(),
+                acute_load=acute_load,
+                chronic_load=chronic_load,
+                acwr=acwr,
+                semaphore=_acwr_semaphore(acwr),
+            )
+        )
+        cursor += timedelta(days=1)
+
+    return points
