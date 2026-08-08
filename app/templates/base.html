@@ -230,9 +230,15 @@
       return MONTH_ABBR[d.getUTCMonth()];
     }
 
+    function dayMonthLabel(dateStr) {
+      const d = new Date(dateStr + "T00:00:00Z");
+      return d.getUTCDate() + " " + MONTH_ABBR[d.getUTCMonth()];
+    }
+
     function formatLabels(dates, mode) {
       if (mode === "week") return dates.map(isoWeekLabel);
       if (mode === "month") return dates.map(monthLabel);
+      if (mode === "date") return dates.map(dayMonthLabel);
       return dates;
     }
 
