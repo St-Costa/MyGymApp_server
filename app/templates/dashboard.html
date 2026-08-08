@@ -297,7 +297,9 @@
   };
 
   function chartHeader(meta) {
-    const arrow = meta.good ? `<span class="chart-direction">${DIRECTION_ARROW[meta.good]}</span>` : "";
+    const arrow = meta.good
+      ? `<span class="chart-direction chart-direction-${meta.good}">${DIRECTION_ARROW[meta.good]}</span>`
+      : "";
     const unit = meta.unit ? ` (${meta.unit})` : "";
     return `<div class="chart-header"><span>${meta.name}${unit}</span>${arrow}</div>`;
   }
