@@ -47,6 +47,42 @@ def test_init_db_adds_is_bodyweight_to_existing_exercise_sets_table(tmp_path) ->
     conn.close()
 
 
+def test_init_db_adds_session_rpe_columns_to_existing_sessions_table(tmp_path) -> None:
+    db_path = tmp_path / "old_sessions.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE sessions (
+          id             TEXT PRIMARY KEY,
+          date           TEXT,
+          total_tonnage  REAL,
+          content_hash   TEXT NOT NULL,
+          raw_path       TEXT NOT NULL,
+          received_at    TEXT NOT NULL,
+          schema_version INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """INSERT INTO sessions (id, date, total_tonnage, content_hash, raw_path,
+                                  received_at, schema_version)
+           VALUES ('s1', '2026-01-01', 1000.0, 'sha256:x', 'x.md', '2026-01-01T00:00:00Z', 1)"""
+    )
+    conn.commit()
+    conn.close()
+
+    init_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+    assert "session_rpe" in columns
+    assert "session_load" in columns
+
+    row = conn.execute("SELECT session_rpe, session_load FROM sessions WHERE id = 's1'").fetchone()
+    assert row == (None, None)  # existing rows stay NULL, not 0 — see storage.py's migration note
+    conn.close()
+
+
 def test_init_db_is_idempotent_on_already_migrated_table(tmp_path) -> None:
     db_path = tmp_path / "new.sqlite3"
     init_db(db_path)

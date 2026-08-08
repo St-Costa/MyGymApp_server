@@ -104,6 +104,15 @@
   <div class="chart-canvas-box"><canvas id="chart-acwr"></canvas></div>
 </div>
 
+<div class="chart-wrap" id="wrap-chart-sessionLoad">
+  <p class="chart-desc">
+    Session-RPE (1-10 self-reported effort) × duration — Foster method, the standard
+    "internal load" measure, self-reported per session rather than derived from tonnage.
+    Only sessions with a recorded rating are plotted (ANALYSIS_SPEC.md §13).
+  </p>
+  <div class="chart-canvas-box"><canvas id="chart-sessionLoad"></canvas></div>
+</div>
+
 <h2 class="section-title">Body composition</h2>
 
 <div class="chart-wrap" id="wrap-weightChart">
@@ -465,6 +474,25 @@
       { value: 0.5, severity: "danger", label: "Undertraining < 0.5 (app threshold)" },
     ],
     [{ min: 0.8, max: 1.3, color: "#3ecf7e" }]
+  );
+
+  // Sparse series: only sessions where the RPE prompt was actually answered
+  // (session_load_trend already filters this server-side) — one point per
+  // real rating, not a daily grid with gaps, since there's no "0 effort"
+  // day to fill in between workouts the way a continuous metric would.
+  document.getElementById("wrap-chart-sessionLoad").insertAdjacentHTML(
+    "afterbegin",
+    chartHeader({ name: "Session load", unit: "RPE×min", good: null })
+  );
+  lineChart(
+    "chart-sessionLoad",
+    {{ session_load_trend | map(attribute="date") | list | tojson }},
+    {
+      label: "Session load",
+      values: {{ session_load_trend | map(attribute="session_load") | list | tojson }},
+      color: "#e0b23e",
+    },
+    "date"
   );
 
   document.getElementById("wrap-weightChart").insertAdjacentHTML(

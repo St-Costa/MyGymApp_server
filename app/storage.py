@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   cardiac_drift_bpm_min    REAL,
   resting_hr               INTEGER,
   hrr60s                   INTEGER,
+  session_rpe              INTEGER,
+  session_load             REAL,
   notes                    TEXT,
   content_hash             TEXT NOT NULL,
   raw_path                 TEXT NOT NULL,
@@ -136,7 +138,7 @@ CREATE TABLE IF NOT EXISTS parse_failures (
 # Bumped by hand whenever the set of fields the parser extracts changes.
 # Stamped into sessions.schema_version on every successful parse; reparse.py
 # --stale finds rows below this value and re-parses them.
-PARSER_SCHEMA_VERSION = 1
+PARSER_SCHEMA_VERSION = 2
 
 # schema_version stamped on a row written from step 6's "on failure" path —
 # the raw file is safely stored but nothing has been successfully parsed yet.
@@ -149,6 +151,22 @@ def init_db(db_path: Path = DB_PATH) -> None:
         _migrate_parse_failures_table(conn)
         conn.executescript(SCHEMA)
         _migrate_exercise_sets_is_bodyweight_column(conn)
+        _migrate_sessions_rpe_columns(conn)
+
+
+def _migrate_sessions_rpe_columns(conn: sqlite3.Connection) -> None:
+    """One-time migration: `sessions.session_rpe`/`session_load` (session-RPE,
+    ANALYSIS_SPEC.md §13) were added after `sessions` already existed in
+    deployed databases — same reason as _migrate_exercise_sets_is_bodyweight_
+    column above. Both stay NULL (not 0) for existing rows, same as any
+    session synced before the phone started sending this field — session_rpe
+    is an optional 1-10 rating, so unlike the other numeric session fields,
+    "never answered" must stay distinguishable from an actual value."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+    if "session_rpe" not in columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN session_rpe INTEGER")
+    if "session_load" not in columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN session_load REAL")
 
 
 def _migrate_exercise_sets_is_bodyweight_column(conn: sqlite3.Connection) -> None:
@@ -265,6 +283,13 @@ class ParsedSession:
     resting_hr: int
     hrr60s: int
     notes: str
+    # Session-RPE (ANALYSIS_SPEC.md §13): optional 1-10 self-reported effort
+    # rating and the derived Foster session-load (rpe * duration_minutes).
+    # Unlike the fields above, "not answered" must stay None, not 0 — 0 isn't
+    # a valid RPE value and collapsing "skipped" into 0 would be indistinguishable
+    # from a (nonsensical) reported effort of zero.
+    session_rpe: int | None = None
+    session_load: float | None = None
     tonnage_by_bodypart: dict[str, float] = field(default_factory=dict)
     exercise_sets: list[ExerciseSet] = field(default_factory=list)
 
@@ -334,7 +359,7 @@ def upsert_parsed_session(
             ecg_beats, ecg_duration_sec, ecg_session_rmssd, ecg_pac_count,
             ecg_pause_count, ecg_irregular_beats, afib_suspicion_episodes,
             sdnn, pnn50, poincare_sd1, poincare_sd2, poincare_ratio,
-            cardiac_drift_bpm_min, resting_hr, hrr60s, notes,
+            cardiac_drift_bpm_min, resting_hr, hrr60s, session_rpe, session_load, notes,
             content_hash, raw_path, received_at, schema_version
         ) VALUES (
             :id, :date, :routine_id, :routine_name, :started_at, :completed_at,
@@ -342,7 +367,7 @@ def upsert_parsed_session(
             :ecg_beats, :ecg_duration_sec, :ecg_session_rmssd, :ecg_pac_count,
             :ecg_pause_count, :ecg_irregular_beats, :afib_suspicion_episodes,
             :sdnn, :pnn50, :poincare_sd1, :poincare_sd2, :poincare_ratio,
-            :cardiac_drift_bpm_min, :resting_hr, :hrr60s, :notes,
+            :cardiac_drift_bpm_min, :resting_hr, :hrr60s, :session_rpe, :session_load, :notes,
             :content_hash, :raw_path, :received_at, :schema_version
         )
         ON CONFLICT(id) DO UPDATE SET
@@ -359,7 +384,9 @@ def upsert_parsed_session(
             sdnn=excluded.sdnn, pnn50=excluded.pnn50, poincare_sd1=excluded.poincare_sd1,
             poincare_sd2=excluded.poincare_sd2, poincare_ratio=excluded.poincare_ratio,
             cardiac_drift_bpm_min=excluded.cardiac_drift_bpm_min, resting_hr=excluded.resting_hr,
-            hrr60s=excluded.hrr60s, notes=excluded.notes, content_hash=excluded.content_hash,
+            hrr60s=excluded.hrr60s, session_rpe=excluded.session_rpe,
+            session_load=excluded.session_load, notes=excluded.notes,
+            content_hash=excluded.content_hash,
             raw_path=excluded.raw_path, received_at=excluded.received_at,
             schema_version=excluded.schema_version
         """,
@@ -389,6 +416,8 @@ def upsert_parsed_session(
             "cardiac_drift_bpm_min": parsed.cardiac_drift_bpm_min,
             "resting_hr": parsed.resting_hr,
             "hrr60s": parsed.hrr60s,
+            "session_rpe": parsed.session_rpe,
+            "session_load": parsed.session_load,
             "notes": parsed.notes,
             "content_hash": content_hash,
             "raw_path": raw_path,

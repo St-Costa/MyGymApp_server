@@ -1006,3 +1006,45 @@ def acwr_daily_trend(conn: sqlite3.Connection, *, today: str | None = None) -> l
         cursor += timedelta(days=1)
 
     return points
+
+
+# ---------------------------------------------------------------------------
+# §13 Session-RPE (Foster method) — subjective training load
+# ---------------------------------------------------------------------------
+
+# Same 12-week window as the ACWR/tonnage/e1RM trend charts, so every
+# training-load chart on the dashboard spans a consistent period.
+_SESSION_LOAD_SERIES_WEEKS = 12
+
+
+@dataclass
+class SessionLoadPoint:
+    date: str  # ISO date
+    session_rpe: int | None
+    session_load: float | None
+
+
+def session_load_trend(
+    conn: sqlite3.Connection, *, today: str | None = None
+) -> list[SessionLoadPoint]:
+    """§13 chart series: one point per session with a recorded RPE, over a
+    12-week window. Sessions where the user skipped the RPE prompt are
+    omitted entirely (not plotted as 0 or null-filled) rather than
+    interpolated — an unanswered rating carries no information to show."""
+    today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
+    window_start = today_date - timedelta(weeks=_SESSION_LOAD_SERIES_WEEKS)
+
+    rows = conn.execute(
+        """
+        SELECT date, session_rpe, session_load FROM sessions
+        WHERE date >= ? AND date <= ? AND schema_version > 0
+          AND session_rpe IS NOT NULL
+        ORDER BY date
+        """,
+        (window_start.isoformat(), today_date.isoformat()),
+    ).fetchall()
+
+    return [
+        SessionLoadPoint(date=date_str, session_rpe=rpe, session_load=load)
+        for date_str, rpe, load in rows
+    ]

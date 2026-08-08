@@ -2,7 +2,7 @@
 docstring for why), so these tests just check the pages render successfully
 and reflect ingested data, not auth behavior (covered elsewhere)."""
 
-from tests.conftest import post_readiness, post_session
+from tests.conftest import SESSION_MD, post_readiness, post_session
 
 
 def test_dashboard_renders_with_no_data(app_client) -> None:
@@ -71,6 +71,20 @@ def test_dashboard_acwr_chart_reflects_ingested_session(app_client) -> None:
     # A single session is both the entire acute and chronic window -> acwr == 1.0,
     # which falls in the 0.8-1.3 green band.
     assert 'class="dot GREEN"' in response.text
+
+
+def test_dashboard_training_load_section_includes_session_load_chart(app_client) -> None:
+    response = app_client.get("/")
+    assert response.status_code == 200
+    assert 'id="chart-sessionLoad"' in response.text
+
+
+def test_dashboard_session_load_chart_reflects_ingested_rpe(app_client) -> None:
+    md = SESSION_MD.replace("hrr60s: 28\n", "hrr60s: 28\nsessionRpe: 7\nsessionLoad: 315.0\n")
+    post_session(app_client, md_bytes=md.encode())
+    response = app_client.get("/", params={"today": "2025-04-20"})
+    assert response.status_code == 200
+    assert "315.0" in response.text
 
 
 def test_dashboard_charts_have_a_description(app_client) -> None:
