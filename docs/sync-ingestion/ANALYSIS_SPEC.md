@@ -553,16 +553,23 @@ replacement — divergence between the two (e.g. tonnage steady but RPE-ACWR cli
 itself a signal worth seeing, since it means effort is rising without a matching rise in
 weight moved.
 
-**No semaphore/thresholds on this chart** (2026-08 correction — the first version reused
-§12's `_acwr_semaphore` and 0.8/1.3/1.5/0.5 GRAY/GREEN/YELLOW/RED cutoffs here too, which
-was wrong): those bands come from ACWR literature on *external* load (kg lifted, distance
-covered), not on a subjective RPE×duration ratio — nothing validates the same numeric
-cutoffs apply to this scale. `compute_rpe_acwr_trend`/`rpe_acwr_daily_trend` still return
-`AcwrTrend.semaphore` (the dataclass is shared with §12's implementation), but the
-dashboard must not render it as a colored dot or draw threshold lines/bands on this
-chart's line — plot the raw ratio only. If a validated threshold for RPE-based ACWR ever
-surfaces in the literature, revisit; until then, showing a semaphore here would imply a
-medical basis this metric doesn't have.
+**Threshold history on this chart** — two corrections so far, both worth keeping in mind
+before touching these numbers again:
+
+1. *(2026-08, correction 1)* The first version reused §12's `_acwr_semaphore` and its
+   0.8/1.3/1.5/0.5 cutoffs here too. Wrong: those bands come from ACWR literature on
+   *external* load (kg lifted, distance covered), not a subjective RPE×duration ratio —
+   nothing validates the same numeric cutoffs apply to this scale. Removed entirely
+   (no band, no threshold lines) for one iteration.
+2. *(2026-08, correction 2, current)* Per explicit user request, a band was reinstated —
+   but a **deliberately wider, separate heuristic**, not the tonnage numbers: **0.7-1.4
+   GREEN, 0.4-0.7 / 1.4-1.7 YELLOW, else RED** (`_rpe_acwr_semaphore` in `app/analysis.py`,
+   vs `_tonnage_acwr_semaphore`'s 0.8-1.3/1.5/0.5). The widening is not derived from any
+   study — it's a deliberate "less confident, so be more tolerant before flagging"
+   adjustment, chosen specifically *because* this ratio has no validated threshold. Label
+   it as a rough heuristic in any UI copy ("not a validated clinical cutoff"), never as
+   equivalent in rigor to §12's tonnage bands. If a real validated threshold for RPE-based
+   ACWR surfaces in the literature, replace these numbers with it.
 
 ---
 

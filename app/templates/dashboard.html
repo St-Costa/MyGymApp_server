@@ -106,10 +106,10 @@
 <div class="chart-wrap" id="wrap-chart-rpeAcwr">
   <p class="chart-desc">
     Same idea, but from how hard sessions felt (1-10 self-rating × duration) instead of
-    how much weight you moved. No injury/detraining bands here — those cutoffs are only
-    validated for weight-based load, not a subjective rating. Useful mainly to compare
-    against the chart above: rising here while that one stays flat means you're working
-    harder for the same output.
+    how much weight you moved. The band here is wider and looser than the chart above —
+    it's a rough guide, not a validated clinical cutoff. Useful mainly to compare against
+    the chart above: rising here while that one stays flat means you're working harder for
+    the same output.
   </p>
   <div class="chart-canvas-box"><canvas id="chart-rpeAcwr"></canvas></div>
 </div>
@@ -488,11 +488,13 @@
   // §13.1: same acute:chronic ratio as the tonnage ACWR above, computed on
   // session_load (RPE × duration) instead — the "internal load" counterpart,
   // meant to be read side by side with the chart above rather than in
-  // isolation. No threshold lines/band here, unlike the tonnage chart — the
-  // 0.8-1.3/1.5 cutoffs come from literature on external load (kg lifted,
-  // distance covered); nothing validates the same numeric bands for a
-  // subjective RPE×duration ratio, so showing them here would imply a
-  // medical basis this metric doesn't have.
+  // isolation. Band is deliberately WIDER than the tonnage chart's
+  // (0.7-1.4/1.7/0.4 vs 0.8-1.3/1.5/0.5) and is NOT a literature cutoff —
+  // those numbers come from ACWR research on external load (kg lifted,
+  // distance covered); nothing validates the same bands for a subjective
+  // RPE×duration ratio. Widened here specifically to signal lower
+  // confidence rather than reusing tonnage's bands wholesale (matches
+  // _rpe_acwr_semaphore server-side — see ANALYSIS_SPEC.md §13.1).
   document.getElementById("wrap-chart-rpeAcwr").insertAdjacentHTML(
     "afterbegin",
     chartHeader({ name: "RPE-based ACWR", unit: "", good: null })
@@ -501,7 +503,12 @@
     "chart-rpeAcwr",
     {{ rpe_acwr_trend | map(attribute="date") | list | tojson }},
     { label: "RPE-based ACWR", values: {{ rpe_acwr_trend | map(attribute="acwr") | list | tojson }}, color: "#c77dff" },
-    "week"
+    "week",
+    [
+      { value: 1.7, severity: "danger", label: "Spike > 1.7 (rough heuristic, not clinical)" },
+      { value: 0.4, severity: "danger", label: "Undertraining < 0.4 (rough heuristic, not clinical)" },
+    ],
+    [{ min: 0.7, max: 1.4, color: "#3ecf7e" }]
   );
 
   // Sparse series: only sessions where the RPE prompt was actually answered

@@ -6,7 +6,7 @@ from datetime import date as date_cls
 
 import pytest
 
-from app.analysis import acwr_daily_trend, compute_acwr_trend
+from app.analysis import acwr_daily_trend, compute_acwr_trend, compute_rpe_acwr_trend
 from app.storage import init_db
 
 
@@ -27,6 +27,18 @@ def _insert_session(conn, session_id, date, total_tonnage):
         VALUES (?, ?, 'sha256:x', ?, '2026-01-01T00:00:00Z', 1, ?)
         """,
         (session_id, date, f"{date}.md", total_tonnage),
+    )
+    conn.commit()
+
+
+def _insert_session_load(conn, session_id, date, session_load):
+    conn.execute(
+        """
+        INSERT INTO sessions (id, date, content_hash, raw_path, received_at,
+                               schema_version, session_rpe, session_load)
+        VALUES (?, ?, 'sha256:x', ?, '2026-01-01T00:00:00Z', 1, 5, ?)
+        """,
+        (session_id, date, f"{date}.md", session_load),
     )
     conn.commit()
 
@@ -135,3 +147,42 @@ def test_daily_trend_monday_point_only_sees_sessions_up_to_that_monday(conn):
     monday_08_10 = acwr_daily_trend(conn, today="2026-08-10")
     later_point = next(p for p in monday_08_10 if p.date == "2026-08-10")
     assert later_point.acute_load == 1000.0
+
+
+# --- §13.1: RPE-based ACWR uses a wider, separate heuristic band ---
+
+
+def test_rpe_acwr_green_band_is_wider_than_tonnage_acwr(conn):
+    # today=2026-08-08: acute window 2026-08-01..08-08 (8 days), chronic
+    # window 2026-07-11..08-08 (29 days). 21 baseline days at 1000, 8 acute
+    # days at a value chosen so acwr == 0.75 exactly — YELLOW under the
+    # tonnage ACWR's 0.8-1.3 green band, but GREEN under the RPE-based one's
+    # wider 0.7-1.4 — the whole point of widening it.
+    n_baseline, n_acute, baseline_load = 21, 8, 1000.0
+    acute_load = 0.75 * n_baseline * baseline_load / (n_baseline + n_acute - 0.75 * n_acute)
+
+    for i, d in enumerate(f"2026-07-{d:02d}" for d in range(11, 32)):
+        _insert_session_load(conn, f"c{i}", d, baseline_load)
+    for i, d in enumerate(f"2026-08-{d:02d}" for d in range(1, 9)):
+        _insert_session_load(conn, f"a{i}", d, acute_load)
+
+    trend = compute_rpe_acwr_trend(conn, today="2026-08-08")
+    assert trend.acwr == pytest.approx(0.75)
+    assert trend.semaphore == "GREEN"
+
+
+def test_rpe_acwr_red_threshold_is_1_7_not_1_5(conn):
+    # Same window construction as above, tuned so acwr == 1.6 exactly — RED
+    # under the tonnage ACWR's 1.5 cutoff, but still YELLOW under the
+    # RPE-based ACWR's wider 1.7 cutoff.
+    n_baseline, n_acute, baseline_load = 21, 8, 1000.0
+    acute_load = 1.6 * n_baseline * baseline_load / (n_baseline + n_acute - 1.6 * n_acute)
+
+    for i, d in enumerate(f"2026-07-{d:02d}" for d in range(11, 32)):
+        _insert_session_load(conn, f"c{i}", d, baseline_load)
+    for i, d in enumerate(f"2026-08-{d:02d}" for d in range(1, 9)):
+        _insert_session_load(conn, f"a{i}", d, acute_load)
+
+    trend = compute_rpe_acwr_trend(conn, today="2026-08-08")
+    assert trend.acwr == pytest.approx(1.6)
+    assert trend.semaphore == "YELLOW"

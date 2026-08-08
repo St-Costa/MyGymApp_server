@@ -79,19 +79,21 @@ def test_dashboard_training_load_section_includes_rpe_acwr_chart(app_client) -> 
     assert 'id="chart-rpeAcwr"' in response.text
 
 
-def test_dashboard_rpe_acwr_chart_has_no_threshold_lines_or_band(app_client) -> None:
+def test_dashboard_rpe_acwr_chart_uses_wider_heuristic_band_not_tonnage_cutoffs(
+    app_client,
+) -> None:
     # Regression test: an earlier version reused the tonnage ACWR's
     # 0.8/1.3/1.5/0.5 literature-derived thresholds on this chart too, which
-    # is unvalidated for a subjective RPE×duration ratio (see
-    # ANALYSIS_SPEC.md §13.1's "No semaphore/thresholds" note). The
-    # lineChart() call for chart-rpeAcwr must pass no thresholds/bands args
-    # at all, not just non-matching ones.
+    # is unvalidated for a subjective RPE×duration ratio. Current behavior
+    # (ANALYSIS_SPEC.md §13.1, correction 2): a deliberately WIDER, separate
+    # heuristic band (0.7-1.4/1.7/0.4), explicitly not the tonnage numbers.
     response = app_client.get("/")
     assert response.status_code == 200
     idx = response.text.rfind('"chart-rpeAcwr"')
-    call = response.text[idx : idx + 400]
-    assert "app threshold" not in call
-    assert "#3ecf7e" not in call  # the green band color used by every other ACWR-style chart
+    call = response.text[idx : idx + 600]
+    assert "not clinical" in call
+    assert "0.8" not in call  # tonnage ACWR's green-band lower bound must not leak in here
+    assert "1.5" not in call  # tonnage ACWR's yellow/red boundary must not leak in here
 
 
 def test_dashboard_rpe_acwr_chart_reflects_ingested_session_load(app_client) -> None:
