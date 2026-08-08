@@ -154,8 +154,10 @@
       letter-spacing: -0.05em;
       color: var(--muted);
     }
-    .chart-direction-up { color: var(--green); }
-    .chart-direction-down { color: var(--red); }
+    /* ~65% opacity — colored enough to read as good/bad at a glance
+       without competing with the chart title next to it. */
+    .chart-direction-up { color: var(--green); opacity: 0.65; }
+    .chart-direction-down { color: var(--red); opacity: 0.65; }
     .chart-canvas-box {
       position: relative;
       flex: 1;
