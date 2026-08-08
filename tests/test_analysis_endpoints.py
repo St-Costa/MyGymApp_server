@@ -50,6 +50,41 @@ def test_acwr_trend_reflects_ingested_session(app_client) -> None:
     assert body["acute_load"] == 12450.0
 
 
+def test_rpe_acwr_trend_requires_auth(app_client) -> None:
+    response = app_client.get("/v1/analysis/rpe-acwr-trend")
+    assert response.status_code == 401
+
+
+def test_rpe_acwr_trend_empty_db_returns_gray_semaphore(app_client) -> None:
+    response = app_client.get("/v1/analysis/rpe-acwr-trend", headers=auth_headers())
+    assert response.status_code == 200
+    body = response.json()
+    assert body["semaphore"] == "GRAY"
+    assert body["acwr"] is None
+
+
+def test_rpe_acwr_trend_reflects_ingested_session_load(app_client) -> None:
+    md = SESSION_MD.replace("hrr60s: 28\n", "hrr60s: 28\nsessionRpe: 7\nsessionLoad: 315.0\n")
+    post_session(app_client, md_bytes=md.encode())
+    response = app_client.get(
+        "/v1/analysis/rpe-acwr-trend", params={"today": "2025-04-20"}, headers=auth_headers()
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["acute_load"] == 315.0
+
+
+def test_rpe_acwr_daily_trend_requires_auth(app_client) -> None:
+    response = app_client.get("/v1/analysis/rpe-acwr-daily-trend")
+    assert response.status_code == 401
+
+
+def test_rpe_acwr_daily_trend_returns_list(app_client) -> None:
+    response = app_client.get("/v1/analysis/rpe-acwr-daily-trend", headers=auth_headers())
+    assert response.status_code == 200
+    assert isinstance(response.json(), list)
+
+
 def test_session_load_trend_requires_auth(app_client) -> None:
     response = app_client.get("/v1/analysis/session-load-trend")
     assert response.status_code == 401

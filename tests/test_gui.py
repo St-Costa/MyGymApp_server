@@ -73,6 +73,25 @@ def test_dashboard_acwr_chart_reflects_ingested_session(app_client) -> None:
     assert 'class="dot GREEN"' in response.text
 
 
+def test_dashboard_training_load_section_includes_rpe_acwr_chart(app_client) -> None:
+    response = app_client.get("/")
+    assert response.status_code == 200
+    assert 'id="chart-rpeAcwr"' in response.text
+
+
+def test_dashboard_rpe_acwr_chart_reflects_ingested_session_load(app_client) -> None:
+    md = SESSION_MD.replace("hrr60s: 28\n", "hrr60s: 28\nsessionRpe: 7\nsessionLoad: 315.0\n")
+    post_session(app_client, md_bytes=md.encode())
+    response = app_client.get("/", params={"today": "2025-04-20"})
+    assert response.status_code == 200
+    # A single session is both the entire acute and chronic window for the
+    # RPE-ACWR series too -> acwr == 1.0 shows up in the lineChart() call
+    # feeding the chart-rpeAcwr canvas (the second/JS occurrence of the id,
+    # not the first/markup one).
+    idx = response.text.rfind('"chart-rpeAcwr"')
+    assert "1.0" in response.text[idx : idx + 2000]
+
+
 def test_dashboard_training_load_section_includes_session_load_chart(app_client) -> None:
     response = app_client.get("/")
     assert response.status_code == 200
