@@ -22,9 +22,7 @@ from app.analysis import (
     acwr_daily_trend,
     all_cardio_metrics_weekly_trend,
     all_time_tonnage_pr,
-    compute_acwr_trend,
     compute_cardio_trend_card,
-    compute_rpe_acwr_trend,
     exercise_history,
     list_exercises,
     readiness_daily_trend,
@@ -52,10 +50,8 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
         vo2max = vo2max_4week_trend(conn, today=today)
         scale = scale_weekly_trend(conn, today=today)
         readiness_trend = readiness_daily_trend(conn, today=today)
-        acwr = compute_acwr_trend(conn, today=today)
         acwr_trend = acwr_daily_trend(conn, today=today)
         session_load = session_load_trend(conn, today=today)
-        rpe_acwr = compute_rpe_acwr_trend(conn, today=today)
         rpe_acwr_trend = rpe_acwr_daily_trend(conn, today=today)
 
     return templates.TemplateResponse(
@@ -71,10 +67,8 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
             "vo2max_trend": vo2max,
             "scale_trend": scale,
             "readiness_trend": [asdict(p) for p in readiness_trend],
-            "acwr": acwr,
             "acwr_trend": [asdict(p) for p in acwr_trend],
             "session_load_trend": [asdict(p) for p in session_load],
-            "rpe_acwr": rpe_acwr,
             "rpe_acwr_trend": [asdict(p) for p in rpe_acwr_trend],
         },
     )
