@@ -344,3 +344,24 @@ def test_dashboard_body_fat_chart_has_ace_thresholds(app_client) -> None:
     assert "Essential fat" in response.text
     assert "Athletes" in response.text
     assert "ACE, men's table" in response.text
+
+
+def test_dashboard_header_has_weekly_report_link(app_client) -> None:
+    response = app_client.get("/")
+    assert response.status_code == 200
+    assert 'href="/weekly-report"' in response.text
+
+
+def test_weekly_report_preview_renders_with_no_data(app_client) -> None:
+    response = app_client.get("/weekly-report")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+    assert "Nessuna sessione questa settimana" in response.text
+
+
+def test_weekly_report_preview_accepts_explicit_week_end(app_client) -> None:
+    post_session(app_client)  # SESSION_MD: dated 2025-04-15
+    response = app_client.get("/weekly-report", params={"week_end": "2025-04-20"})
+    assert response.status_code == 200
+    assert "2025-04-14" in response.text  # the Monday of that week
+    assert "2025-04-20" in response.text
