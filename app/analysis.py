@@ -1106,6 +1106,53 @@ def session_load_trend(
     ]
 
 
+@dataclass
+class SessionMetricPoint:
+    date: str  # ISO date
+    value: float
+
+
+def _session_metric_trend(
+    conn: sqlite3.Connection, column: str, *, today: str | None = None
+) -> list[SessionMetricPoint]:
+    """Shared shape for a plain per-session numeric trend: one point per
+    session with a positive value for `column`, over the same 12-week
+    window as the other training-load/cardio charts. Rows where the field
+    was omitted (parsed as 0, per the sender's space-saving convention —
+    see docs/sync-ingestion/SPEC.md) are skipped rather than plotted as 0,
+    same reasoning as vo2max_4week_trend's `> 0` filter."""
+    today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
+    window_start = today_date - timedelta(weeks=_SESSION_LOAD_SERIES_WEEKS)
+
+    rows = conn.execute(
+        f"""
+        SELECT date, {column} FROM sessions
+        WHERE date >= ? AND date <= ? AND schema_version > 0 AND {column} > 0
+        ORDER BY date
+        """,
+        (window_start.isoformat(), today_date.isoformat()),
+    ).fetchall()
+
+    return [SessionMetricPoint(date=date_str, value=value) for date_str, value in rows]
+
+
+def session_calories_trend(
+    conn: sqlite3.Connection, *, today: str | None = None
+) -> list[SessionMetricPoint]:
+    """Per-session calories burned, plotted alongside tonnage/session-load
+    in the Training load section."""
+    return _session_metric_trend(conn, "session_calories", today=today)
+
+
+def session_trimp_trend(
+    conn: sqlite3.Connection, *, today: str | None = None
+) -> list[SessionMetricPoint]:
+    """Per-session TRIMP (Banister training impulse), plotted in the
+    Recovery & fitness trends section alongside the other per-session
+    cardio load metrics."""
+    return _session_metric_trend(conn, "session_trimp", today=today)
+
+
 # ACWR applied to session_load instead of total_tonnage — the standard way
 # session-RPE is actually used for injury/overtraining monitoring in the
 # literature (an absolute RPE×duration number has no meaning on its own;

@@ -31,7 +31,9 @@ from app.analysis import (
     resting_hr_weekly_trend,
     rpe_acwr_daily_trend,
     scale_weekly_trend,
+    session_calories_trend,
     session_load_trend,
+    session_trimp_trend,
     vo2max_4week_trend,
 )
 from app.config import DB_PATH
@@ -55,6 +57,8 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
         acwr_trend = acwr_daily_trend(conn, today=today)
         session_load = session_load_trend(conn, today=today)
         rpe_acwr_trend = rpe_acwr_daily_trend(conn, today=today)
+        session_calories = session_calories_trend(conn, today=today)
+        session_trimp = session_trimp_trend(conn, today=today)
 
     return templates.TemplateResponse(
         request,
@@ -72,6 +76,8 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
             "acwr_trend": [asdict(p) for p in acwr_trend],
             "session_load_trend": [asdict(p) for p in session_load],
             "rpe_acwr_trend": [asdict(p) for p in rpe_acwr_trend],
+            "session_calories_trend": [asdict(p) for p in session_calories],
+            "session_trimp_trend": [asdict(p) for p in session_trimp],
         },
     )
 
