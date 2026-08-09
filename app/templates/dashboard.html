@@ -59,6 +59,12 @@
     </p>
     <div class="chart-canvas-box"><canvas id="chart-rmssd"></canvas></div>
   </div>
+  <div class="chart-wrap" id="wrap-chart-trimp">
+    <p class="chart-desc">
+      Banister training impulse — this session's cardiovascular load, from heart rate and duration.
+    </p>
+    <div class="chart-canvas-box"><canvas id="chart-trimp"></canvas></div>
+  </div>
   <div class="chart-wrap" id="wrap-chart-sdnn">
     <p class="chart-desc">Higher means better overall heart-rate variability.</p>
     <div class="chart-canvas-box"><canvas id="chart-sdnn"></canvas></div>
@@ -113,6 +119,13 @@
     Effort rating (1-10) × session duration in minutes.
   </p>
   <div class="chart-canvas-box"><canvas id="chart-sessionLoad"></canvas></div>
+</div>
+
+<div class="chart-wrap" id="wrap-chart-calories">
+  <p class="chart-desc">
+    Calories burned this session.
+  </p>
+  <div class="chart-canvas-box"><canvas id="chart-calories"></canvas></div>
 </div>
 
 <h2 class="section-title">Body composition</h2>
@@ -519,6 +532,39 @@
       label: "Session load",
       values: {{ session_load_trend | map(attribute="session_load") | list | tojson }},
       color: "#e0b23e",
+    },
+    "date"
+  );
+
+  // Sparse series, same reasoning as chart-sessionLoad above: only
+  // sessions where the phone actually sent a nonzero value (server-side
+  // filtered in session_calories_trend), not a daily grid with gaps.
+  document.getElementById("wrap-chart-calories").insertAdjacentHTML(
+    "afterbegin",
+    chartHeader({ name: "Calories", unit: "kcal", good: null })
+  );
+  lineChart(
+    "chart-calories",
+    {{ session_calories_trend | map(attribute="date") | list | tojson }},
+    {
+      label: "Calories",
+      values: {{ session_calories_trend | map(attribute="value") | list | tojson }},
+      color: "#ff9f6b",
+    },
+    "date"
+  );
+
+  document.getElementById("wrap-chart-trimp").insertAdjacentHTML(
+    "afterbegin",
+    chartHeader({ name: "TRIMP", unit: "", good: null })
+  );
+  lineChart(
+    "chart-trimp",
+    {{ session_trimp_trend | map(attribute="date") | list | tojson }},
+    {
+      label: "TRIMP",
+      values: {{ session_trimp_trend | map(attribute="value") | list | tojson }},
+      color: "#4dd0e1",
     },
     "date"
   );
