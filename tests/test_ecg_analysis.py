@@ -422,3 +422,254 @@ def test_analyze_ecg_file_end_to_end_from_raw_bytes() -> None:
     result = analyze_ecg_file("s2", header + body)
     assert result.session_id == "s2"
     assert result.avg_hr is not None
+
+
+# ---------------------------------------------------------------------------
+# Advanced metrics (docs/sync-ingestion/ECG_ADVANCED_ANALYSIS.md) — tier-1:
+# signal quality (kSQI/bSQI), DFA-alpha1/frequency-domain/nonlinear HRV via
+# neurokit2, and the HRR approximation. New work, not a port, so expected
+# values here are sanity ranges / directional checks rather than exact
+# by-hand derivations the way §1-§5's HRV formulas were.
+# ---------------------------------------------------------------------------
+
+
+def test_kurtosis_sqi_is_higher_for_qrs_shaped_signal_than_flat_noise() -> None:
+    """A clean QRS-shaped signal has a heavy-tailed, peaked amplitude
+    distribution (high kurtosis); flat low-amplitude noise doesn't."""
+    from app.ecg_analysis import compute_kurtosis_sqi
+
+    qrs_shaped = synthetic_ecg_samples(130, duration_s=20, bpm=75, seed=1)
+    flat_noise = [1, -1, 2, -2, 1, -1, 0, 1, -1, 2] * 200
+
+    qrs_kurtosis = compute_kurtosis_sqi(qrs_shaped)
+    noise_kurtosis = compute_kurtosis_sqi(flat_noise)
+    assert qrs_kurtosis is not None
+    assert noise_kurtosis is not None
+    assert qrs_kurtosis > noise_kurtosis
+
+
+def test_kurtosis_sqi_none_for_constant_signal() -> None:
+    """Kurtosis is undefined (zero variance) for a constant signal — must
+    return None, not raise or emit scipy's catastrophic-cancellation warning
+    (see compute_kurtosis_sqi's docstring)."""
+    from app.ecg_analysis import compute_kurtosis_sqi
+
+    assert compute_kurtosis_sqi([100] * 500) is None
+
+
+def test_kurtosis_sqi_none_for_too_few_samples() -> None:
+    from app.ecg_analysis import compute_kurtosis_sqi
+
+    assert compute_kurtosis_sqi([1]) is None
+
+
+def test_b_sqi_high_agreement_on_clean_signal() -> None:
+    """Two independently-designed detectors should mostly agree on a clean,
+    unambiguous synthetic QRS signal."""
+    from app.ecg_analysis import compute_b_sqi, detect_r_peaks
+
+    samples = synthetic_ecg_samples(130, duration_s=20, bpm=75, seed=1)
+    peaks = detect_r_peaks(samples, 130)
+    b_sqi = compute_b_sqi(samples, 130, peaks)
+    assert b_sqi is not None
+    assert b_sqi > 0.7
+
+
+def test_estimate_phase_offset_recovers_a_shifted_but_identical_peak_set() -> None:
+    """Regression test: verified against real gym-session recordings (see
+    commit message) that py-ecg-detectors' Hamilton detector runs a
+    different filter cascade than ours, producing a systematic phase delay
+    of tens to ~100 samples versus our own detect_r_peaks output — not
+    noise, a fixed offset. Uncompensated, bSQI was near-zero even on clean
+    recordings. Here: an artificially shifted copy of the same peak set
+    must have its shift correctly recovered."""
+    from app.ecg_analysis import _estimate_phase_offset
+
+    primary = [100, 230, 360, 490, 620, 750]
+    true_offset = 75
+    secondary = [p + true_offset for p in primary]
+    assert _estimate_phase_offset(primary, secondary) == true_offset
+
+
+def test_b_sqi_high_agreement_survives_a_large_systematic_offset() -> None:
+    """Without phase-offset compensation, a detector whose peaks are all
+    shifted by a large-but-fixed amount would look like near-total
+    disagreement despite marking the exact same beats. With compensation,
+    agreement should be high."""
+    from app.ecg_analysis import _BSQI_TOLERANCE_SAMPLES, compute_b_sqi
+
+    primary_peaks = [100 + i * 130 for i in range(50)]  # regular ~1s spacing
+    large_offset = 75  # far outside _BSQI_TOLERANCE_SAMPLES on its own
+    assert large_offset > _BSQI_TOLERANCE_SAMPLES * 2
+
+    # Monkeypatch-free: call the internal confirm logic directly isn't
+    # exposed, so exercise it through compute_b_sqi by faking the detector
+    # via a signal shaped so Hamilton's own detection lands near
+    # primary_peaks + large_offset. Simpler and more direct: build a
+    # synthetic signal whose true QRS-like spikes sit at primary_peaks +
+    # large_offset, and hand compute_b_sqi primary_peaks as if our detector
+    # found the un-shifted positions (simulating the real phase-delay
+    # scenario end to end, not just the offset-estimation helper alone).
+    sample_rate = 130
+    n = primary_peaks[-1] + 200
+    samples = [0] * n
+    for p in primary_peaks:
+        shifted = p + large_offset
+        for offset in range(-3, 4):
+            if 0 <= shifted + offset < n:
+                samples[shifted + offset] += 800 - abs(offset) * 100
+
+    b_sqi = compute_b_sqi(samples, sample_rate, primary_peaks)
+    assert b_sqi is not None
+    assert b_sqi > 0.7
+
+
+def test_b_sqi_none_without_primary_peaks() -> None:
+    from app.ecg_analysis import compute_b_sqi
+
+    samples = synthetic_ecg_samples(130, duration_s=20, bpm=75, seed=1)
+    assert compute_b_sqi(samples, 130, []) is None
+
+
+def test_b_sqi_zero_when_second_detector_finds_nothing() -> None:
+    """If the primary detector found peaks but the independent second
+    detector finds none at all on the same samples, agreement is 0.0 (a
+    real, computed disagreement), not None — the inputs were valid, the
+    detectors just disagree completely."""
+    from app.ecg_analysis import compute_b_sqi
+
+    # Flat signal: our own detector wouldn't normally produce peaks on this,
+    # but by handing in synthetic "primary_peaks" directly we isolate bSQI's
+    # own agreement logic from detect_r_peaks' behavior.
+    flat = [0] * 2600  # 20s at 130Hz, no QRS shape at all
+    b_sqi = compute_b_sqi(flat, 130, primary_peaks=[100, 500, 900])
+    assert b_sqi == 0.0
+
+
+def test_neurokit_derived_metrics_none_below_minimum_rr_count() -> None:
+    from app.ecg_analysis import compute_neurokit_derived_metrics
+
+    result = compute_neurokit_derived_metrics(peaks=[0, 100, 200], sample_rate=130, rr=[800.0] * 3)
+    assert result.dfa_alpha1 is None
+    assert result.sample_entropy is None
+    assert result.hrv_lf is None
+
+
+def test_neurokit_derived_metrics_produces_values_for_a_realistic_recording() -> None:
+    from app.ecg_analysis import compute_neurokit_derived_metrics, detect_r_peaks, rr_intervals_ms
+
+    sample_rate = 130
+    # Long enough to clear both the RR-count minimum and the frequency-
+    # domain duration minimum (60s) — synthetic_ecg_samples' regular rhythm
+    # gives DFA-alpha1 a well-defined (if not clinically meaningful) value.
+    samples = synthetic_ecg_samples(sample_rate, duration_s=90, bpm=75, seed=2)
+    peaks = detect_r_peaks(samples, sample_rate)
+    rr = rr_intervals_ms(peaks, sample_rate)
+
+    result = compute_neurokit_derived_metrics(peaks, sample_rate, rr)
+    assert result.dfa_alpha1 is not None
+    assert result.sample_entropy is not None
+    assert result.csi is not None
+    assert result.cvi is not None
+    assert result.hrv_lf is not None
+    assert result.hrv_hf is not None
+    assert result.hrv_lf_hf is not None
+
+
+def test_neurokit_derived_metrics_frequency_domain_needs_more_duration_than_rr_count() -> None:
+    """LF/HF need ~60s+ of coverage (ECG_ADVANCED_ANALYSIS.md) even if the
+    bare RR-count minimum is cleared — a short, fast-paced recording with
+    enough *beats* but not enough *time* should get DFA/nonlinear metrics
+    but not frequency-domain ones."""
+    from app.ecg_analysis import _MIN_RR_FOR_NEUROKIT, compute_neurokit_derived_metrics
+
+    sample_rate = 130
+    # Very fast synthetic rhythm (200bpm) packs enough beats into under 60s
+    # to clear _MIN_RR_FOR_NEUROKIT while staying short on wall-clock time.
+    samples = synthetic_ecg_samples(sample_rate, duration_s=20, bpm=200, seed=3)
+    from app.ecg_analysis import detect_r_peaks, rr_intervals_ms
+
+    peaks = detect_r_peaks(samples, sample_rate)
+    rr = rr_intervals_ms(peaks, sample_rate)
+    assert len(rr) >= _MIN_RR_FOR_NEUROKIT  # sanity: the scenario is set up as intended
+
+    result = compute_neurokit_derived_metrics(peaks, sample_rate, rr)
+    assert result.hrv_lf is None
+    assert result.hrv_hf is None
+    assert result.hrv_lf_hf is None
+
+
+def test_heart_rate_recovery_drops_after_synthetic_peak() -> None:
+    """Constructs an RR series with a clear HR ramp-up to ~150bpm then a
+    3-minute linear decay to ~90bpm — HRR1/HRR2 should both be positive
+    (HR dropped) and HRR2 > HRR1 (more recovery with more time)."""
+    from app.ecg_analysis import compute_heart_rate_recovery
+
+    sample_rate = 130
+    peaks = [0]
+    t_ms = 0.0
+    n_up = 80
+    for i in range(n_up):
+        hr = 90 + (150 - 90) * (i / n_up)
+        t_ms += 60000.0 / hr
+        peaks.append(round(t_ms / 1000 * sample_rate))
+    n_down = 300
+    for i in range(n_down):
+        hr = 150 - (150 - 90) * (i / n_down)
+        t_ms += 60000.0 / hr
+        peaks.append(round(t_ms / 1000 * sample_rate))
+
+    result = compute_heart_rate_recovery(peaks, sample_rate)
+    assert result.hrr_1min is not None
+    assert result.hrr_2min is not None
+    assert result.hrr_1min > 0
+    assert result.hrr_2min > result.hrr_1min
+
+
+def test_heart_rate_recovery_ignores_a_single_noisy_beat_as_the_peak() -> None:
+    """Regression test: verified against real gym-session recordings (see
+    commit message) that a single anomalous-but-plausible RR interval
+    (e.g. 300ms, 200bpm — inside _RR_MIN_MS/_RR_MAX_MS's physiological
+    filter but not a real sustained rate) could single-handedly become "the
+    peak" before HR smoothing was added, producing HRR values over 100bpm.
+    A steady 90bpm rhythm with exactly one such spike must not let that
+    spike become the recovery reference point — HRR should stay small,
+    reflecting the real (near-constant) rhythm, not the one outlier beat."""
+    from app.ecg_analysis import compute_heart_rate_recovery
+
+    sample_rate = 130
+    peaks = [0]
+    t_ms = 0.0
+    # ~4 minutes of steady 90bpm...
+    for _ in range(360):
+        t_ms += 60000.0 / 90
+        peaks.append(round(t_ms / 1000 * sample_rate))
+    # ...with a single spurious 200bpm beat (300ms RR) injected partway through.
+    spike_index = 180
+    peaks[spike_index] = peaks[spike_index - 1] + round(0.300 * sample_rate)
+
+    result = compute_heart_rate_recovery(peaks, sample_rate)
+    assert result.hrr_1min is not None
+    # A steady ~90bpm rhythm should show only mild variation, nowhere near
+    # the 100+ bpm drop a single unsmoothed spike would have produced.
+    assert abs(result.hrr_1min) < 20
+
+
+def test_heart_rate_recovery_none_when_recording_too_short_past_peak() -> None:
+    """A recording that ends right at (or shortly after) its peak HR can't
+    measure a 1-2 minute recovery — must return None, not a fabricated
+    number from whatever data happens to be at the end of the array."""
+    from app.ecg_analysis import compute_heart_rate_recovery
+
+    sample_rate = 130
+    # 20s of steady 75bpm — a peak exists, but nothing extends a minute past it.
+    peaks = list(range(0, sample_rate * 20, round(0.8 * sample_rate)))
+    result = compute_heart_rate_recovery(peaks, sample_rate)
+    assert result.hrr_1min is None
+    assert result.hrr_2min is None
+
+
+def test_heart_rate_recovery_none_for_too_few_peaks() -> None:
+    from app.ecg_analysis import compute_heart_rate_recovery
+
+    assert compute_heart_rate_recovery([0, 100], 130) == compute_heart_rate_recovery([], 130)

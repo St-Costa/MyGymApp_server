@@ -77,6 +77,17 @@ max threshold for several seconds. This was found by running the port against re
 session recordings, where it was inflating RMSSD/SDNN/AFib-suspicion counts session-wide.
 See `app/ecg_analysis.py`'s module comment for the details.
 
+**Advanced metrics** ([docs/sync-ingestion/ECG_ADVANCED_ANALYSIS.md](docs/sync-ingestion/ECG_ADVANCED_ANALYSIS.md)):
+a second, literature-grounded layer on top of the port above — signal quality indices
+(kurtosis SQI + beat-detection agreement against an independent second detector), DFA-α1
+(fractal RR-interval scaling exponent, tracks the aerobic/ventilatory threshold in exercise
+physiology), frequency-domain and nonlinear HRV (LF/HF, SampEn, CSI/CVI) via
+[NeuroKit2](https://github.com/neuropsychology/NeuroKit), and an approximate heart rate
+recovery (HRR1/HRR2). Also computed automatically as part of the same analysis pass — same
+`ecg_analysis` table, same `analyze_ecg.py`/`analyzed_at` queue mechanics. See the doc for
+what's *not* included from the same research pass (respiration-from-ECG, ensemble R-peak
+detection, deep-learning arrhythmia classifiers) and why.
+
 ## Dashboard
 
 A server-rendered dashboard is available at `/` (trends) and `/exercises` (PR lookup),
@@ -186,12 +197,14 @@ settings**, together with the `SYNC_SHARED_SECRET` you generated above.
 │   ├── templates/                # Jinja2 templates for the dashboard
 │   ├── static/                    # vendored JS (Chart.js) served at /static
 │   ├── analysis.py                 # ported trend/PR analysis logic (ANALYSIS_SPEC.md)
+│   ├── ecg_analysis.py              # ECG R-peak/HRV/arrhythmia + advanced-metrics analysis
 │   ├── ingestion.py                 # hash verification, raw write, idempotency (steps 3-7)
 │   ├── parsing.py                    # YAML frontmatter parser, shared with reparse.py
 │   ├── storage.py                     # SQLite schema + upsert logic
 │   ├── security.py                     # bearer-token auth
 │   └── config.py                        # env-driven configuration
 ├── reparse.py               # standalone re-parse maintenance script (reuses app/parsing.py)
+├── analyze_ecg.py           # standalone ECG-analysis queue-drain script (reuses app/ecg_analysis.py)
 ├── tests/                     # test suite
 ├── CLAUDE.md                # instructions for Claude Code and other AI agents
 ├── Makefile                  # stack-agnostic entry points (setup/dev/test/lint/build)
