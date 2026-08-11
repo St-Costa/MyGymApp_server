@@ -440,6 +440,106 @@ def all_cardio_metrics_weekly_trend(
     return result
 
 
+# ecg_analysis's tier-1 advanced metrics (docs/sync-ingestion/
+# ECG_ADVANCED_ANALYSIS.md), as weekly time series — same shape/window as
+# _CARDIO_SERIES_SPECS above, but sourced from ecg_analysis (joined against
+# sessions for its date) rather than sessions' own columns. Deliberately
+# only the interpretable physiological metrics, not every column that
+# table has: kurtosis_sqi/b_sqi are signal-quality diagnostics, not
+# fitness trends, and csi/cvi are redundant with hrv_lf_hf (same
+# sympathovagal-balance signal) — see ECG_ADVANCED_ANALYSIS.md.
+_ECG_ADVANCED_SERIES_WEEKS = _CARDIO_SERIES_WEEKS
+
+_ECG_ADVANCED_SERIES_SPECS = (
+    ("dfaAlpha1", "dfa_alpha1"),
+    ("hrvLfHf", "hrv_lf_hf"),
+    ("sampleEntropy", "sample_entropy"),
+    ("hrr1min", "hrr_1min"),
+    ("hrr2min", "hrr_2min"),
+)
+
+
+def ecg_advanced_metrics_weekly_trend(
+    conn: sqlite3.Connection, *, today: str | None = None
+) -> dict[str, list[WeeklyBucket]]:
+    """Weekly median time series for each tier-1 advanced ECG metric.
+    INNER JOIN against sessions (for its date) naturally excludes ECG
+    recordings with no matching session — e.g. the phone's debug-send
+    button uses synthetic `debug-*` ids (see ECG_SPEC.md point 5), which
+    are test uploads, not real workouts, and shouldn't appear in a fitness
+    trend. Every field here is nullable at the row level (see
+    EcgAnalysisResult's "no result" convention) — the median naturally
+    ignores weeks where a given metric couldn't be computed, same as the
+    cardio metrics' own positive_only/None filtering above."""
+    today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
+    window_start = today_date - timedelta(weeks=_ECG_ADVANCED_SERIES_WEEKS)
+
+    result: dict[str, list[WeeklyBucket]] = {}
+    for key, column in _ECG_ADVANCED_SERIES_SPECS:
+        rows = conn.execute(
+            f"""SELECT sessions.date, ecg_analysis.{column}
+                FROM ecg_analysis
+                JOIN sessions ON sessions.id = ecg_analysis.session_id
+                WHERE sessions.date >= ? AND sessions.date <= ?
+                ORDER BY sessions.date""",  # noqa: S608 — column from the fixed spec table above
+            (window_start.isoformat(), today_date.isoformat()),
+        ).fetchall()
+        filtered = [(d, v) for d, v in rows if v is not None]
+        result[key] = _weekly_median_buckets(
+            filtered, window_start=window_start, window_end=today_date
+        )
+
+    return result
+
+
+# HR-zone minutes (app.ecg_analysis.compute_hr_zone_minutes) — summed per
+# week, not medianed, same "how much happened this week" reasoning as the
+# rhythm counters' _weekly_sum_buckets: total minutes in a zone across all
+# of a week's sessions is the meaningful value for a stacked-bar chart, not
+# a per-session average. Own (shorter) window than the other ECG advanced
+# series — 6 stacked segments per bar reads as clutter past ~8 bars, per
+# user decision, unlike a single-line chart where 12 weeks reads fine.
+_HR_ZONE_SERIES_WEEKS = 8
+
+_HR_ZONE_COLUMNS = (
+    ("zone1", "hr_zone1_min"),
+    ("zone2", "hr_zone2_min"),
+    ("zone3", "hr_zone3_min"),
+    ("zone4", "hr_zone4_min"),
+    ("zone5", "hr_zone5_min"),
+    ("belowZone1", "hr_below_zone1_min"),
+)
+
+
+def hr_zones_weekly_trend(
+    conn: sqlite3.Connection, *, today: str | None = None
+) -> dict[str, list[WeeklyBucket]]:
+    """Weekly summed minutes-in-zone, one series per zone, over the trailing
+    _HR_ZONE_SERIES_WEEKS weeks — same INNER JOIN/debug-id-exclusion
+    reasoning as ecg_advanced_metrics_weekly_trend above. Meant to be
+    charted together as a stacked bar (one bar per week, split into its 6
+    zone segments), not as 6 independent line charts."""
+    today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
+    window_start = today_date - timedelta(weeks=_HR_ZONE_SERIES_WEEKS)
+
+    result: dict[str, list[WeeklyBucket]] = {}
+    for key, column in _HR_ZONE_COLUMNS:
+        rows = conn.execute(
+            f"""SELECT sessions.date, ecg_analysis.{column}
+                FROM ecg_analysis
+                JOIN sessions ON sessions.id = ecg_analysis.session_id
+                WHERE sessions.date >= ? AND sessions.date <= ?
+                ORDER BY sessions.date""",  # noqa: S608 — column from the fixed spec table above
+            (window_start.isoformat(), today_date.isoformat()),
+        ).fetchall()
+        filtered = [(d, v) for d, v in rows if v is not None]
+        result[key] = _weekly_sum_buckets(
+            filtered, window_start=window_start, window_end=today_date
+        )
+
+    return result
+
+
 @dataclass
 class LatestReadiness:
     measured_at: str
@@ -472,38 +572,90 @@ def latest_readiness(conn: sqlite3.Connection) -> LatestReadiness | None:
     )
 
 
+def resting_hr_7day_average(conn: sqlite3.Connection, *, as_of_date: str) -> float | None:
+    """7-day trailing average of morning resting HR (readiness_events.
+    resting_hr), ending on `as_of_date` inclusive — feeds app.ecg_analysis's
+    %HRR (Karvonen) zone calculation as a resting-HR proxy for the day of a
+    given ECG recording.
+
+    A rolling average rather than the single closest reading, per user
+    decision: resting HR in a stable, regularly-training individual moves
+    only a few bpm day to day (barring illness/acute stress), so smoothing
+    over a week is a reasonable stand-in for a day with no direct morning
+    reading at all, without meaningfully sacrificing accuracy. 0 (the
+    phone's "omitted means unmeasured" convention, READINESS_SPEC.md) is
+    excluded from the average, same as elsewhere. Returns None if there's
+    no reading at all in the trailing window — callers must have their own
+    fallback for that case (see compute_hr_zone_minutes' docstring)."""
+    as_of = datetime.strptime(as_of_date, "%Y-%m-%d").date()
+    window_start = as_of - timedelta(days=6)  # 7-day window, inclusive of as_of
+
+    rows = conn.execute(
+        """SELECT resting_hr FROM readiness_events
+           WHERE substr(measured_at, 1, 10) >= ? AND substr(measured_at, 1, 10) <= ?
+             AND resting_hr IS NOT NULL AND resting_hr > 0""",
+        (window_start.isoformat(), as_of.isoformat()),
+    ).fetchall()
+
+    values = [r[0] for r in rows]
+    return (sum(values) / len(values)) if values else None
+
+
 @dataclass
 class ReadinessPoint:
     date: str  # calendar date (measured_at truncated to YYYY-MM-DD)
     readiness: str | None  # DELOAD_RECOMMENDED|LIGHT_DAY|NORMAL|GOOD|PEAK|NO_BASELINE
+    # Raw numbers behind that day's category — see readiness_daily_trend's
+    # docstring for why these are shown as their own trend now (added later
+    # than the category plot above) rather than re-deriving/replacing it.
+    # 0/0.0 from the phone's own "omitted means unmeasured" convention
+    # (READINESS_SPEC.md) is treated as None here, not a real reading —
+    # same reasoning as the cardio metrics' positive_only filtering.
+    ln_rmssd: float | None
+    resting_hr: int | None
+    vo2max: float | None
 
 
 def readiness_daily_trend(
     conn: sqlite3.Connection, *, days: int = 30, today: str | None = None
 ) -> list[ReadinessPoint]:
-    """Daily readiness state from readiness_events over the trailing `days`
-    days. Plots the phone's own classification (readiness_events.readiness)
-    as-is — the phone computes this from a rolling baseline it doesn't send
-    us the history for, so the server has no way to recompute it; showing
-    the raw ln(RMSSD) number or trying to re-derive a z-score from
-    server-side history alone was tried and was wrong (too little history
-    synced yet to match the phone's baseline, and it hid data that does
-    exist). This is a category, not a number: DELOAD_RECOMMENDED < LIGHT_DAY
-    < NORMAL < GOOD < PEAK — the dashboard plots it on an ordinal axis, not
-    a continuous one."""
+    """Daily readiness from readiness_events over the trailing `days` days.
+
+    `readiness` plots the phone's own classification as-is — the phone
+    computes this from a rolling baseline it doesn't send us the history
+    for, so the server has no way to recompute it; trying to re-derive a
+    z-score from server-side history alone was tried and was wrong (too
+    little history synced yet to match the phone's baseline). This is a
+    category, not a number: DELOAD_RECOMMENDED < LIGHT_DAY < NORMAL < GOOD
+    < PEAK — the dashboard plots it on an ordinal axis, not a continuous one.
+
+    `ln_rmssd`/`resting_hr`/`vo2max` are the raw morning readings behind
+    that category — unlike re-deriving the category itself, plotting these
+    as their own numeric trend doesn't need the phone's baseline history at
+    all, and morning/rested HRV is the metric the sports-science literature
+    actually treats as reliable (far less noisy than session-time HRV
+    during exercise), so it's worth its own chart alongside the category.
+    """
     today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
     window_start = today_date - timedelta(days=days)
 
     rows = conn.execute(
-        """SELECT measured_at, readiness FROM readiness_events
+        """SELECT measured_at, readiness, ln_rmssd, resting_hr, vo2max
+           FROM readiness_events
            WHERE substr(measured_at, 1, 10) >= ? AND substr(measured_at, 1, 10) <= ?
            ORDER BY measured_at""",
         (window_start.isoformat(), today_date.isoformat()),
     ).fetchall()
 
     return [
-        ReadinessPoint(date=measured_at[:10], readiness=readiness)
-        for measured_at, readiness in rows
+        ReadinessPoint(
+            date=measured_at[:10],
+            readiness=readiness,
+            ln_rmssd=ln_rmssd or None,
+            resting_hr=resting_hr or None,
+            vo2max=vo2max or None,
+        )
+        for measured_at, readiness, ln_rmssd, resting_hr, vo2max in rows
     ]
 
 

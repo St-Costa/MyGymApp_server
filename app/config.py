@@ -21,3 +21,14 @@ PORT = int(os.environ.get("PORT", "8420"))
 RAW_DIR = DATA_ROOT / "raw"
 DB_PATH = DATA_ROOT / "db.sqlite3"
 LOGS_DIR = DATA_ROOT / "logs"
+
+# This app has no real stored birth date/profile field — used wherever an
+# age-relative calculation is needed (RMSSD reference thresholds in
+# dashboard.html, HR-zone max-HR estimation in app.ecg_analysis) as a
+# stand-in so those calculations have *some* age-relative basis rather than
+# none. Recomputed from the current date every time it's used (dashboard.html's
+# own `currentAge`, ecg_analysis.py's zone calculation), so it drifts forward
+# automatically as years pass rather than needing a yearly manual update —
+# NOT this user's actual birth year. Replace with a real stored profile
+# field if one is ever added.
+ASSUMED_BIRTH_YEAR = 2000

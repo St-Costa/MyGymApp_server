@@ -14,6 +14,17 @@
   <div class="chart-canvas-box"><canvas id="readinessChart"></canvas></div>
 </div>
 
+<div class="chart-grid">
+  <div class="chart-wrap" id="wrap-chart-morningRestingHr">
+    <p class="chart-desc">Morning resting heart rate, from the same daily readiness reading.</p>
+    <div class="chart-canvas-box"><canvas id="chart-morningRestingHr"></canvas></div>
+  </div>
+  <div class="chart-wrap" id="wrap-chart-morningVo2max">
+    <p class="chart-desc">VO2max estimate from the same daily readiness reading.</p>
+    <div class="chart-canvas-box"><canvas id="chart-morningVo2max"></canvas></div>
+  </div>
+</div>
+
 <h2 class="section-title">Rhythm &amp; cardiac issues</h2>
 
 <div class="chart-grid">
@@ -90,6 +101,55 @@
     </p>
     <div class="chart-canvas-box"><canvas id="chart-poincareRatio"></canvas></div>
   </div>
+  <div class="chart-wrap" id="wrap-chart-dfaAlpha1">
+    <p class="chart-desc">
+      Fractal scaling of beat-to-beat intervals — not "good" high or low, it tracks effort
+      level. ~1.0 at rest/easy, dropping toward ~0.5 as intensity rises. Below 0.75 means
+      you were working above the aerobic threshold in exercise-physiology research; less
+      meaningful during a set of heavy lifting than during steady cardio.
+    </p>
+    <div class="chart-canvas-box"><canvas id="chart-dfaAlpha1"></canvas></div>
+  </div>
+  <div class="chart-wrap" id="wrap-chart-hrvLfHf">
+    <p class="chart-desc">
+      Low-frequency vs high-frequency heart-rate variability power — a coarse
+      sympathetic/parasympathetic balance proxy. No single "better" direction.
+    </p>
+    <div class="chart-canvas-box"><canvas id="chart-hrvLfHf"></canvas></div>
+  </div>
+  <div class="chart-wrap" id="wrap-chart-sampleEntropy">
+    <p class="chart-desc">
+      Beat-to-beat unpredictability — higher generally reads as healthier variability,
+      but (like Poincaré ratio) this is about overall pattern, not a simple max/min.
+    </p>
+    <div class="chart-canvas-box"><canvas id="chart-sampleEntropy"></canvas></div>
+  </div>
+  <div class="chart-wrap" id="wrap-chart-hrr1min">
+    <p class="chart-desc">
+      HR drop 1 minute after this session's peak heart rate — higher means faster
+      recovery. Approximated from the recording's own peak, not a true rest-interval
+      measurement (see ECG_ADVANCED_ANALYSIS.md).
+    </p>
+    <div class="chart-canvas-box"><canvas id="chart-hrr1min"></canvas></div>
+  </div>
+  <div class="chart-wrap" id="wrap-chart-hrr2min">
+    <p class="chart-desc">
+      Same idea, measured 2 minutes after the peak instead of 1.
+    </p>
+    <div class="chart-canvas-box"><canvas id="chart-hrr2min"></canvas></div>
+  </div>
+</div>
+
+<div class="chart-wrap" id="wrap-chart-hrZones">
+  <p class="chart-desc">
+    Weekly minutes in each %HRR training zone (Karvonen: resting + pct*(max-resting), Z1
+    50-60% recovery, Z2 60-70% aerobic base, Z3 70-80% aerobic/tempo, Z4 80-90% threshold,
+    Z5 90%+ maximal). Max HR is the mean of three age-based formulas (Fox/Tanaka/Gulati);
+    resting HR is a 7-day trailing average of morning readings, falling back to %HRmax when
+    no reading is available in that window. "Below Z1" is rest between sets, not itself a
+    training zone.
+  </p>
+  <div class="chart-canvas-box"><canvas id="chart-hrZones"></canvas></div>
 </div>
 
 <div class="chart-wrap" id="wrap-vo2maxChart">
@@ -296,6 +356,45 @@
     // poincareRatio intentionally has no threshold-line entries — no
     // published clinical scale exists for this ratio, only the shaded
     // optimal-range band below (THRESHOLD_BANDS), which is enough.
+    // DFA α1 (docs/sync-ingestion/ECG_ADVANCED_ANALYSIS.md): the one value
+    // with real exercise-physiology backing — crossing 0.75 downward tracks
+    // the first ventilatory/lactate threshold (VT1, aerobic threshold) in
+    // incremental-exercise studies (r≈0.97-0.99 vs gas-exchange VT1). Not a
+    // risk scale like the others above — a single marker, shown as "info"
+    // since crossing it isn't inherently good or bad, just a state change.
+    // https://www.frontiersin.org/articles/10.3389/fphys.2021.720200
+    dfaAlpha1: [
+      {
+        value: 0.75,
+        severity: "info",
+        label: "Below = above aerobic threshold VT1 (exercise physiology)",
+      },
+    ],
+    // HRV LF/HF and sample entropy intentionally have no threshold-line
+    // entries — no clinically-accepted cutoff exists for either (Task
+    // Force 1996 itself doesn't fix one for LF/HF; it's too dependent on
+    // recording method/duration/posture to standardize; sample entropy is
+    // similarly parameter- and context-dependent) — see
+    // ECG_ADVANCED_ANALYSIS.md. Same "no invented threshold" rule as
+    // afibEpisodes/pauses/premature/uneven above.
+    // HRR at 1 minute — same clinical cutoff as hrr60s above (Cole et al.:
+    // ≤12bpm predicts higher mortality risk), reused here since 1 minute is
+    // the same time point, just computed from this session's own recording
+    // rather than a standardized post-exercise-test protocol (see
+    // ECG_ADVANCED_ANALYSIS.md's "Heart Rate Recovery" approximation
+    // caveat) — the underlying physiology and published cutoff are the same.
+    hrr1min: [
+      { value: 12, severity: "danger", label: "Abnormal HRR ≤ 12 (Cole et al.)" },
+      { value: 20, severity: "warning", label: "Below average < 20" },
+      { value: 30, severity: "info", label: "Average 20-29" },
+      { value: 40, severity: "info", label: "Good 30-39" },
+      { value: 50, severity: "info", label: "Excellent 40-49" },
+    ],
+    // hrr2min intentionally has no threshold-line entries — the published
+    // Cole et al. cutoff is specifically for the 1-minute mark; 2-minute
+    // HRR is far less standardized in the literature, and reusing the same
+    // numbers there would misrepresent a different, weaker evidence base
+    // as equally solid.
     // CDC/WHO adult BMI classification (Western population thresholds —
     // WHO's Asian-population table uses lower cutoffs, not used here since
     // this app has no way to know which applies).
@@ -330,8 +429,14 @@
 
   // Shaded background bands. Poincaré ratio's optimal range (SD2/SD1
   // 1.5-4.5) is ANALYSIS_SPEC.md §11.1's own GREEN cutoff for that metric.
+  // DFA α1 below 0.75 (VT1, see THRESHOLDS.dfaAlpha1 above) shaded green —
+  // not "healthier", it's "you were working above the aerobic threshold"
+  // (a state, not a risk level, same nuance as the threshold line's own
+  // label) — min:0 as a practical floor for the shading, not a claim the
+  // value can't go lower.
   const THRESHOLD_BANDS = {
     poincareRatio: [{ min: 1.5, max: 4.5, color: "#3ecf7e" }],
+    dfaAlpha1: [{ min: 0, max: 0.75, color: "#3ecf7e" }],
   };
 
   function chartHeader(meta) {
@@ -357,6 +462,105 @@
       THRESHOLDS[key],
       THRESHOLD_BANDS[key]
     );
+  }
+
+  // Tier-1 advanced ECG metrics (docs/sync-ingestion/ECG_ADVANCED_ANALYSIS.md)
+  // — same CARDIO_META/CARDIO_SERIES loop shape as above, kept as its own
+  // map/loop rather than folded into CARDIO_META since these come from a
+  // separate query (ecg_advanced_metrics_weekly_trend, joined against
+  // ecg_analysis) with its own key namespace. Only dfaAlpha1 and hrr1min
+  // have THRESHOLDS entries — the other three (hrvLfHf, sampleEntropy,
+  // hrr2min) have no clinically-accepted cutoff to show, see THRESHOLDS'
+  // own comments above for why each one does/doesn't.
+  const ECG_ADVANCED_META = {
+    dfaAlpha1:     { name: "DFA α1",        unit: "",   good: null, color: "#4dd0e1" },
+    hrvLfHf:       { name: "HRV LF/HF",     unit: "",   good: null, color: "#c77dff" },
+    sampleEntropy: { name: "Sample entropy", unit: "",  good: "up", color: "#3ecf7e" },
+    hrr1min:       { name: "HRR 1min",      unit: "bpm", good: "up", color: "#5b9dff" },
+    hrr2min:       { name: "HRR 2min",      unit: "bpm", good: "up", color: "#ff9f6b" },
+  };
+
+  const ECG_ADVANCED_SERIES = {{ ecg_advanced_series | tojson }};
+  for (const [key, meta] of Object.entries(ECG_ADVANCED_META)) {
+    const wrap = document.getElementById("wrap-chart-" + key);
+    if (!wrap) continue;
+    wrap.insertAdjacentHTML("afterbegin", chartHeader(meta));
+
+    const series = ECG_ADVANCED_SERIES[key] || [];
+    lineChart(
+      "chart-" + key,
+      series.map(b => b.week_start),
+      { label: meta.name, values: series.map(b => b.value), color: meta.color },
+      "week",
+      THRESHOLDS[key],
+      THRESHOLD_BANDS[key]
+    );
+  }
+
+  // HR-zone weekly minutes (app.ecg_analysis.compute_hr_zone_minutes) — a
+  // stacked bar chart, one bar per week split into its zone segments, not
+  // a lineChart() call like every other chart here: 6 series that sum to a
+  // meaningful whole per week is a fundamentally different shape than "one
+  // value trending over time", and Chart.js's own stacked-bar support
+  // (scales.x/y.stacked) is the natural fit rather than forcing it through
+  // lineChart's single-value-per-point assumptions.
+  {
+    const HR_ZONE_META = [
+      { key: "belowZone1", name: "Below Z1 (rest)", color: "#4a5063" },
+      { key: "zone1", name: "Z1 50-60%", color: "#5b9dff" },
+      { key: "zone2", name: "Z2 60-70%", color: "#3ecf7e" },
+      { key: "zone3", name: "Z3 70-80%", color: "#e0b23e" },
+      { key: "zone4", name: "Z4 80-90%", color: "#ff9f6b" },
+      { key: "zone5", name: "Z5 90%+", color: "#e05a5a" },
+    ];
+    const hrZonesWrap = document.getElementById("wrap-chart-hrZones");
+    const hrZonesEl = document.getElementById("chart-hrZones");
+    const hrZonesSeries = {{ hr_zones_series | tojson }};
+    const zoneDates = (hrZonesSeries.zone1 || []).map(b => b.week_start);
+
+    hrZonesWrap.insertAdjacentHTML(
+      "afterbegin",
+      chartHeader({ name: "Time in HR zone", unit: "min", good: null })
+    );
+
+    const hasAnyZoneData = HR_ZONE_META.some(z =>
+      (hrZonesSeries[z.key] || []).some(b => b.value !== null && b.value > 0)
+    );
+    if (!hasAnyZoneData) {
+      hrZonesEl.replaceWith(Object.assign(document.createElement("div"), {
+        className: "chart-no-data",
+        textContent: "No data yet",
+      }));
+    } else {
+      new Chart(hrZonesEl, {
+        type: "bar",
+        data: {
+          labels: formatLabels(zoneDates, "week"),
+          datasets: HR_ZONE_META.map(z => ({
+            label: z.name,
+            data: (hrZonesSeries[z.key] || []).map(b => b.value),
+            backgroundColor: z.color,
+            borderWidth: 0,
+          })),
+        },
+        options: {
+          ...CHART_OPTIONS,
+          // Unlike every other chart here, the legend is the only way to
+          // tell the 6 stacked segments apart — CHART_OPTIONS.plugins
+          // disables it by default (redundant with lineChart's single-
+          // series header), but that reasoning doesn't apply to a
+          // multi-series stacked bar.
+          plugins: {
+            ...CHART_OPTIONS.plugins,
+            legend: { display: true, labels: { color: "#8b93a7", boxWidth: 12 } },
+          },
+          scales: {
+            x: { ...CHART_OPTIONS.scales.x, stacked: true },
+            y: { ...CHART_OPTIONS.scales.y, stacked: true },
+          },
+        },
+      });
+    }
   }
 
   // Per-day readiness state color, not a fixed threshold — each point is
@@ -458,6 +662,44 @@
       });
     }
   }
+
+  // Raw numbers behind each day's readiness category (see ReadinessPoint's
+  // docstring in app.analysis) — resting HR, VO2max. Unlike the category
+  // chart above, these don't need the phone's rolling baseline to plot
+  // meaningfully.
+  const READINESS_DATES = {{ readiness_trend | map(attribute="date") | list | tojson }};
+
+  document.getElementById("wrap-chart-morningRestingHr").insertAdjacentHTML(
+    "afterbegin",
+    chartHeader({ name: "Morning resting HR", unit: "bpm", good: "down" })
+  );
+  lineChart(
+    "chart-morningRestingHr",
+    READINESS_DATES,
+    {
+      label: "Morning resting HR",
+      values: {{ readiness_trend | map(attribute="resting_hr") | list | tojson }},
+      color: "#5b9dff",
+    },
+    "date",
+    THRESHOLDS.restingHr
+  );
+
+  document.getElementById("wrap-chart-morningVo2max").insertAdjacentHTML(
+    "afterbegin",
+    chartHeader({ name: "Morning VO2max", unit: "", good: "up" })
+  );
+  lineChart(
+    "chart-morningVo2max",
+    READINESS_DATES,
+    {
+      label: "Morning VO2max",
+      values: {{ readiness_trend | map(attribute="vo2max") | list | tojson }},
+      color: "#3ecf7e",
+    },
+    "date",
+    THRESHOLDS.vo2max
+  );
 
   document.getElementById("wrap-vo2maxChart").insertAdjacentHTML(
     "afterbegin",

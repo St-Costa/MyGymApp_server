@@ -673,3 +673,164 @@ def test_heart_rate_recovery_none_for_too_few_peaks() -> None:
     from app.ecg_analysis import compute_heart_rate_recovery
 
     assert compute_heart_rate_recovery([0, 100], 130) == compute_heart_rate_recovery([], 130)
+
+
+# ---------------------------------------------------------------------------
+# HR-zone minutes (%HRmax training zones)
+# ---------------------------------------------------------------------------
+
+
+def _constant_hr_peaks(sample_rate: int, bpm: float, duration_s: float) -> list[int]:
+    """Builds a peak list at a constant instantaneous HR — the RR interval
+    stays fixed, so every gap attributes to the same zone by construction,
+    making expected zone-minutes easy to state exactly."""
+    rr_ms = 60000.0 / bpm
+    n_beats = int(duration_s * 1000 / rr_ms) + 1
+    peaks = [0]
+    t_ms = 0.0
+    for _ in range(n_beats):
+        t_ms += rr_ms
+        peaks.append(round(t_ms / 1000 * sample_rate))
+    return peaks
+
+
+def test_estimated_max_hr_is_the_mean_of_three_published_formulas() -> None:
+    """Age 26 (2026 - ASSUMED_BIRTH_YEAR 2000): Fox (220-26=194),
+    Tanaka (208-0.7*26=189.8), Gulati (206-0.88*26=183.12) — averaged, not
+    just Fox et al. alone (see _estimated_max_hr's docstring for why)."""
+    from datetime import date
+
+    from app.ecg_analysis import _estimated_max_hr
+
+    expected = (194.0 + 189.8 + 183.12) / 3.0
+    assert _estimated_max_hr(today=date(2026, 1, 1)) == pytest.approx(expected)
+
+
+def test_hr_zone_minutes_constant_hr_lands_in_expected_zone() -> None:
+    """Age 26 (2026 - ASSUMED_BIRTH_YEAR 2000) -> max_hr = mean(Fox, Tanaka,
+    Gulati) ≈ 188.97 (see test_estimated_max_hr_is_the_mean_of_three_
+    published_formulas). Z2 is 60-70% ≈ 113.4-132.3bpm; 125bpm sits inside
+    it, so ~1 minute of constant 125bpm HR should land almost entirely in
+    zone2."""
+    from datetime import date
+
+    from app.ecg_analysis import compute_hr_zone_minutes
+
+    sample_rate = 130
+    peaks = _constant_hr_peaks(sample_rate, bpm=125, duration_s=60)
+
+    result = compute_hr_zone_minutes(peaks, sample_rate, today=date(2026, 1, 1))
+    assert result is not None
+    assert result.zone2 == pytest.approx(1.0, abs=0.05)
+    assert result.zone1 == 0.0
+    assert result.zone3 == 0.0
+    assert result.zone4 == 0.0
+    assert result.zone5 == 0.0
+    assert result.below_zone1 == 0.0
+    assert result.used_hrr is False
+
+
+def test_hr_zone_minutes_below_zone1_for_resting_hr() -> None:
+    """75bpm at max_hr≈188.97 (age 26, 2026) sits well under Z1's ≈94.5bpm
+    floor (50% of max_hr) — should attribute entirely to below_zone1, the
+    "rest between sets" bucket, not any of the 5 training zones."""
+    from datetime import date
+
+    from app.ecg_analysis import compute_hr_zone_minutes
+
+    sample_rate = 130
+    peaks = _constant_hr_peaks(sample_rate, bpm=75, duration_s=60)
+
+    result = compute_hr_zone_minutes(peaks, sample_rate, today=date(2026, 1, 1))
+    assert result is not None
+    assert result.below_zone1 == pytest.approx(1.0, abs=0.05)
+    assert result.zone1 == 0.0
+    assert result.used_hrr is False
+
+
+def test_hr_zone_minutes_zone5_for_near_max_hr() -> None:
+    """190bpm at max_hr≈188.97 (age 26, 2026) is >90% of max — zone5."""
+    from datetime import date
+
+    from app.ecg_analysis import compute_hr_zone_minutes
+
+    sample_rate = 130
+    peaks = _constant_hr_peaks(sample_rate, bpm=190, duration_s=60)
+
+    result = compute_hr_zone_minutes(peaks, sample_rate, today=date(2026, 1, 1))
+    assert result is not None
+    assert result.zone5 == pytest.approx(1.0, abs=0.05)
+    assert result.used_hrr is False
+
+
+def test_hr_zone_minutes_none_for_too_few_peaks() -> None:
+    from app.ecg_analysis import compute_hr_zone_minutes
+
+    assert compute_hr_zone_minutes([0, 100], 130) is None
+    assert compute_hr_zone_minutes([], 130) is None
+
+
+def test_hr_zone_minutes_sums_to_total_duration() -> None:
+    """Every gap between consecutive valid RR readings must be attributed
+    to exactly one bucket (a zone or below_zone1) — the six values should
+    sum to the recording's total attributable duration, not lose or double-
+    count any interval."""
+    from datetime import date
+
+    from app.ecg_analysis import compute_hr_zone_minutes, detect_r_peaks
+    from tests.conftest import synthetic_ecg_samples
+
+    sample_rate = 130
+    samples = synthetic_ecg_samples(sample_rate, duration_s=90, bpm=140, seed=4)
+    peaks = detect_r_peaks(samples, sample_rate)
+
+    result = compute_hr_zone_minutes(peaks, sample_rate, today=date(2026, 1, 1))
+    assert result is not None
+    total = (
+        result.zone1
+        + result.zone2
+        + result.zone3
+        + result.zone4
+        + result.zone5
+        + result.below_zone1
+    )
+    # Should be close to the recording's nominal duration (90s = 1.5min),
+    # modulo the RR plausibility filter dropping a few edge intervals.
+    assert 1.0 < total < 1.6
+
+
+def test_hr_zone_minutes_uses_karvonen_when_resting_hr_given() -> None:
+    """max_hr≈188.97 (age 26, 2026), resting_hr=60 -> HRR≈128.97. %HRmax
+    would put 130bpm in zone2 (60-70% of 188.97 ≈ 113.4-132.3), but under
+    %HRR, 130bpm is (130-60)/128.97 ≈ 54.3% of HRR — inside zone1 (50-60%),
+    not zone2. Confirms the two formulas actually diverge and that
+    resting_hr being passed in is what selects Karvonen."""
+    from datetime import date
+
+    from app.ecg_analysis import compute_hr_zone_minutes
+
+    sample_rate = 130
+    peaks = _constant_hr_peaks(sample_rate, bpm=130, duration_s=60)
+
+    result = compute_hr_zone_minutes(peaks, sample_rate, resting_hr=60.0, today=date(2026, 1, 1))
+    assert result is not None
+    assert result.used_hrr is True
+    assert result.zone1 == pytest.approx(1.0, abs=0.05)
+    assert result.zone2 == 0.0
+
+
+def test_hr_zone_minutes_karvonen_below_zone1_for_resting_hr() -> None:
+    """A recording sitting right at its own resting_hr should attribute
+    entirely to below_zone1 under %HRR too (0% of HRR is the floor by
+    construction, same as %HRmax's near-zero floor)."""
+    from datetime import date
+
+    from app.ecg_analysis import compute_hr_zone_minutes
+
+    sample_rate = 130
+    peaks = _constant_hr_peaks(sample_rate, bpm=60, duration_s=60)
+
+    result = compute_hr_zone_minutes(peaks, sample_rate, resting_hr=60.0, today=date(2026, 1, 1))
+    assert result is not None
+    assert result.used_hrr is True
+    assert result.below_zone1 == pytest.approx(1.0, abs=0.05)

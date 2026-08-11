@@ -32,12 +32,14 @@ import math
 import warnings
 from collections import deque
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 import neurokit2 as nk
 import numpy as np
 from ecgdetectors import Detectors
 from scipy.stats import kurtosis as _scipy_kurtosis
 
+from app.config import ASSUMED_BIRTH_YEAR
 from app.parsing import parse_ecg_file, read_ecg_samples
 from app.storage import EcgAnalysisResult
 
@@ -721,6 +723,22 @@ def _smooth_instantaneous_hr(inst_hr: list[float], inst_hr_times_s: list[float])
     return smoothed
 
 
+def _instantaneous_hr_series(peaks: list[int], sample_rate: int) -> tuple[list[float], list[float]]:
+    """Per-RR-interval instantaneous HR (60000/rr_ms) and the recording-time
+    (seconds) each reading lands at — the same physiologically-plausible-RR
+    filter as rr_intervals_ms, just paired with a timestamp instead of kept
+    as a duration, since both compute_heart_rate_recovery and
+    compute_hr_zone_minutes need "HR at time T", not just "the RR series"."""
+    inst_hr = []
+    inst_hr_times_s = []
+    for a, b in zip(peaks, peaks[1:], strict=False):
+        rr_ms = (b - a) / sample_rate * 1000.0
+        if _RR_MIN_MS <= rr_ms <= _RR_MAX_MS:
+            inst_hr.append(60000.0 / rr_ms)
+            inst_hr_times_s.append(b / sample_rate)
+    return inst_hr, inst_hr_times_s
+
+
 def compute_heart_rate_recovery(peaks: list[int], sample_rate: int) -> HeartRateRecoveryResult:
     """Approximates HRR1/HRR2 using the recording's peak *smoothed* HR as an
     effort-cessation proxy — see ECG_ADVANCED_ANALYSIS.md's "Heart Rate
@@ -737,13 +755,7 @@ def compute_heart_rate_recovery(peaks: list[int], sample_rate: int) -> HeartRate
     if len(peaks) < 3:
         return HeartRateRecoveryResult(None, None)
 
-    inst_hr = []
-    inst_hr_times_s = []
-    for a, b in zip(peaks, peaks[1:], strict=False):
-        rr_ms = (b - a) / sample_rate * 1000.0
-        if _RR_MIN_MS <= rr_ms <= _RR_MAX_MS:
-            inst_hr.append(60000.0 / rr_ms)
-            inst_hr_times_s.append(b / sample_rate)
+    inst_hr, inst_hr_times_s = _instantaneous_hr_series(peaks, sample_rate)
 
     if len(inst_hr) < 3:
         return HeartRateRecoveryResult(None, None)
@@ -787,13 +799,165 @@ def _hr_recovery_at(
     return peak_hr - smoothed_hr[closest_idx]
 
 
+@dataclass
+class HrZoneMinutes:
+    """Minutes spent in each of the 5 standard heart-rate-reserve (Karvonen)
+    training zones, plus below_zone1 for time under even Z1's floor (rest
+    between sets, not part of any "training" zone). Fields are floats
+    (fractional minutes), not rounded — callers/aggregation decide display
+    precision. `used_hrr` records whether this recording actually used
+    %HRR (a resting-HR reading was available) or fell back to plain
+    %HRmax (see compute_hr_zone_minutes' docstring) — the two aren't
+    directly comparable, so this is worth tracking even though the
+    dashboard currently only shows the aggregated total."""
+
+    zone1: float
+    zone2: float
+    zone3: float
+    zone4: float
+    zone5: float
+    below_zone1: float
+    used_hrr: bool
+
+
+# Standard 5-zone percentage bands (the most commonly cited scheme —
+# e.g. British Heart Foundation, Polar, Garmin all use some variant): Z1
+# 50-60% (active recovery), Z2 60-70% (aerobic base), Z3 70-80%
+# (aerobic/tempo), Z4 80-90% (threshold), Z5 90-100%+ (maximal). Applied as
+# %HRR (Karvonen: threshold = resting_hr + % * (max_hr - resting_hr)) when a
+# resting HR is available, %HRmax (threshold = % * max_hr) otherwise — see
+# compute_hr_zone_minutes.
+_HR_ZONE_BOUNDS = (0.50, 0.60, 0.70, 0.80, 0.90)
+
+
+def _estimated_max_hr(*, today: "datetime.date | None" = None) -> float:
+    """Mean of three published age-based max-HR formulas, rather than Fox
+    et al. alone — each has a substantial standard error of estimate
+    (roughly ±10-12bpm for any single one), so averaging independent
+    estimates reduces the error of trusting any one formula's specific
+    coefficients without needing data this pipeline doesn't have.
+
+    Deliberately still age-only, not derived from this project's own ECG
+    data (e.g. observed peak HR, HRR) — max HR can only be measured via a
+    controlled maximal/near-maximal graded exercise test; a peak HR seen
+    during a resistance-training session is a lower bound at best (this
+    project's data is never a maximal test) and at worst an artifact
+    riding the RR-plausibility filter's own ceiling (verified: the highest
+    instantaneous HR ever seen across this project's real recordings was
+    exactly 200bpm — _RR_MIN_MS's 300ms floor, on the one recording
+    already known to carry the most residual noise, not a real
+    physiological peak). Using a submaximal, possibly-artifactual peak
+    would risk being *worse* than the age formulas below, not better.
+
+    - Fox et al. 1971 (220 - age): the original, most commonly cited,
+      loosest derivation (a rough visual fit to pooled data, not a formal
+      regression) — kept for continuity/name recognition, not because it's
+      the most accurate of the three.
+    - Tanaka, Monahan & Seals 2001 (208 - 0.7*age): meta-analysis of
+      351 studies/~18,712 subjects, explicitly derived to correct Fox's
+      well-documented overestimation in older adults; commonly cited as
+      more accurate (lower SEE) than Fox in the exercise-physiology
+      literature since.
+    - Gulati et al. 2010 (206 - 0.88*age): derived from the St. James
+      Women Take Heart study (~5,437 asymptomatic women) via a symptom-
+      limited treadmill test — included specifically because Fox/Tanaka
+      were both derived on male-dominated samples; averaging it in some-
+      what hedges against that skew given this app has no stored sex.
+
+    Age is derived from ASSUMED_BIRTH_YEAR (app.config) — this app has no
+    real stored birth date, so this is a stand-in, recomputed from the
+    current date every call rather than cached, so it drifts forward
+    automatically as years pass (per user decision) instead of needing a
+    yearly manual update. NOT this user's actual age. `today` param exists
+    only for deterministic testing — production callers always omit it."""
+    current_year = (today or datetime.now(UTC).date()).year
+    age = current_year - ASSUMED_BIRTH_YEAR
+    fox = 220.0 - age
+    tanaka = 208.0 - 0.7 * age
+    gulati = 206.0 - 0.88 * age
+    return (fox + tanaka + gulati) / 3.0
+
+
+def compute_hr_zone_minutes(
+    peaks: list[int],
+    sample_rate: int,
+    *,
+    resting_hr: float | None = None,
+    today: "datetime.date | None" = None,
+) -> HrZoneMinutes | None:
+    """Minutes spent in each heart-rate training zone, from the recording's
+    instantaneous per-beat HR — each inter-beat gap is attributed entirely
+    to the zone its *leading* beat's HR falls in (a coarse but standard
+    approach; HR is fairly stable within a single RR interval, so which
+    endpoint anchors a ~0.5-1s gap makes negligible difference to a
+    whole-session total). Returns None if there are too few valid
+    instantaneous-HR readings to attribute any time at all — same
+    threshold as compute_heart_rate_recovery's own minimum.
+
+    `resting_hr`: when provided (callers pass app.analysis.
+    resting_hr_7day_average, a 7-day trailing average of morning readiness
+    resting HR — see that function's docstring for why a rolling average
+    rather than a same-day-only reading), zones use %HRR (Karvonen:
+    threshold = resting_hr + pct*(max_hr - resting_hr)) — considered more
+    physiologically accurate than plain %HRmax because it accounts for
+    individual cardiac reserve (two people with the same max HR but
+    different resting HR have different real training intensity at the
+    same %HRmax). Falls back to %HRmax when None (no readiness reading in
+    the trailing week) rather than leaving the recording's zones
+    unattributed — HrZoneMinutes.used_hrr records which method actually
+    ran for this recording, since the two aren't directly interchangeable."""
+    inst_hr, inst_hr_times_s = _instantaneous_hr_series(peaks, sample_rate)
+    if len(inst_hr) < 3:
+        return None
+
+    max_hr = _estimated_max_hr(today=today)
+    used_hrr = resting_hr is not None
+    if used_hrr:
+        bounds = [resting_hr + b * (max_hr - resting_hr) for b in _HR_ZONE_BOUNDS]
+    else:
+        bounds = [b * max_hr for b in _HR_ZONE_BOUNDS]
+
+    minutes = [0.0, 0.0, 0.0, 0.0, 0.0]
+    below_zone1 = 0.0
+    for i in range(len(inst_hr) - 1):
+        hr = inst_hr[i]
+        duration_min = (inst_hr_times_s[i + 1] - inst_hr_times_s[i]) / 60.0
+        if hr < bounds[0]:
+            below_zone1 += duration_min
+        elif hr < bounds[1]:
+            minutes[0] += duration_min
+        elif hr < bounds[2]:
+            minutes[1] += duration_min
+        elif hr < bounds[3]:
+            minutes[2] += duration_min
+        elif hr < bounds[4]:
+            minutes[3] += duration_min
+        else:
+            minutes[4] += duration_min
+
+    return HrZoneMinutes(
+        zone1=minutes[0],
+        zone2=minutes[1],
+        zone3=minutes[2],
+        zone4=minutes[3],
+        zone5=minutes[4],
+        below_zone1=below_zone1,
+        used_hrr=used_hrr,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
 
 def analyze_ecg_recording(
-    session_id: str, samples: list[int], sample_rate: int, *, file_size_bytes: int
+    session_id: str,
+    samples: list[int],
+    sample_rate: int,
+    *,
+    file_size_bytes: int,
+    resting_hr: float | None = None,
 ) -> EcgAnalysisResult:
     """Runs §1-§5 plus the advanced-metrics tier (ECG_ADVANCED_ANALYSIS.md)
     against one recording's decoded sample stream.
@@ -805,6 +969,12 @@ def analyze_ecg_recording(
     `kurtosis_sqi` doesn't depend on peak detection at all, so it's computed
     even when the recording is otherwise too short/sparse to analyze — it's
     useful precisely for explaining *why* a recording came back empty.
+
+    `resting_hr`: passed straight through to compute_hr_zone_minutes — see
+    that function's docstring for the %HRR-vs-%HRmax fallback behavior.
+    Callers (app.ingestion.ingest_ecg, analyze_ecg.py) are responsible for
+    fetching app.analysis.resting_hr_7day_average themselves; this function
+    stays DB-free like the rest of this module.
     """
     kurtosis_sqi = compute_kurtosis_sqi(samples)
     peaks = detect_r_peaks(samples, sample_rate) if sample_rate > 0 else []
@@ -843,6 +1013,7 @@ def analyze_ecg_recording(
     afib_episodes = compute_afib_suspicion_episodes(rr)
     neurokit_metrics = compute_neurokit_derived_metrics(peaks, sample_rate, rr)
     hrr = compute_heart_rate_recovery(peaks, sample_rate)
+    hr_zones = compute_hr_zone_minutes(peaks, sample_rate, resting_hr=resting_hr)
 
     return EcgAnalysisResult(
         session_id=session_id,
@@ -869,18 +1040,32 @@ def analyze_ecg_recording(
         cvi=neurokit_metrics.cvi,
         hrr_1min=hrr.hrr_1min,
         hrr_2min=hrr.hrr_2min,
+        hr_zone1_min=hr_zones.zone1 if hr_zones else None,
+        hr_zone2_min=hr_zones.zone2 if hr_zones else None,
+        hr_zone3_min=hr_zones.zone3 if hr_zones else None,
+        hr_zone4_min=hr_zones.zone4 if hr_zones else None,
+        hr_zone5_min=hr_zones.zone5 if hr_zones else None,
+        hr_below_zone1_min=hr_zones.below_zone1 if hr_zones else None,
+        hr_zones_used_hrr=hr_zones.used_hrr if hr_zones else None,
     )
 
 
-def analyze_ecg_file(session_id: str, raw_bytes: bytes) -> EcgAnalysisResult:
+def analyze_ecg_file(
+    session_id: str, raw_bytes: bytes, *, resting_hr: float | None = None
+) -> EcgAnalysisResult:
     """Convenience wrapper: decodes a raw (decompressed) .ecg file exactly as
     stored under raw/ecg/{session_id}.ecg and runs analyze_ecg_recording
     against it. This is what callers with only the file bytes (the analysis
     queue processor, reparse-style re-analysis) should use; analyze_ecg_recording
     itself stays the lower-level entry point for tests that want to hand-build
-    a sample list without a binary header."""
+    a sample list without a binary header. `resting_hr` passed straight
+    through — see analyze_ecg_recording's docstring."""
     parsed = parse_ecg_file(raw_bytes)
     samples = read_ecg_samples(raw_bytes)
     return analyze_ecg_recording(
-        session_id, samples, parsed.sample_rate, file_size_bytes=len(raw_bytes)
+        session_id,
+        samples,
+        parsed.sample_rate,
+        file_size_bytes=len(raw_bytes),
+        resting_hr=resting_hr,
     )

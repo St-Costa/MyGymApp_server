@@ -5,7 +5,13 @@ import gzip
 import sqlite3
 import struct
 
-from tests.conftest import build_ecg_bytes, content_hash_of, post_ecg, synthetic_ecg_samples
+from tests.conftest import (
+    build_ecg_bytes,
+    content_hash_of,
+    post_ecg,
+    post_readiness,
+    synthetic_ecg_samples,
+)
 
 
 def _db_conn(app_client):
@@ -288,6 +294,46 @@ def test_valid_ecg_upload_gets_advanced_metrics_too(app_client) -> None:
     ).fetchone()
     assert row is not None
     assert all(value is not None for value in row), row
+
+
+def test_ecg_upload_uses_hrr_zones_when_a_readiness_reading_exists(app_client) -> None:
+    """A resting-HR reading synced within the trailing 7 days should switch
+    the automatic analysis to %HRR (Karvonen) — see
+    app.analysis.resting_hr_7day_average and app.ingestion.
+    resting_hr_for_hr_zones."""
+    readiness_response = post_readiness(app_client)
+    assert readiness_response.status_code == 200
+
+    ecg_bytes = build_ecg_bytes(
+        sample_rate=130, samples=synthetic_ecg_samples(130, 90, 125, seed=3)
+    )
+    response = post_ecg(app_client, ecg_bytes)
+    assert response.status_code == 200
+
+    conn = _db_conn(app_client)
+    used_hrr = conn.execute(
+        "SELECT hr_zones_used_hrr FROM ecg_analysis WHERE session_id = ?", ("3c4d5e6f",)
+    ).fetchone()[0]
+    assert used_hrr == 1
+
+
+def test_ecg_upload_falls_back_to_hrmax_zones_without_a_readiness_reading(app_client) -> None:
+    """No readiness event synced at all -> resting_hr_7day_average returns
+    None -> compute_hr_zone_minutes must fall back to %HRmax, not error or
+    silently skip the zone columns."""
+    ecg_bytes = build_ecg_bytes(
+        sample_rate=130, samples=synthetic_ecg_samples(130, 90, 125, seed=3)
+    )
+    response = post_ecg(app_client, ecg_bytes)
+    assert response.status_code == 200
+
+    conn = _db_conn(app_client)
+    row = conn.execute(
+        "SELECT hr_zones_used_hrr, hr_zone1_min FROM ecg_analysis WHERE session_id = ?",
+        ("3c4d5e6f",),
+    ).fetchone()
+    assert row[0] == 0
+    assert row[1] is not None
 
 
 def test_flat_signal_upload_gets_no_result_not_zeros(app_client) -> None:

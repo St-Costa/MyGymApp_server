@@ -29,6 +29,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+from app.analysis import resting_hr_7day_average
 from app.config import RAW_DIR
 from app.ecg_analysis import analyze_ecg_recording
 from app.parsing import (
@@ -207,6 +208,22 @@ def ingest_scale_weighin(
     )
 
 
+def resting_hr_for_hr_zones(
+    conn: sqlite3.Connection, session_id: str, received_at: str
+) -> float | None:
+    """Looks up the anchor date for app.analysis.resting_hr_7day_average:
+    the matching sessions.date if that session has already synced, falling
+    back to received_at's own date otherwise (e.g. ECG arrives before its
+    session — see ECG_SPEC.md; or a debug-* synthetic id, which never has a
+    matching session at all — see ECG_SPEC.md point 5). Either anchor is a
+    reasonable "around when this recording happened" date for a 7-day
+    trailing average; there's no case where neither is available, since
+    received_at is always set by the time this runs."""
+    row = conn.execute("SELECT date FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    anchor_date = row[0] if row and row[0] else received_at[:10]
+    return resting_hr_7day_average(conn, as_of_date=anchor_date)
+
+
 def ingest_ecg(
     conn: sqlite3.Connection, envelope: Envelope, compressed_bytes: bytes
 ) -> IngestResult:
@@ -303,8 +320,13 @@ def ingest_ecg(
         # happens here.
         try:
             samples = read_ecg_samples(raw_bytes)
+            resting_hr = resting_hr_for_hr_zones(conn, envelope.record_id, received_at)
             result = analyze_ecg_recording(
-                envelope.record_id, samples, parsed.sample_rate, file_size_bytes=len(raw_bytes)
+                envelope.record_id,
+                samples,
+                parsed.sample_rate,
+                file_size_bytes=len(raw_bytes),
+                resting_hr=resting_hr,
             )
             upsert_ecg_analysis(conn, result, analyzed_at=received_at)
         except Exception:

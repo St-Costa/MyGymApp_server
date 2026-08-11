@@ -9,11 +9,20 @@ import pytest
 
 from app.analysis import (
     all_cardio_metrics_weekly_trend,
+    ecg_advanced_metrics_weekly_trend,
     exercise_history,
+    hr_zones_weekly_trend,
     latest_readiness,
     readiness_daily_trend,
+    resting_hr_7day_average,
 )
-from app.storage import init_db
+from app.storage import (
+    EcgAnalysisResult,
+    ParsedEcg,
+    init_db,
+    upsert_ecg_analysis,
+    upsert_parsed_ecg,
+)
 
 
 @pytest.fixture
@@ -202,3 +211,225 @@ def test_readiness_daily_trend_excludes_events_outside_window(conn):
 
     trend = readiness_daily_trend(conn, days=30, today="2026-08-01")
     assert trend == []
+
+
+def test_readiness_daily_trend_includes_raw_numbers_behind_the_category(conn):
+    _insert_readiness(
+        conn,
+        "r1",
+        "2026-08-01T07:00:00",
+        readiness="GOOD",
+        ln_rmssd=4.3,
+        resting_hr=58,
+        vo2max=45.5,
+    )
+
+    trend = readiness_daily_trend(conn, today="2026-08-01")
+    assert trend[0].ln_rmssd == 4.3
+    assert trend[0].resting_hr == 58
+    assert trend[0].vo2max == 45.5
+
+
+def test_readiness_daily_trend_zero_numbers_are_unmeasured_not_real_readings(conn):
+    """READINESS_SPEC.md: 0/0.0 is the phone's "omitted means unmeasured"
+    convention, same as sessions' numeric fields — must surface as None,
+    not a misleadingly real zero reading."""
+    _insert_readiness(
+        conn,
+        "r1",
+        "2026-08-01T07:00:00",
+        readiness="NORMAL",
+        ln_rmssd=0.0,
+        resting_hr=0,
+        vo2max=0.0,
+    )
+
+    trend = readiness_daily_trend(conn, today="2026-08-01")
+    assert trend[0].ln_rmssd is None
+    assert trend[0].resting_hr is None
+    assert trend[0].vo2max is None
+
+
+def _insert_ecg_analysis(conn, session_id, **fields):
+    """Writes an ecg_recordings header row (satisfies ecg_advanced_metrics_
+    weekly_trend's JOIN target) plus an ecg_analysis row with the given
+    metric values — mirrors tests/test_ecg_analysis_storage.py's own
+    _insert_unanalyzed_recording helper, extended to also fill in the
+    analysis row rather than leaving it queued."""
+    upsert_parsed_ecg(
+        conn,
+        ParsedEcg(id=session_id, sample_rate=130, start_timestamp_ns=0, duration_seconds=300.0),
+        content_hash="sha256:" + "0" * 64,
+        raw_path=f"ecg/{session_id}.ecg",
+        received_at="2026-01-01T00:00:00Z",
+    )
+    defaults = {
+        "avg_hr": None,
+        "session_rmssd": None,
+        "sdnn": None,
+        "pnn50": None,
+        "poincare_sd1": None,
+        "poincare_sd2": None,
+        "poincare_ratio": None,
+        "pac_count": None,
+        "pause_count": None,
+        "irregular_beats": None,
+        "afib_suspicion_episodes": None,
+        "peak_count": 100,
+    }
+    upsert_ecg_analysis(
+        conn,
+        EcgAnalysisResult(session_id=session_id, **{**defaults, **fields}),
+        analyzed_at="2026-01-01T00:00:00Z",
+    )
+
+
+def test_ecg_advanced_metrics_weekly_trend_covers_every_metric(conn):
+    _insert_session(conn, "s1", "2026-08-03")
+    _insert_ecg_analysis(
+        conn,
+        "s1",
+        dfa_alpha1=0.75,
+        hrv_lf_hf=2.5,
+        sample_entropy=1.2,
+        hrr_1min=25.0,
+        hrr_2min=40.0,
+    )
+
+    trend = ecg_advanced_metrics_weekly_trend(conn, today="2026-08-10")
+
+    def week(key):
+        return next(b for b in trend[key] if b.week_start == "2026-08-03")
+
+    assert week("dfaAlpha1").value == 0.75
+    assert week("hrvLfHf").value == 2.5
+    assert week("sampleEntropy").value == 1.2
+    assert week("hrr1min").value == 25.0
+    assert week("hrr2min").value == 40.0
+
+
+def test_ecg_advanced_metrics_weekly_trend_excludes_recordings_without_a_session(conn):
+    """The phone's debug-send button uses synthetic debug-* ids (see
+    ECG_SPEC.md point 5) with no matching sessions row — the INNER JOIN
+    must exclude these from a fitness trend, not error or include them
+    with a missing date."""
+    _insert_ecg_analysis(conn, "debug-1700000000000", dfa_alpha1=0.5)
+
+    trend = ecg_advanced_metrics_weekly_trend(conn, today="2026-08-10")
+    assert all(bucket.value is None for bucket in trend["dfaAlpha1"])
+
+
+def test_ecg_advanced_metrics_weekly_trend_ignores_none_metrics(conn):
+    """A "no result" row (see EcgAnalysisResult's convention) must not be
+    treated as 0 in the weekly median — the None-valued weeks should simply
+    have no contribution, not silently pull the median toward zero."""
+    _insert_session(conn, "s1", "2026-08-03")
+    _insert_ecg_analysis(conn, "s1", dfa_alpha1=None)
+
+    trend = ecg_advanced_metrics_weekly_trend(conn, today="2026-08-10")
+    assert all(bucket.value is None for bucket in trend["dfaAlpha1"])
+
+
+def test_ecg_advanced_metrics_weekly_trend_medians_multiple_sessions_per_week(conn):
+    _insert_session(conn, "s1", "2026-08-03")
+    _insert_session(conn, "s2", "2026-08-04")
+    _insert_ecg_analysis(conn, "s1", dfa_alpha1=0.6)
+    _insert_ecg_analysis(conn, "s2", dfa_alpha1=0.9)
+
+    trend = ecg_advanced_metrics_weekly_trend(conn, today="2026-08-10")
+    week = next(b for b in trend["dfaAlpha1"] if b.week_start == "2026-08-03")
+    assert week.value == 0.75  # median(0.6, 0.9)
+    assert week.n == 2
+
+
+def test_hr_zones_weekly_trend_covers_every_zone(conn):
+    _insert_session(conn, "s1", "2026-08-03")
+    _insert_ecg_analysis(
+        conn,
+        "s1",
+        hr_zone1_min=10.0,
+        hr_zone2_min=20.0,
+        hr_zone3_min=5.0,
+        hr_zone4_min=1.0,
+        hr_zone5_min=0.5,
+        hr_below_zone1_min=15.0,
+    )
+
+    trend = hr_zones_weekly_trend(conn, today="2026-08-10")
+    assert set(trend.keys()) == {
+        "zone1",
+        "zone2",
+        "zone3",
+        "zone4",
+        "zone5",
+        "belowZone1",
+    }
+
+    def week(key):
+        return next(b for b in trend[key] if b.week_start == "2026-08-03")
+
+    assert week("zone1").value == 10.0
+    assert week("zone2").value == 20.0
+    assert week("zone3").value == 5.0
+    assert week("zone4").value == 1.0
+    assert week("zone5").value == 0.5
+    assert week("belowZone1").value == 15.0
+
+
+def test_hr_zones_weekly_trend_sums_not_medians_across_sessions(conn):
+    """Zone minutes accumulate across a week's sessions — same reasoning as
+    the rhythm counters' own sum aggregation, not a per-session average."""
+    _insert_session(conn, "s1", "2026-08-03")
+    _insert_session(conn, "s2", "2026-08-04")
+    _insert_ecg_analysis(conn, "s1", hr_zone2_min=10.0)
+    _insert_ecg_analysis(conn, "s2", hr_zone2_min=15.0)
+
+    trend = hr_zones_weekly_trend(conn, today="2026-08-10")
+    week = next(b for b in trend["zone2"] if b.week_start == "2026-08-03")
+    assert week.value == 25.0  # 10 + 15, not median/average
+
+
+def test_hr_zones_weekly_trend_excludes_recordings_without_a_session(conn):
+    """Same INNER JOIN debug-id exclusion as ecg_advanced_metrics_weekly_trend."""
+    _insert_ecg_analysis(conn, "debug-1700000000000", hr_zone2_min=10.0)
+
+    trend = hr_zones_weekly_trend(conn, today="2026-08-10")
+    assert all(bucket.value == 0.0 for bucket in trend["zone2"])
+
+
+def test_hr_zones_weekly_trend_spans_8_weeks_not_12(conn):
+    """Own (shorter) window than the other ECG advanced metrics — 6 stacked
+    segments per bar reads as clutter past ~8 bars (user decision), unlike
+    a single-line 12-week chart. 12-week trends produce 13 Monday-keyed
+    buckets over the same 12-week span (the fetch window's own start date
+    can land mid-week, adding one partial bucket) — same +1 pattern here,
+    so 8 weeks yields 9 buckets, not exactly 8."""
+    trend = hr_zones_weekly_trend(conn, today="2026-08-10")
+    assert len(trend["zone1"]) == 9
+
+
+def test_resting_hr_7day_average_averages_trailing_week(conn):
+    _insert_readiness(conn, "r1", "2026-08-04T07:00:00Z", resting_hr=58)
+    _insert_readiness(conn, "r2", "2026-08-06T07:00:00Z", resting_hr=60)
+    _insert_readiness(conn, "r3", "2026-08-09T07:00:00Z", resting_hr=64)
+
+    avg = resting_hr_7day_average(conn, as_of_date="2026-08-10")
+    assert avg == pytest.approx((58 + 60 + 64) / 3)
+
+
+def test_resting_hr_7day_average_excludes_readings_outside_window(conn):
+    _insert_readiness(conn, "r1", "2026-08-01T07:00:00Z", resting_hr=70)  # >6 days before as_of
+    _insert_readiness(conn, "r2", "2026-08-09T07:00:00Z", resting_hr=60)
+
+    avg = resting_hr_7day_average(conn, as_of_date="2026-08-10")
+    assert avg == pytest.approx(60)
+
+
+def test_resting_hr_7day_average_excludes_zero_as_unmeasured(conn):
+    _insert_readiness(conn, "r1", "2026-08-09T07:00:00Z", resting_hr=0)
+
+    assert resting_hr_7day_average(conn, as_of_date="2026-08-10") is None
+
+
+def test_resting_hr_7day_average_no_readings_returns_none(conn):
+    assert resting_hr_7day_average(conn, as_of_date="2026-08-10") is None

@@ -6,7 +6,7 @@ import importlib
 import sqlite3
 import sys
 
-from tests.conftest import build_ecg_bytes, post_ecg, synthetic_ecg_samples
+from tests.conftest import build_ecg_bytes, post_ecg, post_readiness, synthetic_ecg_samples
 
 
 def _db_conn(app_client):
@@ -125,6 +125,31 @@ def test_stale_reanalyzes_only_rows_below_current_schema_version(app_client) -> 
     from app.storage import ECG_ANALYSIS_SCHEMA_VERSION
 
     assert schema_version == ECG_ANALYSIS_SCHEMA_VERSION
+
+
+def test_stale_reanalysis_picks_up_hrr_zones_from_a_readiness_reading(app_client) -> None:
+    """The batch path (analyze_ecg.py) must look up resting HR the same way
+    the live endpoint does, via app.ingestion.resting_hr_for_hr_zones — a
+    readiness event synced after the original (stale) analysis should still
+    switch the re-analysis over to %HRR."""
+    post_ecg(app_client, build_ecg_bytes(samples=synthetic_ecg_samples(130, 90, 125, seed=4)))
+
+    conn = _db_conn(app_client)
+    with conn:
+        conn.execute(
+            "UPDATE ecg_analysis SET schema_version = 0 WHERE session_id = ?", ("3c4d5e6f",)
+        )
+    assert post_readiness(app_client).status_code == 200
+
+    module = _load_analyze_ecg()
+    exit_code = _run(module, "--stale")
+    assert exit_code == 0
+
+    conn = _db_conn(app_client)
+    used_hrr = conn.execute(
+        "SELECT hr_zones_used_hrr FROM ecg_analysis WHERE session_id = ?", ("3c4d5e6f",)
+    ).fetchone()[0]
+    assert used_hrr == 1
 
 
 def test_missing_raw_file_is_reported_as_a_failure_not_a_crash(app_client, monkeypatch) -> None:
