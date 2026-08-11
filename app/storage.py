@@ -173,6 +173,19 @@ CREATE TABLE IF NOT EXISTS ecg_analysis (
   irregular_beats          INTEGER,
   afib_suspicion_episodes  INTEGER,
   peak_count               INTEGER NOT NULL,   -- detected R-peaks; diagnostic, not one of the 12
+  -- Tier-1 advanced metrics (docs/sync-ingestion/ECG_ADVANCED_ANALYSIS.md).
+  -- Same "None means no result" convention as the fields above.
+  kurtosis_sqi             REAL,   -- signal quality: amplitude-distribution kurtosis
+  b_sqi                    REAL,   -- signal quality: agreement with an independent 2nd detector
+  dfa_alpha1               REAL,   -- fractal RR scaling exponent; ~0.75 ~= aerobic threshold (VT1)
+  hrv_lf                   REAL,   -- frequency-domain HRV: low-frequency power
+  hrv_hf                   REAL,   -- frequency-domain HRV: high-frequency (vagal) power
+  hrv_lf_hf                REAL,   -- LF/HF ratio, coarse sympathovagal balance proxy
+  sample_entropy           REAL,   -- nonlinear HRV: SampEn
+  csi                       REAL,  -- nonlinear HRV: Cardiac Sympathetic Index
+  cvi                       REAL,  -- nonlinear HRV: Cardiac Vagal Index
+  hrr_1min                 REAL,   -- heart rate recovery, 1min after the recording's peak HR
+  hrr_2min                 REAL,   -- heart rate recovery, 2min after the recording's peak HR
   analyzed_at              TEXT NOT NULL,
   schema_version           INTEGER NOT NULL
 );
@@ -212,6 +225,7 @@ def init_db(db_path: Path = DB_PATH) -> None:
         conn.executescript(SCHEMA)
         _migrate_exercise_sets_is_bodyweight_column(conn)
         _migrate_sessions_rpe_columns(conn)
+        _migrate_ecg_analysis_advanced_columns(conn)
 
 
 def _migrate_sessions_rpe_columns(conn: sqlite3.Connection) -> None:
@@ -244,6 +258,33 @@ def _migrate_exercise_sets_is_bodyweight_column(conn: sqlite3.Connection) -> Non
         conn.execute(
             "ALTER TABLE exercise_sets ADD COLUMN is_bodyweight INTEGER NOT NULL DEFAULT 0"
         )
+
+
+def _migrate_ecg_analysis_advanced_columns(conn: sqlite3.Connection) -> None:
+    """One-time migration: the tier-1 advanced metrics (docs/sync-ingestion/
+    ECG_ADVANCED_ANALYSIS.md — SQI, DFA-alpha1, frequency-domain/nonlinear
+    HRV, HRR) were added after `ecg_analysis` already existed in deployed
+    databases. All nullable and left NULL for existing rows — same "no
+    result yet" convention as every other field here; `analyze_ecg.py
+    --stale` (ECG_ANALYSIS_SCHEMA_VERSION bumped alongside this) is what
+    backfills them, not this migration."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(ecg_analysis)")}
+    new_columns = (
+        "kurtosis_sqi",
+        "b_sqi",
+        "dfa_alpha1",
+        "hrv_lf",
+        "hrv_hf",
+        "hrv_lf_hf",
+        "sample_entropy",
+        "csi",
+        "cvi",
+        "hrr_1min",
+        "hrr_2min",
+    )
+    for column in new_columns:
+        if column not in columns:
+            conn.execute(f"ALTER TABLE ecg_analysis ADD COLUMN {column} REAL")  # noqa: S608
 
 
 def _migrate_parse_failures_table(conn: sqlite3.Connection) -> None:
@@ -399,10 +440,12 @@ class ParsedEcg:
 @dataclass
 class EcgAnalysisResult:
     """One row of docs/sync-ingestion/ECG_ANALYSIS_HANDOFF.md's ported
-    analysis: R-peak/HRV/arrhythmia metrics derived from a raw ECG waveform.
-    All twelve metric fields are `None` when analysis ran but the recording
-    didn't clear the handoff doc's minimum-input thresholds ("no result",
-    not zeros — see analyze_ecg_recording's docstring in app.ecg_analysis)."""
+    analysis: R-peak/HRV/arrhythmia metrics derived from a raw ECG waveform,
+    plus the tier-1 advanced metrics from ECG_ADVANCED_ANALYSIS.md (SQI,
+    DFA-alpha1, frequency-domain/nonlinear HRV, HRR). Every metric field is
+    `None` when its underlying computation didn't run/couldn't produce a
+    result ("no result", not zeros — see analyze_ecg_recording's docstring
+    in app.ecg_analysis)."""
 
     session_id: str
     avg_hr: float | None
@@ -417,6 +460,18 @@ class EcgAnalysisResult:
     irregular_beats: int | None
     afib_suspicion_episodes: int | None
     peak_count: int
+    # Tier-1 advanced metrics (docs/sync-ingestion/ECG_ADVANCED_ANALYSIS.md).
+    kurtosis_sqi: float | None = None
+    b_sqi: float | None = None
+    dfa_alpha1: float | None = None
+    hrv_lf: float | None = None
+    hrv_hf: float | None = None
+    hrv_lf_hf: float | None = None
+    sample_entropy: float | None = None
+    csi: float | None = None
+    cvi: float | None = None
+    hrr_1min: float | None = None
+    hrr_2min: float | None = None
 
 
 # Tables that participate in the generic id -> content_hash / stale-lookup
@@ -737,7 +792,18 @@ def upsert_parsed_ecg(
 # introduced it. Rows analyzed under schema_version 1 can have
 # significantly inflated RMSSD/SDNN/AFib-suspicion counts on recordings
 # with this kind of artifact.
-ECG_ANALYSIS_SCHEMA_VERSION = 2
+# Bumped to 3: added the tier-1 advanced metrics (SQI, DFA-alpha1,
+# frequency-domain/nonlinear HRV, HRR) — see
+# docs/sync-ingestion/ECG_ADVANCED_ANALYSIS.md. Rows below this version
+# simply have NULL in all the new columns until re-analyzed.
+# Bumped to 4: fixed two bugs found by running schema_version=3 against real
+# gym-session recordings — HRR's peak-detection used unsmoothed instantaneous
+# HR (a single noisy beat could dominate the "peak", producing 100+ bpm HRR
+# values) and bSQI's phase-offset estimation could converge on the wrong
+# systematic delay entirely on some recordings. Both are described in
+# app.ecg_analysis's docstrings; rows analyzed under schema_version 3 can
+# have unreliable hrr_1min/hrr_2min/b_sqi values.
+ECG_ANALYSIS_SCHEMA_VERSION = 4
 
 
 def upsert_ecg_analysis(
@@ -754,12 +820,16 @@ def upsert_ecg_analysis(
             session_id, avg_hr, session_rmssd, sdnn, pnn50,
             poincare_sd1, poincare_sd2, poincare_ratio,
             pac_count, pause_count, irregular_beats, afib_suspicion_episodes,
-            peak_count, analyzed_at, schema_version
+            peak_count, kurtosis_sqi, b_sqi, dfa_alpha1,
+            hrv_lf, hrv_hf, hrv_lf_hf, sample_entropy, csi, cvi,
+            hrr_1min, hrr_2min, analyzed_at, schema_version
         ) VALUES (
             :session_id, :avg_hr, :session_rmssd, :sdnn, :pnn50,
             :poincare_sd1, :poincare_sd2, :poincare_ratio,
             :pac_count, :pause_count, :irregular_beats, :afib_suspicion_episodes,
-            :peak_count, :analyzed_at, :schema_version
+            :peak_count, :kurtosis_sqi, :b_sqi, :dfa_alpha1,
+            :hrv_lf, :hrv_hf, :hrv_lf_hf, :sample_entropy, :csi, :cvi,
+            :hrr_1min, :hrr_2min, :analyzed_at, :schema_version
         )
         ON CONFLICT(session_id) DO UPDATE SET
             avg_hr=excluded.avg_hr, session_rmssd=excluded.session_rmssd,
@@ -768,7 +838,13 @@ def upsert_ecg_analysis(
             poincare_ratio=excluded.poincare_ratio, pac_count=excluded.pac_count,
             pause_count=excluded.pause_count, irregular_beats=excluded.irregular_beats,
             afib_suspicion_episodes=excluded.afib_suspicion_episodes,
-            peak_count=excluded.peak_count, analyzed_at=excluded.analyzed_at,
+            peak_count=excluded.peak_count,
+            kurtosis_sqi=excluded.kurtosis_sqi, b_sqi=excluded.b_sqi,
+            dfa_alpha1=excluded.dfa_alpha1, hrv_lf=excluded.hrv_lf,
+            hrv_hf=excluded.hrv_hf, hrv_lf_hf=excluded.hrv_lf_hf,
+            sample_entropy=excluded.sample_entropy, csi=excluded.csi, cvi=excluded.cvi,
+            hrr_1min=excluded.hrr_1min, hrr_2min=excluded.hrr_2min,
+            analyzed_at=excluded.analyzed_at,
             schema_version=excluded.schema_version
         """,
         {
@@ -785,6 +861,17 @@ def upsert_ecg_analysis(
             "irregular_beats": result.irregular_beats,
             "afib_suspicion_episodes": result.afib_suspicion_episodes,
             "peak_count": result.peak_count,
+            "kurtosis_sqi": result.kurtosis_sqi,
+            "b_sqi": result.b_sqi,
+            "dfa_alpha1": result.dfa_alpha1,
+            "hrv_lf": result.hrv_lf,
+            "hrv_hf": result.hrv_hf,
+            "hrv_lf_hf": result.hrv_lf_hf,
+            "sample_entropy": result.sample_entropy,
+            "csi": result.csi,
+            "cvi": result.cvi,
+            "hrr_1min": result.hrr_1min,
+            "hrr_2min": result.hrr_2min,
             "analyzed_at": analyzed_at,
             "schema_version": ECG_ANALYSIS_SCHEMA_VERSION,
         },

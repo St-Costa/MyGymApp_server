@@ -9,6 +9,14 @@ dependencies = [
     "python-multipart>=0.0.9",
     "pyyaml>=6.0",
     "jinja2>=3.1",
+    # app/ecg_analysis.py's advanced-metrics tier (DFA-alpha1, frequency-
+    # domain/nonlinear HRV, signal-quality cross-check): see
+    # docs/sync-ingestion/ECG_ADVANCED_ANALYSIS.md for why these two and not
+    # vital-sqi (broken on PyPI as of this writing — its hrv-analysis
+    # dependency imports an astropy API removed upstream, and pinning around
+    # it collides with numpy 1.x/2.x across the rest of the tree).
+    "neurokit2>=0.2.13",
+    "py-ecg-detectors>=1.3.5",
 ]
 
 [project.optional-dependencies]

@@ -269,6 +269,27 @@ def test_valid_ecg_upload_is_analyzed_automatically(app_client) -> None:
     assert analyzed_at is not None
 
 
+def test_valid_ecg_upload_gets_advanced_metrics_too(app_client) -> None:
+    """docs/sync-ingestion/ECG_ADVANCED_ANALYSIS.md's tier-1 metrics (SQI,
+    DFA-alpha1, frequency-domain/nonlinear HRV, HRR) are computed as part of
+    the same automatic analysis pass, not a separate step — 90s at a
+    regular rhythm clears every minimum-input threshold, including
+    frequency-domain HRV's ~60s duration floor."""
+    ecg_bytes = build_ecg_bytes(sample_rate=130, samples=synthetic_ecg_samples(130, 90, 75, seed=2))
+    response = post_ecg(app_client, ecg_bytes)
+    assert response.status_code == 200
+
+    conn = _db_conn(app_client)
+    row = conn.execute(
+        """SELECT kurtosis_sqi, b_sqi, dfa_alpha1, hrv_lf, hrv_hf, hrv_lf_hf,
+                  sample_entropy, csi, cvi
+           FROM ecg_analysis WHERE session_id = ?""",
+        ("3c4d5e6f",),
+    ).fetchone()
+    assert row is not None
+    assert all(value is not None for value in row), row
+
+
 def test_flat_signal_upload_gets_no_result_not_zeros(app_client) -> None:
     """build_ecg_bytes' default (constant samples, no QRS shape) can't
     produce real R-peaks — the automatic analysis must still run and record
