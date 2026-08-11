@@ -168,6 +168,14 @@ def test_dashboard_includes_all_weekly_cardio_charts(app_client) -> None:
         "chart-pauses",
         "chart-premature",
         "chart-uneven",
+        "chart-dfaAlpha1",
+        "chart-hrvLfHf",
+        "chart-sampleEntropy",
+        "chart-hrr1min",
+        "chart-hrr2min",
+        "chart-morningRestingHr",
+        "chart-morningVo2max",
+        "chart-hrZones",
         "chart-bmi",
         "chart-bodyComp",  # combined body-fat%/lean-mass% chart, not two separate ones
     ):

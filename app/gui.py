@@ -24,7 +24,9 @@ from app.analysis import (
     all_cardio_metrics_weekly_trend,
     all_time_tonnage_pr,
     compute_cardio_trend_card,
+    ecg_advanced_metrics_weekly_trend,
     exercise_history,
+    hr_zones_weekly_trend,
     list_exercises,
     readiness_daily_trend,
     recent_heaviest_set_pr,
@@ -50,6 +52,8 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
     with connect(DB_PATH) as conn:
         cardio = compute_cardio_trend_card(conn, today=today)
         cardio_series = all_cardio_metrics_weekly_trend(conn, today=today)
+        ecg_advanced_series = ecg_advanced_metrics_weekly_trend(conn, today=today)
+        hr_zones_series = hr_zones_weekly_trend(conn, today=today)
         resting_hr = resting_hr_weekly_trend(conn, today=today)
         vo2max = vo2max_4week_trend(conn, today=today)
         scale = scale_weekly_trend(conn, today=today)
@@ -69,6 +73,10 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
             # aren't JSON-serializable by Jinja2's tojson filter, so convert
             # up front (WeeklyBucket -> plain dict) rather than in-template.
             "cardio_series": {k: [asdict(b) for b in v] for k, v in cardio_series.items()},
+            "ecg_advanced_series": {
+                k: [asdict(b) for b in v] for k, v in ecg_advanced_series.items()
+            },
+            "hr_zones_series": {k: [asdict(b) for b in v] for k, v in hr_zones_series.items()},
             "resting_hr_trend": resting_hr,
             "vo2max_trend": vo2max,
             "scale_trend": scale,

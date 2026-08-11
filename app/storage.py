@@ -186,6 +186,17 @@ CREATE TABLE IF NOT EXISTS ecg_analysis (
   cvi                       REAL,  -- nonlinear HRV: Cardiac Vagal Index
   hrr_1min                 REAL,   -- heart rate recovery, 1min after the recording's peak HR
   hrr_2min                 REAL,   -- heart rate recovery, 2min after the recording's peak HR
+  -- Minutes in each heart-rate training zone (%HRR/Karvonen when a resting
+  -- HR was available, %HRmax fallback otherwise — see hr_zones_used_hrr
+  -- and app.ecg_analysis.compute_hr_zone_minutes). below_zone1_min is time
+  -- under even Z1's floor (rest between sets), not itself a zone.
+  hr_zone1_min             REAL,
+  hr_zone2_min             REAL,
+  hr_zone3_min             REAL,
+  hr_zone4_min             REAL,
+  hr_zone5_min             REAL,
+  hr_below_zone1_min       REAL,
+  hr_zones_used_hrr        INTEGER,  -- 0/1/NULL: which method computed the zones above
   analyzed_at              TEXT NOT NULL,
   schema_version           INTEGER NOT NULL
 );
@@ -226,6 +237,7 @@ def init_db(db_path: Path = DB_PATH) -> None:
         _migrate_exercise_sets_is_bodyweight_column(conn)
         _migrate_sessions_rpe_columns(conn)
         _migrate_ecg_analysis_advanced_columns(conn)
+        _migrate_ecg_analysis_hr_zone_columns(conn)
 
 
 def _migrate_sessions_rpe_columns(conn: sqlite3.Connection) -> None:
@@ -285,6 +297,29 @@ def _migrate_ecg_analysis_advanced_columns(conn: sqlite3.Connection) -> None:
     for column in new_columns:
         if column not in columns:
             conn.execute(f"ALTER TABLE ecg_analysis ADD COLUMN {column} REAL")  # noqa: S608
+
+
+def _migrate_ecg_analysis_hr_zone_columns(conn: sqlite3.Connection) -> None:
+    """One-time migration: HR-zone minutes (app.ecg_analysis.
+    compute_hr_zone_minutes) were added after ecg_analysis already existed
+    in deployed databases — same pattern/reasoning as
+    _migrate_ecg_analysis_advanced_columns above."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(ecg_analysis)")}
+    new_columns = (
+        "hr_zone1_min",
+        "hr_zone2_min",
+        "hr_zone3_min",
+        "hr_zone4_min",
+        "hr_zone5_min",
+        "hr_below_zone1_min",
+    )
+    for column in new_columns:
+        if column not in columns:
+            conn.execute(f"ALTER TABLE ecg_analysis ADD COLUMN {column} REAL")  # noqa: S608
+    # 0/1/NULL flag, added alongside the %HRR-vs-%HRmax switch — separate
+    # ALTER since it's INTEGER, not REAL like the columns above.
+    if "hr_zones_used_hrr" not in columns:
+        conn.execute("ALTER TABLE ecg_analysis ADD COLUMN hr_zones_used_hrr INTEGER")
 
 
 def _migrate_parse_failures_table(conn: sqlite3.Connection) -> None:
@@ -472,6 +507,19 @@ class EcgAnalysisResult:
     cvi: float | None = None
     hrr_1min: float | None = None
     hrr_2min: float | None = None
+    # Minutes in each heart-rate training zone (app.ecg_analysis.
+    # compute_hr_zone_minutes) — hr_below_zone1_min is time under even Z1's
+    # floor (rest between sets), not itself a zone. hr_zones_used_hrr
+    # records whether %HRR (Karvonen, a resting HR was available) or the
+    # %HRmax fallback computed the zone values above — the two methods
+    # aren't directly comparable, see compute_hr_zone_minutes' docstring.
+    hr_zone1_min: float | None = None
+    hr_zone2_min: float | None = None
+    hr_zone3_min: float | None = None
+    hr_zone4_min: float | None = None
+    hr_zone5_min: float | None = None
+    hr_below_zone1_min: float | None = None
+    hr_zones_used_hrr: bool | None = None
 
 
 # Tables that participate in the generic id -> content_hash / stale-lookup
@@ -803,7 +851,22 @@ def upsert_parsed_ecg(
 # systematic delay entirely on some recordings. Both are described in
 # app.ecg_analysis's docstrings; rows analyzed under schema_version 3 can
 # have unreliable hrr_1min/hrr_2min/b_sqi values.
-ECG_ANALYSIS_SCHEMA_VERSION = 4
+# Bumped to 5: added HR-zone minutes (app.ecg_analysis.
+# compute_hr_zone_minutes) — %HRmax training-zone time breakdown per
+# recording. Rows below this version have NULL in the hr_zone*/
+# hr_below_zone1_min columns until re-analyzed.
+# Bumped to 6: _estimated_max_hr changed from Fox et al. alone (220-age) to
+# the mean of three published formulas (Fox/Tanaka/Gulati) — see
+# app.ecg_analysis's docstring for why. Rows analyzed under schema_version 5
+# have hr_zone*/hr_below_zone1_min computed against a slightly different
+# (Fox-only) max-HR estimate.
+# Bumped to 7: compute_hr_zone_minutes switched from %HRmax to %HRR (Karvonen:
+# resting_hr + pct*(max_hr - resting_hr)) whenever a resting HR is available —
+# a 7-day trailing average of readiness_events.resting_hr, since resting HR
+# changes little day to day in a stable athlete. See hr_zones_used_hrr on each
+# row for which formula was actually used (NULL/0 rows fell back to %HRmax
+# because no resting-HR reading existed in the trailing week).
+ECG_ANALYSIS_SCHEMA_VERSION = 7
 
 
 def upsert_ecg_analysis(
@@ -822,14 +885,18 @@ def upsert_ecg_analysis(
             pac_count, pause_count, irregular_beats, afib_suspicion_episodes,
             peak_count, kurtosis_sqi, b_sqi, dfa_alpha1,
             hrv_lf, hrv_hf, hrv_lf_hf, sample_entropy, csi, cvi,
-            hrr_1min, hrr_2min, analyzed_at, schema_version
+            hrr_1min, hrr_2min,
+            hr_zone1_min, hr_zone2_min, hr_zone3_min, hr_zone4_min, hr_zone5_min,
+            hr_below_zone1_min, hr_zones_used_hrr, analyzed_at, schema_version
         ) VALUES (
             :session_id, :avg_hr, :session_rmssd, :sdnn, :pnn50,
             :poincare_sd1, :poincare_sd2, :poincare_ratio,
             :pac_count, :pause_count, :irregular_beats, :afib_suspicion_episodes,
             :peak_count, :kurtosis_sqi, :b_sqi, :dfa_alpha1,
             :hrv_lf, :hrv_hf, :hrv_lf_hf, :sample_entropy, :csi, :cvi,
-            :hrr_1min, :hrr_2min, :analyzed_at, :schema_version
+            :hrr_1min, :hrr_2min,
+            :hr_zone1_min, :hr_zone2_min, :hr_zone3_min, :hr_zone4_min, :hr_zone5_min,
+            :hr_below_zone1_min, :hr_zones_used_hrr, :analyzed_at, :schema_version
         )
         ON CONFLICT(session_id) DO UPDATE SET
             avg_hr=excluded.avg_hr, session_rmssd=excluded.session_rmssd,
@@ -844,6 +911,11 @@ def upsert_ecg_analysis(
             hrv_hf=excluded.hrv_hf, hrv_lf_hf=excluded.hrv_lf_hf,
             sample_entropy=excluded.sample_entropy, csi=excluded.csi, cvi=excluded.cvi,
             hrr_1min=excluded.hrr_1min, hrr_2min=excluded.hrr_2min,
+            hr_zone1_min=excluded.hr_zone1_min, hr_zone2_min=excluded.hr_zone2_min,
+            hr_zone3_min=excluded.hr_zone3_min, hr_zone4_min=excluded.hr_zone4_min,
+            hr_zone5_min=excluded.hr_zone5_min,
+            hr_below_zone1_min=excluded.hr_below_zone1_min,
+            hr_zones_used_hrr=excluded.hr_zones_used_hrr,
             analyzed_at=excluded.analyzed_at,
             schema_version=excluded.schema_version
         """,
@@ -872,6 +944,15 @@ def upsert_ecg_analysis(
             "cvi": result.cvi,
             "hrr_1min": result.hrr_1min,
             "hrr_2min": result.hrr_2min,
+            "hr_zone1_min": result.hr_zone1_min,
+            "hr_zone2_min": result.hr_zone2_min,
+            "hr_zone3_min": result.hr_zone3_min,
+            "hr_zone4_min": result.hr_zone4_min,
+            "hr_zone5_min": result.hr_zone5_min,
+            "hr_below_zone1_min": result.hr_below_zone1_min,
+            "hr_zones_used_hrr": (
+                None if result.hr_zones_used_hrr is None else int(result.hr_zones_used_hrr)
+            ),
             "analyzed_at": analyzed_at,
             "schema_version": ECG_ANALYSIS_SCHEMA_VERSION,
         },

@@ -156,6 +156,70 @@ grounding (unlike HRR's peak-based proxy, there's no reasonable single-recording
 for "a sustained steady effort segment"). Left as explicit future work pending
 session-phase data, not silently dropped.
 
+### 6. Heart rate training zones (Z1-Z5, `compute_hr_zone_minutes`)
+
+Minutes spent in each of 5 standard training zones (Z1 50-60% active recovery, Z2 60-70%
+aerobic base, Z3 70-80% aerobic/tempo, Z4 80-90% threshold, Z5 90%+ maximal) plus
+`hr_below_zone1_min` for time under even Z1's floor (rest between sets, not a training
+zone). Attribution is per inter-beat gap, anchored to its leading beat's instantaneous HR.
+
+**%HRR (Karvonen), not %HRmax, when a resting HR is available**: zone boundaries are
+`resting_hr + pct*(max_hr - resting_hr)` rather than `pct*max_hr`. %HRmax treats two people
+with the same max HR as equivalent regardless of cardiac reserve; %HRR corrects for it, and
+is the more physiologically accurate method for someone training frequently with a low
+resting HR (%HRmax would systematically under-report how hard such sessions actually are).
+`compute_hr_zone_minutes` falls back to plain %HRmax when no resting HR is available for
+the analyzed recording, and records which method was used in `hr_zones_used_hrr` (see
+Schema below) so downstream consumers (the dashboard) know which formula produced a given
+row rather than silently mixing the two.
+
+**Resting HR input — 7-day trailing average, not same-day measurement**: `resting_hr` comes
+from `app.analysis.resting_hr_7day_average`, a mean of `readiness_events.resting_hr` over
+the 7 days ending on the recording's own session date (falling back to the sync-receipt
+date if the session hasn't synced yet). Resting HR changes little day to day in a stable,
+training athlete (roughly ±3-5bpm barring illness/acute stress), so a week-long average is
+an acceptable substitute for days without a direct morning reading, rather than requiring
+same-day data that often doesn't exist. Computed once per analyzed recording in
+`app.ingestion.resting_hr_for_hr_zones` (the live `POST /v1/ecg` path) and mirrored in
+`analyze_ecg.py` (the batch/backfill path) — both call the same `resting_hr_7day_average`,
+per this project's one-parser-two-callers convention.
+
+**Max HR is still age-based, not derived from this project's peak-HR data — same reasoning
+regardless of %HRR vs %HRmax** (see below): switching the zone *formula* doesn't change
+what's a safe *input* to it. Using an under-measured max HR would shift the whole %HRR
+scale down (both numerator and denominator depend on it), so the accuracy of the underlying
+max-HR estimate matters at least as much under Karvonen as it did under %HRmax.
+
+**Max HR estimate — mean of three published age-based formulas, not one**: Fox et al. 1971
+(220-age), Tanaka/Monahan/Seals 2001 (208-0.7×age, meta-analysis of 351 studies/~18,712
+subjects, generally considered more accurate than Fox for older adults), and Gulati et al.
+2010 (206-0.88×age, derived on ~5,437 women — included since Fox/Tanaka were both derived
+on male-dominated samples and this app stores no sex). Averaging reduces reliance on any
+one formula's specific coefficients; each has a standard error of estimate on the order of
+±10-12bpm on its own.
+
+**Explicitly not derived from this project's own ECG data, and why**: max HR can only be
+*measured*, not estimated more accurately, via a controlled maximal/near-maximal graded
+exercise test — a peak HR observed during a resistance-training session is not that, and
+using it (or heart-rate-recovery/BMI/resting-HR derived from it) risks anchoring to a wrong
+number. Verified concretely before deciding this: the highest instantaneous HR ever
+observed across every real recording in this project was exactly 200bpm, on the one
+recording already known to carry the most residual noise — landing precisely on
+`_RR_MIN_MS`'s 300ms filter ceiling, not a real physiological peak. A literature review
+(see the research this feature was built from) additionally found no published formula
+uses resting HR, HRR, or HRV (RMSSD/SDNN) as an input to predict max HR at all — this
+isn't a gap in this implementation, it doesn't exist to use. The one published multivariate
+formula that adds BMI/body-fat%/fitness-level/VO2max (Sales et al. 2021, N=3,374, true
+CPET) only improves R² marginally over age alone (0.19→0.22) and its own authors call it
+"unlikely to be useful in clinical practice" — and even that marginal formula requires a
+true maximal-test-derived VO2max as input, which this pipeline has no way to supply.
+Age-only, averaged across three formulas, is the defensible choice given only passively-
+collected submaximal gym-session data.
+
+Age is derived from `ASSUMED_BIRTH_YEAR` (`app.config`) — see that constant's own
+docstring; recomputed from the current date on every call, not cached, so it drifts
+forward automatically as years pass.
+
 ## Schema
 
 `ecg_analysis` (see `app/storage.py`) gains:
@@ -172,12 +236,21 @@ ALTER TABLE ecg_analysis ADD COLUMN csi            REAL;
 ALTER TABLE ecg_analysis ADD COLUMN cvi            REAL;
 ALTER TABLE ecg_analysis ADD COLUMN hrr_1min       REAL;
 ALTER TABLE ecg_analysis ADD COLUMN hrr_2min       REAL;
+ALTER TABLE ecg_analysis ADD COLUMN hr_zone1_min       REAL;
+ALTER TABLE ecg_analysis ADD COLUMN hr_zone2_min       REAL;
+ALTER TABLE ecg_analysis ADD COLUMN hr_zone3_min       REAL;
+ALTER TABLE ecg_analysis ADD COLUMN hr_zone4_min       REAL;
+ALTER TABLE ecg_analysis ADD COLUMN hr_zone5_min       REAL;
+ALTER TABLE ecg_analysis ADD COLUMN hr_below_zone1_min REAL;
+ALTER TABLE ecg_analysis ADD COLUMN hr_zones_used_hrr    INTEGER;
 ```
 
 All nullable, same "no result" convention as the existing twelve fields: `None`/`NULL`
 when the underlying computation couldn't run (too little clean data, no RR series, no
-detectable peak HR), never a misleading zero. `ECG_ANALYSIS_SCHEMA_VERSION` bumped
-accordingly — existing rows are stale and due for re-analysis via `analyze_ecg.py --stale`.
+detectable peak HR), never a misleading zero. `hr_zones_used_hrr` is 0/1/NULL: which
+formula (%HRR vs %HRmax fallback) computed the zone columns on that row — see "%HRR
+(Karvonen)" above. `ECG_ANALYSIS_SCHEMA_VERSION` bumped accordingly — existing rows are
+stale and due for re-analysis via `analyze_ecg.py --stale`.
 
 ## Tier 2 — investigated and rejected
 
