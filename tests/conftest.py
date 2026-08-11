@@ -4,6 +4,7 @@ tests never touch a real deployment's data or share state with each other."""
 import gzip
 import hashlib
 import importlib
+import random
 import struct
 
 import pytest
@@ -96,6 +97,27 @@ def build_ecg_bytes(
     header = b"MYGMECG1" + struct.pack(">i", sample_rate) + struct.pack(">q", start_timestamp_ns)
     body = b"".join(struct.pack(">h", s) for s in samples)
     return header + body
+
+
+def synthetic_ecg_samples(
+    sample_rate: int = 130, duration_s: int = 20, bpm: float = 75, *, seed: int = 1
+) -> list[int]:
+    """Low-amplitude noise with a sharp narrow spike every beat interval,
+    simulating a QRS complex against a noisy baseline — enough for
+    app.ecg_analysis.detect_r_peaks to find real peaks, unlike
+    build_ecg_bytes' default flat/constant samples (which have no QRS shape
+    at all and correctly produce a "no result" analysis). Shared between
+    test_ecg_analysis.py (direct sample-list tests) and
+    test_ecg_endpoint.py/test_analyze_ecg.py (which need real .ecg bytes)."""
+    rng = random.Random(seed)
+    n = sample_rate * duration_s
+    samples = [rng.randint(-5, 5) for _ in range(n)]
+    beat_interval = round(60.0 / bpm * sample_rate)
+    for p in range(beat_interval, n - beat_interval, beat_interval):
+        for offset in range(-3, 4):
+            if 0 <= p + offset < n:
+                samples[p + offset] += 800 - abs(offset) * 100
+    return samples
 
 
 @pytest.fixture

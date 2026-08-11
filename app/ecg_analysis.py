@@ -102,10 +102,28 @@ def _trailing_max(values: list[float], window: int) -> list[float]:
     return out
 
 
-def detect_r_peaks(samples: list[int], sample_rate: int) -> list[int]:
-    """§1: returns the sample indices of detected R-peaks."""
+@dataclass
+class _PanTompkinsIntermediates:
+    """Bundles the processing-chain arrays §1's primary pass produces, so
+    _fill_missed_peaks (a post-processing extension, not part of the
+    handoff doc's §1 itself) can re-run the same threshold logic inside a
+    gap without recomputing the filter cascade."""
+
+    integrated: list[float]
+    local_max: list[float]
+    refractory: int
+
+
+def _detect_r_peaks_raw(
+    samples: list[int], sample_rate: int
+) -> tuple[list[int], _PanTompkinsIntermediates]:
+    """§1, verbatim: the handoff doc's algorithm exactly as specified —
+    bandpass cascade, 5-point derivative, moving-window integration,
+    adaptive trailing-max threshold. Returns both the detected peaks and
+    the intermediate arrays, so detect_r_peaks' gap-filling pass below can
+    reuse them instead of reprocessing the raw signal a second time."""
     if not samples:
-        return []
+        return [], _PanTompkinsIntermediates(integrated=[], local_max=[], refractory=0)
 
     raw = [float(s) for s in samples]
 
@@ -133,7 +151,79 @@ def detect_r_peaks(samples: list[int], sample_rate: int) -> list[int]:
         ):
             peaks.append(i)
             last_peak = i
-    return peaks
+
+    return peaks, _PanTompkinsIntermediates(
+        integrated=integrated, local_max=local_max, refractory=refractory
+    )
+
+
+# Post-processing extension, *not* part of the handoff doc's §1 — added
+# after verifying the straight port against real gym-session recordings
+# (see commit message): a sustained wide artifact (electrode contact during
+# a heavy rep, lasting well past a QRS complex's ~150ms) can pin local_max
+# high enough for several seconds that real, normal-amplitude beats in that
+# window fall under the 0.5x threshold and are silently missed — the same
+# failure mode the handoff doc's trailing-max fix addressed for a *global*
+# max, just recurring locally when an artifact is wide/sustained rather
+# than a brief spike. A missed beat then shows up as one implausibly long
+# RR interval, which single-handedly wrecks RMSSD/SDNN/AFib-screening for
+# the whole recording. This pass looks inside each suspiciously long gap
+# for weaker local maxima the primary pass's 0.5x threshold rejected, using
+# a relaxed 0.25x floor scoped to *that gap only* — never applied session-
+# wide, so it can't manufacture peaks in a genuinely quiet stretch.
+_GAP_FILL_RR_RATIO = 1.7  # a gap must be >1.7x the local median RR to be "suspicious"
+_GAP_FILL_THRESHOLD_RATIO = 0.25  # relaxed threshold, scoped to the gap window only
+
+
+def _fill_missed_peaks(
+    peaks: list[int], intermediates: _PanTompkinsIntermediates, sample_rate: int
+) -> list[int]:
+    integrated = intermediates.integrated
+    local_max = intermediates.local_max
+    refractory = intermediates.refractory
+    if len(peaks) < 3 or not integrated:
+        return peaks
+
+    filled = [peaks[0]]
+    for prev, nxt in zip(peaks, peaks[1:], strict=False):
+        gap = nxt - prev
+        # Local rhythm estimate: median of the (up to) 5 gaps before this
+        # one, so the "suspicious" comparison adapts to the recording's own
+        # current heart rate rather than a fixed bpm assumption.
+        recent_pairs = zip(filled[-6:], filled[-5:], strict=False)
+        recent_gaps = [b - a for a, b in recent_pairs] if len(filled) >= 2 else []
+        local_rhythm = _median(recent_gaps) if recent_gaps else gap
+
+        if local_rhythm > 0 and gap > local_rhythm * _GAP_FILL_RR_RATIO:
+            # Re-scan strictly inside (prev, nxt) with the relaxed threshold,
+            # respecting the same refractory period as the primary pass so
+            # this can't produce physiologically impossible back-to-back beats.
+            candidates: list[int] = []
+            last = prev
+            for i in range(prev + 1, nxt):
+                relaxed_threshold = local_max[i] * _GAP_FILL_THRESHOLD_RATIO
+                if (
+                    integrated[i] > relaxed_threshold
+                    and integrated[i] > integrated[i - 1]
+                    and integrated[i] >= integrated[i + 1]
+                    and (i - last) > refractory
+                ):
+                    candidates.append(i)
+                    last = i
+            filled.extend(candidates)
+
+        filled.append(nxt)
+
+    return filled
+
+
+def detect_r_peaks(samples: list[int], sample_rate: int) -> list[int]:
+    """§1 (_detect_r_peaks_raw) plus the gap-filling extension above. See
+    _fill_missed_peaks' module-level comment for why this exists — the
+    primary detection pass is unmodified from the handoff doc, this only
+    recovers beats it's known to systematically miss inside a wide artifact."""
+    peaks, intermediates = _detect_r_peaks_raw(samples, sample_rate)
+    return _fill_missed_peaks(peaks, intermediates, sample_rate)
 
 
 # ---------------------------------------------------------------------------

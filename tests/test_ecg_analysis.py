@@ -19,6 +19,7 @@ from app.ecg_analysis import (
     detect_r_peaks,
     rr_intervals_ms,
 )
+from tests.conftest import synthetic_ecg_samples
 
 # ---------------------------------------------------------------------------
 # §2 HRV metrics
@@ -199,10 +200,14 @@ def test_afib_episodes_count_rising_edges_only() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _synthetic_ecg(sample_rate: int, duration_s: int, bpm: float, *, seed: int) -> list[int]:
-    """Builds a crude but adequate synthetic ECG: low-amplitude noise with a
-    sharp narrow spike every beat_interval samples, simulating a QRS complex
-    against a noisy baseline."""
+def _synthetic_ecg_with_true_peaks(
+    sample_rate: int, duration_s: int, bpm: float, *, seed: int
+) -> tuple[list[int], list[int]]:
+    """Same construction as tests.conftest.synthetic_ecg_samples, but also
+    returns the true beat positions — needed only by the peak-position
+    accuracy test below, so kept local rather than folded into the shared
+    helper (which every other caller in this file/test_ecg_endpoint.py just
+    needs the sample list from)."""
     rng = random.Random(seed)
     n = sample_rate * duration_s
     samples = [rng.randint(-5, 5) for _ in range(n)]
@@ -222,7 +227,7 @@ def test_detect_r_peaks_finds_synthetic_beats_after_warmup() -> None:
     with a short history, not a correctness bug. After warm-up, detection
     must match the true beat count closely."""
     sample_rate = 130
-    samples, true_peaks = _synthetic_ecg(sample_rate, duration_s=20, bpm=75, seed=1)
+    samples, true_peaks = _synthetic_ecg_with_true_peaks(sample_rate, duration_s=20, bpm=75, seed=1)
     detected = detect_r_peaks(samples, sample_rate)
 
     after_warmup = [p for p in detected if p > true_peaks[0] - 20]
@@ -253,6 +258,93 @@ def test_detect_r_peaks_respects_refractory_period() -> None:
     # neither clears threshold in isolation — but not two).
     close_peaks = [p for p in peaks if abs(p - n // 2) < sample_rate]
     assert len(close_peaks) <= 1
+
+
+# ---------------------------------------------------------------------------
+# Gap-filling extension (not part of the handoff doc's §1 — see
+# _fill_missed_peaks' module-level comment in app.ecg_analysis for why this
+# was added: verified against real gym-session recordings where a sustained
+# wide artifact silently masked several real beats, see commit message).
+# ---------------------------------------------------------------------------
+
+
+def _synthetic_ecg_with_sustained_artifact(
+    sample_rate: int, duration_s: int, bpm: float, *, artifact_after_beat: int, seed: int
+) -> tuple[list[int], list[int]]:
+    """Same construction as _synthetic_ecg_with_true_peaks, plus a sustained
+    600ms amplitude plateau (wider than a ~150ms QRS, and large enough to
+    dominate the 5s trailing local_max — matched to the amplitude seen in
+    the real recording that surfaced this failure mode, see commit message)
+    injected shortly after one beat: real-amplitude beats in the following
+    seconds then fall under the primary pass's 0.5x threshold."""
+    samples, true_peaks = _synthetic_ecg_with_true_peaks(sample_rate, duration_s, bpm, seed=seed)
+    artifact_start = true_peaks[artifact_after_beat] + round(0.1 * sample_rate)
+    artifact_len = round(0.6 * sample_rate)
+    n = len(samples)
+    for i in range(artifact_start, min(artifact_start + artifact_len, n)):
+        samples[i] += 1500
+    return samples, true_peaks
+
+
+def test_sustained_artifact_masks_beats_without_gap_filling() -> None:
+    """Establishes the failure mode _fill_missed_peaks exists to fix: the
+    raw §1 pass alone (_detect_r_peaks_raw) must miss at least one real beat
+    inside the artifact's aftermath, confirming this test scenario actually
+    reproduces the bug rather than accidentally being too easy."""
+    from app.ecg_analysis import _detect_r_peaks_raw
+
+    sample_rate = 130
+    samples, true_peaks = _synthetic_ecg_with_sustained_artifact(
+        sample_rate, duration_s=30, bpm=75, artifact_after_beat=5, seed=1
+    )
+    raw_peaks, _ = _detect_r_peaks_raw(samples, sample_rate)
+
+    window_true = [p for p in true_peaks if true_peaks[5] < p < true_peaks[9]]
+    window_detected = [p for p in raw_peaks if true_peaks[5] < p < true_peaks[9]]
+    assert len(window_detected) < len(window_true)
+
+
+def test_gap_filling_recovers_beats_missed_by_a_sustained_artifact() -> None:
+    """The actual fix: detect_r_peaks (raw pass + gap-filling) must recover
+    the beats the raw pass alone misses in test_sustained_artifact_masks_
+    beats_without_gap_filling, bringing the count back close to true."""
+    sample_rate = 130
+    samples, true_peaks = _synthetic_ecg_with_sustained_artifact(
+        sample_rate, duration_s=30, bpm=75, artifact_after_beat=5, seed=1
+    )
+    filled_peaks = detect_r_peaks(samples, sample_rate)
+
+    window_true = [p for p in true_peaks if true_peaks[5] < p < true_peaks[9]]
+    window_filled = [p for p in filled_peaks if true_peaks[5] < p < true_peaks[9]]
+    assert len(window_filled) >= len(window_true) - 1  # allow at most one still missed
+
+
+def test_gap_filling_does_not_alter_a_clean_regular_signal() -> None:
+    """On a signal with no suspicious gaps (regular, artifact-free), the
+    gap-filling pass must be a no-op — it should never manufacture peaks in
+    a genuinely quiet/regular stretch."""
+    sample_rate = 130
+    samples = synthetic_ecg_samples(sample_rate, duration_s=20, bpm=75, seed=1)
+
+    from app.ecg_analysis import _detect_r_peaks_raw
+
+    raw_peaks, _ = _detect_r_peaks_raw(samples, sample_rate)
+    filled_peaks = detect_r_peaks(samples, sample_rate)
+    assert filled_peaks == raw_peaks
+
+
+def test_gap_filling_still_respects_the_refractory_period() -> None:
+    """A recovered peak must never land closer than the refractory period
+    to its neighbors — the relaxed threshold only widens what counts as a
+    peak's *amplitude*, never loosens the minimum spacing between beats."""
+    sample_rate = 130
+    samples, true_peaks = _synthetic_ecg_with_sustained_artifact(
+        sample_rate, duration_s=30, bpm=75, artifact_after_beat=5, seed=1
+    )
+    filled_peaks = detect_r_peaks(samples, sample_rate)
+    refractory = round(0.25 * sample_rate)
+    for a, b in zip(filled_peaks, filled_peaks[1:], strict=False):
+        assert (b - a) > refractory
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +389,7 @@ def test_too_few_detected_peaks_returns_no_result() -> None:
 
 def test_full_pipeline_produces_a_result_for_a_realistic_recording() -> None:
     sample_rate = 130
-    samples, _true_peaks = _synthetic_ecg(sample_rate, duration_s=30, bpm=70, seed=3)
+    samples = synthetic_ecg_samples(sample_rate, duration_s=30, bpm=70, seed=3)
     result = analyze_ecg_recording(
         "s1", samples, sample_rate, file_size_bytes=20 + len(samples) * 2
     )
@@ -324,7 +416,7 @@ def test_analyze_ecg_file_end_to_end_from_raw_bytes() -> None:
     from app.ecg_analysis import analyze_ecg_file
 
     sample_rate = 130
-    samples, _true_peaks = _synthetic_ecg(sample_rate, duration_s=15, bpm=80, seed=5)
+    samples = synthetic_ecg_samples(sample_rate, duration_s=15, bpm=80, seed=5)
     header = b"MYGMECG1" + struct.pack(">i", sample_rate) + struct.pack(">q", 0)
     body = b"".join(struct.pack(">h", max(-32768, min(32767, s))) for s in samples)
     result = analyze_ecg_file("s2", header + body)

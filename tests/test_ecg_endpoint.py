@@ -5,7 +5,7 @@ import gzip
 import sqlite3
 import struct
 
-from tests.conftest import build_ecg_bytes, content_hash_of, post_ecg
+from tests.conftest import build_ecg_bytes, content_hash_of, post_ecg, synthetic_ecg_samples
 
 
 def _db_conn(app_client):
@@ -233,3 +233,84 @@ def test_malformed_envelope_json_returns_400(app_client) -> None:
     )
     assert response.status_code == 400
     assert "error" in response.json()
+
+
+# ---------------------------------------------------------------------------
+# Automatic analysis (docs/sync-ingestion/ECG_ANALYSIS_HANDOFF.md) — runs
+# synchronously inside ingest_ecg once the header parses. See
+# tests/test_ecg_analysis.py for the analysis math itself; these tests only
+# cover that the upload path actually triggers it and never lets it break
+# the request.
+# ---------------------------------------------------------------------------
+
+
+def test_valid_ecg_upload_is_analyzed_automatically(app_client) -> None:
+    ecg_bytes = build_ecg_bytes(sample_rate=130, samples=synthetic_ecg_samples(130, 20, 75, seed=1))
+    response = post_ecg(app_client, ecg_bytes)
+    assert response.status_code == 200
+
+    conn = _db_conn(app_client)
+    row = conn.execute(
+        "SELECT avg_hr, peak_count, schema_version FROM ecg_analysis WHERE session_id = ?",
+        ("3c4d5e6f",),
+    ).fetchone()
+    assert row is not None
+    avg_hr, peak_count, schema_version = row
+    assert avg_hr is not None
+    assert 30 < avg_hr < 220  # any plausible heart rate, sanity bound only
+    assert peak_count > 0
+    assert schema_version >= 1
+
+    # analyzed_at on the recording itself must be stamped too, so the
+    # analyzed_at IS NULL queue doesn't pick this back up.
+    analyzed_at = conn.execute(
+        "SELECT analyzed_at FROM ecg_recordings WHERE session_id = ?", ("3c4d5e6f",)
+    ).fetchone()[0]
+    assert analyzed_at is not None
+
+
+def test_flat_signal_upload_gets_no_result_not_zeros(app_client) -> None:
+    """build_ecg_bytes' default (constant samples, no QRS shape) can't
+    produce real R-peaks — the automatic analysis must still run and record
+    a "no result" row (None metrics), not silently skip writing one."""
+    response = post_ecg(app_client, build_ecg_bytes())
+    assert response.status_code == 200
+
+    conn = _db_conn(app_client)
+    row = conn.execute(
+        "SELECT avg_hr, pac_count FROM ecg_analysis WHERE session_id = ?", ("3c4d5e6f",)
+    ).fetchone()
+    assert row == (None, None)
+
+
+def test_analysis_failure_does_not_fail_the_upload(app_client, monkeypatch) -> None:
+    """A bug/exception in the analysis engine must never take down an
+    otherwise-successful upload — the raw file and header row are already
+    safely stored by the time analysis runs."""
+    import app.ingestion
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("simulated analysis crash")
+
+    monkeypatch.setattr(app.ingestion, "analyze_ecg_recording", _boom)
+
+    response = post_ecg(app_client, build_ecg_bytes())
+    assert response.status_code == 200
+    assert response.json() == {"sessionId": "3c4d5e6f", "status": "stored"}
+
+    conn = _db_conn(app_client)
+    # The recording itself is still there...
+    recording = conn.execute(
+        "SELECT session_id FROM ecg_recordings WHERE session_id = ?", ("3c4d5e6f",)
+    ).fetchone()
+    assert recording is not None
+    # ...but analysis never wrote a row, and the recording stays in the
+    # unanalyzed queue for a later retry (e.g. via analyze_ecg.py).
+    analysis_row = conn.execute(
+        "SELECT * FROM ecg_analysis WHERE session_id = ?", ("3c4d5e6f",)
+    ).fetchone()
+    assert analysis_row is None
+    analyzed_at = conn.execute(
+        "SELECT analyzed_at FROM ecg_recordings WHERE session_id = ?", ("3c4d5e6f",)
+    ).fetchone()[0]
+    assert analyzed_at is None

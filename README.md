@@ -55,10 +55,27 @@ now-removed R-peak/HRV/arrhythmia analysis (Pan-Tompkins-style QRS detection, RM
 pNN50, Poincaré SD1/SD2/ratio, PAC/pause/irregular-beat counts, AFib suspicion screening) —
 see [docs/sync-ingestion/ECG_ANALYSIS_HANDOFF.md](docs/sync-ingestion/ECG_ANALYSIS_HANDOFF.md)
 for the full formulas and rationale. Results land in the `ecg_analysis` table, keyed by
-`session_id`. **The analysis engine and storage exist; nothing runs it automatically yet** —
-there's no scheduled job or CLI command draining the `ecg_recordings.analyzed_at IS NULL`
-queue. Driving that queue (a `reparse.py`-style command or an endpoint) is deliberately
-left as separate follow-up work.
+`session_id`.
+
+**Runs automatically**: `POST /v1/ecg` analyzes every recording synchronously right after
+its header parses (see `app.ingestion.ingest_ecg`) — a bug or edge case in the analysis math
+can never fail the upload itself, the recording just stays in the `analyzed_at IS NULL`
+queue for a later retry. For the backlog (recordings that landed before this was wired in)
+or bulk re-analysis after a formula change, run `analyze_ecg.py` — same never-touches-the-
+network shape as `reparse.py`:
+
+```bash
+python analyze_ecg.py --all      # every recording never analyzed, ever
+python analyze_ecg.py --stale    # only ECG_ANALYSIS_SCHEMA_VERSION < current
+python analyze_ecg.py <session_id> [<session_id> ...]   # specific ids, forces re-run
+```
+
+The R-peak detector includes one deliberate extension beyond a literal port: a gap-filling
+pass that recovers real beats missed when a sustained, wide motion artifact (electrode
+contact during a heavy rep — lasting well past a QRS complex's ~150ms) inflates the trailing-
+max threshold for several seconds. This was found by running the port against real gym-
+session recordings, where it was inflating RMSSD/SDNN/AFib-suspicion counts session-wide.
+See `app/ecg_analysis.py`'s module comment for the details.
 
 ## Dashboard
 
