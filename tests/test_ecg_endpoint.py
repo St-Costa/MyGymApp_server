@@ -195,6 +195,32 @@ def test_truncated_below_header_size_is_stored_but_not_parsed(app_client) -> Non
     assert row == (0,)
 
 
+def test_debug_synthetic_id_is_accepted_with_no_matching_session(app_client) -> None:
+    """ECG_SPEC.md point 5: the phone's debug-send button uses a synthetic
+    `debug-{epoch millis}` id instead of a real 8-hex session id, and there
+    will never be a matching `sessions` row for it. This must be accepted
+    like any other sessionId — no format allowlist, no FK to enforce it
+    (ecg_recordings.session_id deliberately has none, see app/storage.py)."""
+    debug_id = "debug-1754899200000"
+    response = post_ecg(app_client, session_id=debug_id, rel_path=f"ecg/{debug_id}.ecg")
+    assert response.status_code == 200
+    assert response.json() == {"sessionId": debug_id, "status": "stored"}
+
+    import app.config
+
+    raw_path = app.config.RAW_DIR / f"ecg/{debug_id}.ecg"
+    assert raw_path.exists()
+
+    conn = _db_conn(app_client)
+    row = conn.execute(
+        "SELECT session_id FROM ecg_recordings WHERE session_id = ?", (debug_id,)
+    ).fetchone()
+    assert row == (debug_id,)
+    # No corresponding sessions row — and that's fine, per the spec.
+    count = conn.execute("SELECT COUNT(*) FROM sessions WHERE id = ?", (debug_id,)).fetchone()[0]
+    assert count == 0
+
+
 def test_malformed_envelope_json_returns_400(app_client) -> None:
     from tests.conftest import auth_headers
 

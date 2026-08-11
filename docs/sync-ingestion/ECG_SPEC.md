@@ -1,9 +1,10 @@
 # `POST /v1/ecg` — raw ECG ingestion spec
 
-Status: **phone side implemented and build-verified**, not yet tested against a live
-server round-trip. This document is the handoff spec for `MyGymApp_server` — implement
-this endpoint there, mirroring the structure of the existing `SPEC.md` (sessions),
-`READINESS_SPEC.md`, and `SCALE_SPEC.md` in that repo's `docs/sync-ingestion/`.
+Status: **phone side and server side both implemented** (server: commit `cdfb74f`,
+"feat(ecg): add POST /v1/ecg raw waveform ingestion endpoint"). A manual debug send button
+now exists on the phone (`OptionsViewModel.sendDebugEcg()`, see point 5 below) for
+exercising this round-trip live without a full workout session — use it to confirm the
+round-trip works end to end against a running server.
 
 Source of truth for the phone-side implementation this spec describes: `docs/SYNC.md` in
 the `MyGymApp` repo (not this one), section "Fourth record type: raw ECG"
@@ -78,12 +79,22 @@ Response contract — **identical** to the other three endpoints:
    "Resync all" after a partial local failure) and should be logged distinctly from the
    idempotent-duplicate case, though returning `200 stored` (overwrite) rather than
    erroring is still the pragmatic choice — don't invent a new rejection path for this.
-5. **Timeouts on the phone side are longer** (90s write / 60s read vs. 30s/30s for the
+5. **Debug uploads use a synthetic id**: Options' debug screen has a manual "Registra e
+   invia ECG di debug" button (`OptionsViewModel.sendDebugEcg()`) that records ~10s of ECG
+   from the connected Polar device and sends it through this same endpoint using an id of
+   the form `debug-{epoch millis}` (e.g. `debug-1754899200000`) instead of a real 8-hex
+   session id. There is and will never be a matching row in `sessions` for these — expected,
+   not a bug, since `ecg_recordings.session_id` correctly has no FK constraint. If it's ever
+   useful to exclude these from real analysis runs, filter on the `debug-` prefix; no
+   server-side validation currently rejects or special-cases this id shape, which is
+   intentional — keep it that way rather than adding an id-format allowlist, since real
+   session ids and debug ids should both just be opaque strings to this endpoint.
+6. **Timeouts on the phone side are longer** (90s write / 60s read vs. 30s/30s for the
    other three) because even gzip-compressed, a full-session ~130Hz Int16 stream is larger
    than a session/readiness/weigh-in YAML file. No server-side action needed for this, but
    worth knowing when debugging a slow-upload report — a legitimately large file taking
    longer than the other endpoints' typical latency is expected, not necessarily a bug.
-6. **Retention asymmetry — read this carefully**: for sessions/readiness/scale, the phone
+7. **Retention asymmetry — read this carefully**: for sessions/readiness/scale, the phone
    keeps a **permanent** local copy regardless of sync status — the server's copy is a
    convenience/analysis mirror. For ECG, the phone **deletes its local copy once upload is
    confirmed** (and unconditionally after 30 days pending, confirmed or not — see
