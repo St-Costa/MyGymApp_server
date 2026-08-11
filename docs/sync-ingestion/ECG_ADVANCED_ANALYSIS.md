@@ -180,3 +180,69 @@ All nullable, same "no result" convention as the existing twelve fields: `None`/
 when the underlying computation couldn't run (too little clean data, no RR series, no
 detectable peak HR), never a misleading zero. `ECG_ANALYSIS_SCHEMA_VERSION` bumped
 accordingly — existing rows are stale and due for re-analysis via `analyze_ecg.py --stale`.
+
+## Tier 2 — investigated and rejected
+
+The literature review's "worth prototyping" tier was tested one-by-one against the ~40
+real recordings in this project's own database (not synthetic signals) before deciding
+whether to build any of it for real. All five were rejected — documented here so this
+isn't silently re-investigated later. Prototype scripts aren't kept in the repo (throwaway,
+run from the scratchpad); the numbers below are what they produced.
+
+**1. ECG-derived respiration (EDR/RSA)** — `neurokit2.ecg_rsp` (vangent2019 method).
+Rejected: estimated breathing rate settled at a near-constant **14-16 breaths/min across
+entire 2-hour recordings**, regardless of what the session actually involved (warm-up,
+heavy sets, cardio, rest) — the 0.1-0.4Hz bandpass filter is producing a quasi-periodic
+artifact of its own, not tracking a real respiratory signal, on this noisy exercise-context
+single-lead data. Confirms neurokit2's own docstring warning ("help is required to
+double-check whether the implementation match the papers").
+
+**2. Ensemble R-peak detection** (voting/correction, beyond the bSQI cross-check already
+in production) — compared our detector against `py-ecg-detectors`' Hamilton and Christov
+detectors. Rejected: on clean recordings (high `b_sqi`) all three detectors already agree
+to within <1% — nothing to gain from voting. On recordings where they *do* diverge
+(e.g. `00b20ee4`: 21205 vs 15732 vs 21232 peaks — Hamilton found 26% fewer), the
+disagreement is too large to trust an automatic vote to pick the right answer rather than
+just swapping one unreliable estimate for another. `b_sqi` (already implemented) already
+surfaces exactly this signal — an ensemble-correction layer wouldn't add anything a human
+reading `b_sqi` doesn't already know.
+
+**3. AFib expert features (ENCASE-style)** — computed RR-diff Shannon entropy, global
+coefficient of variation, and % of RR intervals >20% from the local median, alongside the
+existing `afib_suspicion_episodes`. Rejected: `pct_irregular` correlated **r=0.95** with
+the existing metric across all 36 usable recordings — almost entirely redundant, not new
+signal. `rr_entropy` was noisy and sensitive to recording length/fixed bin count, unusable
+without real normalization work. `global_cv` (r=0.75) captured something partially
+different but, being a single whole-recording statistic, is strictly less informative than
+the existing sliding-window detector, which already localizes *when* in the session
+irregularity happens.
+
+**4. PVC/PAC morphology clustering** — extracted per-beat templates via
+`biosppy.signals.ecg.extract_heartbeats` (fed our own detected peaks, not biosppy's own
+segmenter) and ran k-means (k=3) on z-score-normalized template shapes. Rejected: flagged
+**20-66% of beats as "minority" morphology** across recordings — far too high to be real
+PVC/PAC (clinically rare, typically <5% even in patients with meaningful arrhythmia burden).
+Manual inspection of one case (`22abda6d`, 19.4% minority) showed the "different" cluster
+was just lower-amplitude beats (mean peak 2.97 vs ~4.5 for the other two, nearly identical
+in shape) — consistent with degraded electrode contact during movement, not distinct beat
+morphology. No ground truth available to validate whether any cluster corresponds to a real
+PVC/PAC, and no reason to trust k-means-with-fixed-k to make that distinction on its own.
+(Also worth flagging: `biosppy` doesn't correctly declare its `peakutils` dependency —
+`import biosppy` fails outright until `peakutils` is installed separately. Not disqualifying
+on its own, but a data point alongside `vital-sqi`'s breakage when weighing "how maintained
+is this library" for any future revisit.)
+
+**5. T-wave alternans (TWA)** — used `neurokit2.ecg_delineate` (DWT method) to locate T-wave
+peaks, then checked whether an even/odd-beat amplitude alternation was measurable at all
+before attempting a real TWA implementation (there's no ready-made TWA function in
+neurokit2; building one means implementing the spectral/statistical method from scratch).
+Not rejected on "it doesn't work" — T-peak delineation returned a value for essentially
+every beat, including on recordings/windows already known to carry motion artifact, which
+is itself the concerning finding: a near-100% "success" rate on noisy data suggests the
+delineator returns *something* even when the true T-wave isn't reliably identifiable, i.e.
+silent false positives, not genuine robustness. Without labeled/reference data there's no
+way to tell real alternans from residual noise passed through the same detector, and the
+literature itself already flags ambulatory/exercise TWA as lacking standardized detection
+thresholds (see the original literature review's tier-3 notes). Left as explicitly
+not-attempted beyond this delineation sanity-check — building the full spectral method
+would be speculative effort with no way to validate the result.
