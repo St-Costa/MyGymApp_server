@@ -36,8 +36,10 @@ loses or corrupts data), idempotency on `sessionId` + content hash still holds, 
 | Run a single test | `pytest path/to/test_file.py::test_name` |
 | Lint | `ruff check .` |
 | Format | `ruff format .` |
+| Audit dependencies for CVEs | `pip-audit . --ignore-vuln PYSEC-2026-3447` (see ci.yml for why that one's excluded) |
 | Build (Docker image) | `docker build -t mygymapp-sync-server .` |
 | Reparse stored sessions | `python reparse.py --all` (or `--stale`, or specific IDs) |
+| Re-run ECG analysis | `python analyze_ecg.py --all` (or `--stale`, or specific session IDs) |
 
 ## Conventions
 

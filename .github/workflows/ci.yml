@@ -25,3 +25,19 @@ jobs:
 
       - name: Test
         run: pytest
+
+      - name: Audit dependencies for known vulnerabilities
+        run: |
+          pip install pip-audit
+          # Audits pyproject.toml's declared deps, not the runner's own
+          # pip/setuptools — those aren't this project's dependencies.
+          #
+          # --ignore-vuln PYSEC-2026-3447: setuptools<83 sdist-build MANIFEST.in
+          # glob-matching issue (affects `python -m build --sdist` only — this
+          # project never builds/publishes an sdist, only deploys via Docker/
+          # direct run). neurokit2==0.2.13 pins `setuptools<82` as a runtime
+          # dependency, which blocks upgrading past this CVE's fixed version
+          # (83.0.0) entirely — verified 2026-08 that no compatible neurokit2
+          # release exists yet. Re-check this exclusion whenever neurokit2 is
+          # upgraded; drop it once a version without the setuptools pin ships.
+          pip-audit . --ignore-vuln PYSEC-2026-3447
