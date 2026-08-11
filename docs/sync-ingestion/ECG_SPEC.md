@@ -1,10 +1,11 @@
 # `POST /v1/ecg` — raw ECG ingestion spec
 
-Status: **phone side and server side both implemented** (server: commit `cdfb74f`,
-"feat(ecg): add POST /v1/ecg raw waveform ingestion endpoint"). A manual debug send button
-now exists on the phone (`OptionsViewModel.sendDebugEcg()`, see point 5 below) for
-exercising this round-trip live without a full workout session — use it to confirm the
-round-trip works end to end against a running server.
+Status: **transport implemented both sides** (server: commit `cdfb74f`, "feat(ecg): add
+POST /v1/ecg raw waveform ingestion endpoint"). A manual debug send button exists on the
+phone (`OptionsViewModel.sendDebugEcg()`, see point 5 below) for exercising this
+round-trip live without a full workout session. **Analysis is not implemented yet** — raw
+waveforms are landing in `ecg_recordings` with `analyzed_at IS NULL` and nothing is
+consuming them. See `ECG_ANALYSIS_HANDOFF.md` for the required next step.
 
 Source of truth for the phone-side implementation this spec describes: `docs/SYNC.md` in
 the `MyGymApp` repo (not this one), section "Fourth record type: raw ECG"
@@ -154,6 +155,12 @@ CREATE TABLE ecg_recordings (
 (out of scope for this transport spec — see `SYNC.md`'s "New analysis this unlocks
 server-side" note). Results of that analysis belong in their own table(s), designed
 alongside the analysis job itself, not here.
+
+**For the actual analysis logic**: see `ECG_ANALYSIS_HANDOFF.md` in this same directory —
+a complete, formula-exact port of what the phone used to compute from the raw waveform
+(Pan-Tompkins R-peak detection, RMSSD/SDNN/pNN50/Poincaré, PAC/pause/irregular-beat/AFib
+screening) before this endpoint existed. That analysis no longer runs on the phone at all
+— implementing it against `ecg_recordings` rows is the next required step, not optional.
 
 ## Receiver logic (step by step)
 

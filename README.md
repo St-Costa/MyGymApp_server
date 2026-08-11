@@ -48,6 +48,18 @@ exist, so `raw/ecg/` needs the same (or better) backup discipline as `raw/`'s se
 cardio trend/alerts, weekly resting-HR/VO2max/scale trends, exercise PRs — as JSON; see
 [docs/sync-ingestion/ANALYSIS_SPEC.md](docs/sync-ingestion/ANALYSIS_SPEC.md).
 
+### ECG waveform analysis
+
+[app/ecg_analysis.py](app/ecg_analysis.py) is a from-source port of the phone's
+now-removed R-peak/HRV/arrhythmia analysis (Pan-Tompkins-style QRS detection, RMSSD/SDNN/
+pNN50, Poincaré SD1/SD2/ratio, PAC/pause/irregular-beat counts, AFib suspicion screening) —
+see [docs/sync-ingestion/ECG_ANALYSIS_HANDOFF.md](docs/sync-ingestion/ECG_ANALYSIS_HANDOFF.md)
+for the full formulas and rationale. Results land in the `ecg_analysis` table, keyed by
+`session_id`. **The analysis engine and storage exist; nothing runs it automatically yet** —
+there's no scheduled job or CLI command draining the `ecg_recordings.analyzed_at IS NULL`
+queue. Driving that queue (a `reparse.py`-style command or an endpoint) is deliberately
+left as separate follow-up work.
+
 ## Dashboard
 
 A server-rendered dashboard is available at `/` (trends) and `/exercises` (PR lookup),

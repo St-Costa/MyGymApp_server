@@ -256,6 +256,26 @@ def parse_ecg_file(raw_bytes: bytes) -> ParsedEcg:
     )
 
 
+def read_ecg_samples(raw_bytes: bytes) -> list[int]:
+    """Decodes the Int16 BIG-ENDIAN sample stream (µV) from an already-
+    validated .ecg file — used by app.ecg_analysis, which needs the actual
+    waveform rather than just the header parse_ecg_file returns. Deliberately
+    not folded into parse_ecg_file/ParsedEcg: the ingestion path (app.
+    ingestion) never needs the full sample list, only the header, and keeping
+    them separate avoids holding a decoded sample array in memory on every
+    ingest request when only analysis actually needs it. Any trailing odd
+    byte (a half-written last sample) is silently dropped, same as
+    parse_ecg_file's sample_count floor division."""
+    if len(raw_bytes) < _ECG_HEADER_SIZE:
+        raise SessionParseError(
+            f"ECG file too short: {len(raw_bytes)} bytes, need at least {_ECG_HEADER_SIZE}"
+        )
+    sample_bytes = raw_bytes[_ECG_HEADER_SIZE:]
+    sample_count = len(sample_bytes) // 2
+    usable = sample_bytes[: sample_count * 2]
+    return list(struct.unpack(f">{sample_count}h", usable))
+
+
 def _split_frontmatter(text: str) -> tuple[str, str]:
     """Splits on the `---` delimiters. Body may be empty."""
     if not text.startswith("---"):

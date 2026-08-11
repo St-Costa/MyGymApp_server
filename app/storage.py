@@ -148,6 +148,35 @@ CREATE TABLE IF NOT EXISTS ecg_recordings (
   schema_version      INTEGER NOT NULL
 );
 
+-- Results of the server-side ECG analysis (docs/sync-ingestion/
+-- ECG_ANALYSIS_HANDOFF.md): R-peak/HRV/arrhythmia metrics derived from the
+-- raw waveform in ecg_recordings, a straight port of what the phone's
+-- EcgAnalyzer.kt used to compute before local analysis was removed. Its own
+-- table (not sessions' pre-existing ecg_* columns) so it can be dropped and
+-- fully re-derived from ecg_recordings' raw files at any time via
+-- reparse-style re-analysis, without touching the sessions row at all — the
+-- same re-derivable-index principle as every other table here. No FK to
+-- ecg_recordings for the same reason ecg_recordings has none to sessions:
+-- analysis can be (re)run independently of when/whether the recording row
+-- itself gets rewritten.
+CREATE TABLE IF NOT EXISTS ecg_analysis (
+  session_id               TEXT PRIMARY KEY,
+  avg_hr                   REAL,
+  session_rmssd            REAL,
+  sdnn                     REAL,
+  pnn50                    REAL,
+  poincare_sd1             REAL,
+  poincare_sd2             REAL,
+  poincare_ratio           REAL,
+  pac_count                INTEGER,
+  pause_count              INTEGER,
+  irregular_beats          INTEGER,
+  afib_suspicion_episodes  INTEGER,
+  peak_count               INTEGER NOT NULL,   -- detected R-peaks; diagnostic, not one of the 12
+  analyzed_at              TEXT NOT NULL,
+  schema_version           INTEGER NOT NULL
+);
+
 -- Records whose raw file was stored but whose parse step failed (step 6
 -- "on failure" case in the spec). schema_version = 0 on the corresponding
 -- row already marks this, but keeping the exception text separately makes
@@ -365,6 +394,29 @@ class ParsedEcg:
     sample_rate: int
     start_timestamp_ns: int | None
     duration_seconds: float
+
+
+@dataclass
+class EcgAnalysisResult:
+    """One row of docs/sync-ingestion/ECG_ANALYSIS_HANDOFF.md's ported
+    analysis: R-peak/HRV/arrhythmia metrics derived from a raw ECG waveform.
+    All twelve metric fields are `None` when analysis ran but the recording
+    didn't clear the handoff doc's minimum-input thresholds ("no result",
+    not zeros — see analyze_ecg_recording's docstring in app.ecg_analysis)."""
+
+    session_id: str
+    avg_hr: float | None
+    session_rmssd: float | None
+    sdnn: float | None
+    pnn50: float | None
+    poincare_sd1: float | None
+    poincare_sd2: float | None
+    poincare_ratio: float | None
+    pac_count: int | None
+    pause_count: int | None
+    irregular_beats: int | None
+    afib_suspicion_episodes: int | None
+    peak_count: int
 
 
 # Tables that participate in the generic id -> content_hash / stale-lookup
@@ -672,6 +724,96 @@ def upsert_parsed_ecg(
         "DELETE FROM parse_failures WHERE record_type = 'ecg_recordings' AND record_id = ?",
         (parsed.id,),
     )
+
+
+# Bumped by hand whenever app.ecg_analysis's formulas change (a new detector,
+# a different threshold, a bug fix in the R-peak/HRV/arrhythmia math) —
+# independent of PARSER_SCHEMA_VERSION above, since re-analyzing a recording
+# never requires re-parsing its header and vice versa. Existing rows with
+# schema_version below this are stale and due for re-analysis.
+ECG_ANALYSIS_SCHEMA_VERSION = 1
+
+
+def upsert_ecg_analysis(
+    conn: sqlite3.Connection, result: EcgAnalysisResult, *, analyzed_at: str
+) -> None:
+    """Writes one ecg_analysis row and stamps ecg_recordings.analyzed_at for
+    the same session_id, so a re-run of the analyzed_at IS NULL queue never
+    reprocesses a session it just finished. Both writes happen in the same
+    caller-managed transaction (see app.storage.connect) so a crash between
+    them can't leave the queue and the result table disagreeing."""
+    conn.execute(
+        """
+        INSERT INTO ecg_analysis (
+            session_id, avg_hr, session_rmssd, sdnn, pnn50,
+            poincare_sd1, poincare_sd2, poincare_ratio,
+            pac_count, pause_count, irregular_beats, afib_suspicion_episodes,
+            peak_count, analyzed_at, schema_version
+        ) VALUES (
+            :session_id, :avg_hr, :session_rmssd, :sdnn, :pnn50,
+            :poincare_sd1, :poincare_sd2, :poincare_ratio,
+            :pac_count, :pause_count, :irregular_beats, :afib_suspicion_episodes,
+            :peak_count, :analyzed_at, :schema_version
+        )
+        ON CONFLICT(session_id) DO UPDATE SET
+            avg_hr=excluded.avg_hr, session_rmssd=excluded.session_rmssd,
+            sdnn=excluded.sdnn, pnn50=excluded.pnn50,
+            poincare_sd1=excluded.poincare_sd1, poincare_sd2=excluded.poincare_sd2,
+            poincare_ratio=excluded.poincare_ratio, pac_count=excluded.pac_count,
+            pause_count=excluded.pause_count, irregular_beats=excluded.irregular_beats,
+            afib_suspicion_episodes=excluded.afib_suspicion_episodes,
+            peak_count=excluded.peak_count, analyzed_at=excluded.analyzed_at,
+            schema_version=excluded.schema_version
+        """,
+        {
+            "session_id": result.session_id,
+            "avg_hr": result.avg_hr,
+            "session_rmssd": result.session_rmssd,
+            "sdnn": result.sdnn,
+            "pnn50": result.pnn50,
+            "poincare_sd1": result.poincare_sd1,
+            "poincare_sd2": result.poincare_sd2,
+            "poincare_ratio": result.poincare_ratio,
+            "pac_count": result.pac_count,
+            "pause_count": result.pause_count,
+            "irregular_beats": result.irregular_beats,
+            "afib_suspicion_episodes": result.afib_suspicion_episodes,
+            "peak_count": result.peak_count,
+            "analyzed_at": analyzed_at,
+            "schema_version": ECG_ANALYSIS_SCHEMA_VERSION,
+        },
+    )
+    conn.execute(
+        "UPDATE ecg_recordings SET analyzed_at = ? WHERE session_id = ?",
+        (analyzed_at, result.session_id),
+    )
+
+
+def get_unanalyzed_ecg_recordings(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+    """The analyzed_at IS NULL work queue ECG_SPEC.md sets up: recordings
+    whose raw file is stored but which have never been analyzed at all.
+    Returns (session_id, raw_path) pairs, same shape as get_stale_records."""
+    rows = conn.execute(
+        "SELECT session_id, raw_path FROM ecg_recordings WHERE analyzed_at IS NULL"
+    ).fetchall()
+    return [(r[0], r[1]) for r in rows]
+
+
+def get_stale_ecg_analysis(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+    """Recordings that *have* been analyzed, but by an older
+    ECG_ANALYSIS_SCHEMA_VERSION — due for re-analysis after a formula/
+    threshold change, same "stale" concept as get_stale_records but scoped
+    to ecg_analysis.schema_version rather than ecg_recordings' own."""
+    rows = conn.execute(
+        """
+        SELECT ecg_recordings.session_id, ecg_recordings.raw_path
+        FROM ecg_recordings
+        JOIN ecg_analysis ON ecg_analysis.session_id = ecg_recordings.session_id
+        WHERE ecg_analysis.schema_version < ?
+        """,
+        (ECG_ANALYSIS_SCHEMA_VERSION,),
+    ).fetchall()
+    return [(r[0], r[1]) for r in rows]
 
 
 def record_parse_failure(
