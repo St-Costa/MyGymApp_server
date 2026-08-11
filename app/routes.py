@@ -4,13 +4,14 @@ Thin adapter layer: parses multipart parts into an Envelope, runs the steps
 from docs/sync-ingestion/SPEC.md ("Request handling — do these steps in
 order, exactly") in order, and delegates the actual work to app.ingestion.
 
-Three record types (sessions, readiness events, scale weigh-ins — see
-docs/sync-ingestion/{SPEC,READINESS_SPEC,SCALE_SPEC}.md) share this exact
-request-handling shape, differing only in the envelope's id field name, the
-ingest function, and the response's id key. `_handle_ingest` factors that
-shape out once; each route stays its own concrete, named endpoint (per the
-original spec's "no speculative generalization" guidance) rather than a
-single generic "record ingestion" route.
+Four record types (sessions, readiness events, scale weigh-ins, raw ECG
+recordings — see docs/sync-ingestion/{SPEC,READINESS_SPEC,SCALE_SPEC,
+ECG_SPEC}.md) share this exact request-handling shape, differing only in the
+envelope's id field name, any extra required envelope fields, the ingest
+function, and the response's id key. `_handle_ingest` factors that shape out
+once; each route stays its own concrete, named endpoint (per the original
+spec's "no speculative generalization" guidance) rather than a single
+generic "record ingestion" route.
 """
 
 import json
@@ -40,6 +41,7 @@ from app.ingestion import (
     Envelope,
     HashMismatchError,
     IngestResult,
+    ingest_ecg,
     ingest_readiness,
     ingest_scale_weighin,
     ingest_session,
@@ -67,11 +69,14 @@ async def _handle_ingest(
     id_field: str,
     response_id_key: str,
     ingest_fn: Callable[[sqlite3.Connection, Envelope, bytes], IngestResult],
+    extra_required_fields: tuple[str, ...] = (),
 ) -> JSONResponse:
     """Steps 1-7 minus auth (already enforced by the route's dependency).
     `id_field` is the envelope JSON key holding the record id
-    (sessionId/eventId/weighInId); `response_id_key` is what to call it in
-    the JSON response, mirroring the field name the sender used."""
+    (sessionId/eventId/weighInId/sessionId-for-ecg); `response_id_key` is
+    what to call it in the JSON response, mirroring the field name the
+    sender used. `extra_required_fields` covers envelope keys only some
+    record types have (e.g. ECG's `encoding`, see ECG_SPEC.md)."""
     # Step 2: envelope validation.
     try:
         envelope_data = json.loads(envelope)
@@ -80,7 +85,11 @@ async def _handle_ingest(
             status_code=400, detail={"error": f"malformed envelope JSON: {exc}"}
         ) from exc
 
-    missing = [f for f in (id_field, *REQUIRED_ENVELOPE_FIELDS) if not envelope_data.get(f)]
+    missing = [
+        f
+        for f in (id_field, *REQUIRED_ENVELOPE_FIELDS, *extra_required_fields)
+        if not envelope_data.get(f)
+    ]
     if missing:
         raise HTTPException(
             status_code=400,
@@ -164,6 +173,27 @@ async def post_scale_weighin(
         id_field="weighInId",
         response_id_key="weighInId",
         ingest_fn=ingest_scale_weighin,
+    )
+
+
+@router.post("/v1/ecg", dependencies=[Depends(require_valid_bearer_token)])
+async def post_ecg(
+    envelope: str = Form(...),
+    file: UploadFile = File(...),  # noqa: B008
+) -> JSONResponse:
+    """See docs/sync-ingestion/ECG_SPEC.md. Otherwise identical in shape to
+    the other three endpoints — `_handle_ingest` verifies the hash over
+    `file`'s raw (still gzip-compressed) bytes exactly as received, per
+    ECG_SPEC.md point 2 ("hash what's on the wire", just compressed here) —
+    the gunzip + magic validation happen one layer down in ingest_ecg, only
+    after that hash check has already passed."""
+    return await _handle_ingest(
+        envelope=envelope,
+        file=file,
+        id_field="sessionId",
+        response_id_key="sessionId",
+        ingest_fn=ingest_ecg,
+        extra_required_fields=("encoding",),
     )
 
 

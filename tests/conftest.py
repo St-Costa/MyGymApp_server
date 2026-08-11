@@ -1,8 +1,10 @@
 """Shared fixtures: isolate every test behind its own temp DATA_ROOT/secret so
 tests never touch a real deployment's data or share state with each other."""
 
+import gzip
 import hashlib
 import importlib
+import struct
 
 import pytest
 from fastapi.testclient import TestClient
@@ -80,6 +82,20 @@ SHARED_SECRET = "test-secret-for-unit-tests"
 
 def content_hash_of(raw_bytes: bytes) -> str:
     return "sha256:" + hashlib.sha256(raw_bytes).hexdigest()
+
+
+def build_ecg_bytes(
+    *, sample_rate: int = 130, start_timestamp_ns: int = 1_700_000_000_000_000_000, samples=None
+) -> bytes:
+    """Builds a well-formed .ecg binary payload per ECG_SPEC.md's "Binary
+    format": magic + sample_rate(i32be) + start_timestamp_ns(i64be) + samples
+    (i16be each). Defaults to 650 samples (5s at 130Hz) so it clears the
+    phone-side "sampleRate * 5" minimum the spec mentions mirroring."""
+    if samples is None:
+        samples = [1000] * (sample_rate * 5)
+    header = b"MYGMECG1" + struct.pack(">i", sample_rate) + struct.pack(">q", start_timestamp_ns)
+    body = b"".join(struct.pack(">h", s) for s in samples)
+    return header + body
 
 
 @pytest.fixture
@@ -202,4 +218,43 @@ def post_scale_weighin(
         rel_path=rel_path or f"2026/08/{weighin_id}.md",
         content_hash=content_hash,
         headers=headers,
+    )
+
+
+def post_ecg(
+    client,
+    ecg_bytes: bytes | None = None,
+    *,
+    session_id="3c4d5e6f",
+    rel_path=None,
+    content_hash=None,
+    headers=None,
+    compressed_override: bytes | None = None,
+):
+    """Unlike the other three record types, the wire payload is gzip-
+    compressed and contentHash is computed over the *compressed* bytes (see
+    ECG_SPEC.md point 2) — so this doesn't reuse `_post_record`, which hashes
+    the part's bytes directly. `compressed_override` lets a test send bytes
+    that don't gunzip cleanly, or whose hash deliberately doesn't match, by
+    bypassing the "compress ecg_bytes for me" convenience."""
+    import json
+
+    if compressed_override is not None:
+        compressed = compressed_override
+    else:
+        compressed = gzip.compress(ecg_bytes if ecg_bytes is not None else build_ecg_bytes())
+
+    envelope = {
+        "sessionId": session_id,
+        "relPath": rel_path or f"ecg/{session_id}.ecg",
+        "contentHash": content_hash or content_hash_of(compressed),
+        "encoding": "gzip",
+        "appVersion": "1.0-test",
+        "clientSentAt": "2025-04-15T10:05:42Z",
+    }
+    return client.post(
+        "/v1/ecg",
+        data={"envelope": json.dumps(envelope)},
+        files={"file": ("record.ecg.gz", compressed, "application/gzip")},
+        headers=headers if headers is not None else auth_headers(),
     )

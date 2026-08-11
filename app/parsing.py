@@ -1,5 +1,5 @@
-"""Parses the Markdown-with-YAML-frontmatter formats used by all three
-record types (sessions, readiness events, scale weigh-ins) into their
+"""Parses the four wire formats (sessions/readiness/scale weigh-ins'
+Markdown-with-YAML-frontmatter, and ECG's binary format) into their
 respective Parsed* dataclasses.
 
 These are the *one* parsing function per record type, shared by the live
@@ -9,8 +9,9 @@ callers. Everything here is pure (bytes in, a Parsed* dataclass out, or an
 exception) and touches neither the network nor the database, so it's
 trivially testable and safe to re-run offline against files already on disk.
 
-Field rules (see docs/sync-ingestion/SPEC.md, READINESS_SPEC.md, and
-SCALE_SPEC.md "Field notes" sections for the source of truth):
+Field rules (see docs/sync-ingestion/SPEC.md, READINESS_SPEC.md,
+SCALE_SPEC.md, and ECG_SPEC.md "Field notes"/"Binary format" sections for
+the source of truth):
 - Any numeric field can be entirely absent from the YAML when its value is 0
   — treat missing as 0/0.0, never as an error or None.
 - `tonnageByBodypart` entries with value 0 are dropped entirely rather than
@@ -32,9 +33,11 @@ SCALE_SPEC.md "Field notes" sections for the source of truth):
   a reported effort. Use `_optional_int`/`_optional_num`, not `_int`/`_num`.
 """
 
+import struct
+
 import yaml
 
-from app.storage import ExerciseSet, ParsedReadiness, ParsedScaleWeighin, ParsedSession
+from app.storage import ExerciseSet, ParsedEcg, ParsedReadiness, ParsedScaleWeighin, ParsedSession
 
 
 class SessionParseError(ValueError):
@@ -206,6 +209,50 @@ def parse_scale_weighin_file(raw_bytes: bytes) -> ParsedScaleWeighin:
         bmi=_num(data, "bmi"),
         body_fat_percent=_num(data, "bodyFatPercent"),
         lean_mass_percent=_num(data, "leanMassPercent"),
+    )
+
+
+_ECG_MAGIC = b"MYGMECG1"
+# magic(8) + sample_rate(4, i32be) + start_timestamp_ns(8, i64be)
+_ECG_HEADER_SIZE = 20
+
+
+def parse_ecg_file(raw_bytes: bytes) -> ParsedEcg:
+    """See docs/sync-ingestion/ECG_SPEC.md "Binary format". `raw_bytes` here
+    is already the *decompressed* .ecg bytes — gunzipping happens one layer
+    up in app.ingestion, before this function ever sees the data, since the
+    hash check (over the compressed bytes) must happen before decompression
+    and this function's only job is the binary header/sample-stream shape.
+
+    session_id (envelope-supplied) is not embedded in the binary format
+    itself, so unlike the other three parsers this one can't recover an id
+    from the bytes alone — callers attach envelope.record_id to the result.
+    """
+    if len(raw_bytes) < _ECG_HEADER_SIZE:
+        raise SessionParseError(
+            f"ECG file too short: {len(raw_bytes)} bytes, need at least {_ECG_HEADER_SIZE}"
+        )
+
+    magic = raw_bytes[:8]
+    if magic != _ECG_MAGIC:
+        raise SessionParseError(f"bad ECG magic: {magic!r}, expected {_ECG_MAGIC!r}")
+
+    sample_rate = struct.unpack(">i", raw_bytes[8:12])[0]
+    start_timestamp_ns = struct.unpack(">q", raw_bytes[12:20])[0]
+
+    sample_bytes = raw_bytes[_ECG_HEADER_SIZE:]
+    sample_count = len(sample_bytes) // 2  # Int16 BIG-ENDIAN, one per sample
+
+    if sample_rate <= 0:
+        raise SessionParseError(f"non-positive ECG sample rate: {sample_rate}")
+
+    duration_seconds = sample_count / sample_rate
+
+    return ParsedEcg(
+        id="",  # filled in by the caller (envelope.record_id) — see docstring
+        sample_rate=sample_rate,
+        start_timestamp_ns=start_timestamp_ns,
+        duration_seconds=duration_seconds,
     )
 
 

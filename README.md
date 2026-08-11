@@ -12,16 +12,17 @@
 </p>
 
 MyGymApp Sync Server receives workout data pushed by the MyGymApp Android app — workout
-sessions, HRV readiness measurements, and smart-scale weigh-ins — stores the raw bytes
-durably first, then parses them into a queryable SQLite layer as a second, best-effort step —
-so a phone-side format change never risks silently losing data. See
+sessions, HRV readiness measurements, smart-scale weigh-ins, and raw ECG waveforms — stores
+the raw bytes durably first, then parses them into a queryable SQLite layer as a second,
+best-effort step — so a phone-side format change never risks silently losing data. See
 [docs/sync-ingestion/SPEC.md](docs/sync-ingestion/SPEC.md),
-[READINESS_SPEC.md](docs/sync-ingestion/READINESS_SPEC.md), and
-[SCALE_SPEC.md](docs/sync-ingestion/SCALE_SPEC.md) for the full design and rationale.
+[READINESS_SPEC.md](docs/sync-ingestion/READINESS_SPEC.md),
+[SCALE_SPEC.md](docs/sync-ingestion/SCALE_SPEC.md), and
+[ECG_SPEC.md](docs/sync-ingestion/ECG_SPEC.md) for the full design and rationale.
 
 ## Status
 
-✅ All three ingestion endpoints, storage layer, and reparse tooling implemented per spec.
+✅ All four ingestion endpoints, storage layer, and reparse tooling implemented per spec.
 Tailscale Serve setup (below) is a manual step to run on the actual self-hosted box.
 
 ## API
@@ -31,11 +32,17 @@ Tailscale Serve setup (below) is a manual step to run on the actual self-hosted 
 | `POST /v1/sessions` | Workout session | [SPEC.md](docs/sync-ingestion/SPEC.md) |
 | `POST /v1/readiness` | HRV readiness event | [READINESS_SPEC.md](docs/sync-ingestion/READINESS_SPEC.md) |
 | `POST /v1/scale-weighins` | Smart-scale weigh-in | [SCALE_SPEC.md](docs/sync-ingestion/SCALE_SPEC.md) |
+| `POST /v1/ecg` | Raw ECG waveform | [ECG_SPEC.md](docs/sync-ingestion/ECG_SPEC.md) |
 | `GET /health` | — | no auth required |
 
-All three POST endpoints share the same request contract: `multipart/form-data` with an
-`envelope` JSON part and a `file` Markdown part, `Authorization: Bearer <shared-secret>`,
-and content-hash-based idempotency (same id + same hash → safe no-op `duplicate`).
+The three text-record POST endpoints share the same request contract: `multipart/form-data`
+with an `envelope` JSON part and a `file` Markdown part, `Authorization: Bearer
+<shared-secret>`, and content-hash-based idempotency (same id + same hash → safe no-op
+`duplicate`). `POST /v1/ecg` follows the same shape but its `file` part is gzip-compressed
+binary (`application/gzip`), and its content hash covers the *compressed* bytes — see
+ECG_SPEC.md for the deltas. Once the server accepts an ECG recording it is the phone's cue to
+delete its own local copy — the server's raw store becomes the only copy that will ever
+exist, so `raw/ecg/` needs the same (or better) backup discipline as `raw/`'s session files.
 
 `GET /v1/analysis/*` (bearer auth, same as above) expose the ported analysis logic —
 cardio trend/alerts, weekly resting-HR/VO2max/scale trends, exercise PRs — as JSON; see
@@ -85,7 +92,8 @@ A [devcontainer](.devcontainer/devcontainer.json) is available for a reproducibl
 
 `reparse.py` re-runs the parser against raw files already on disk — no network access — and
 is how the database catches up after a parser is improved to handle a new field. It covers
-all three record types (sessions, readiness events, scale weigh-ins) in one pass by default:
+all four record types (sessions, readiness events, scale weigh-ins, ECG recordings) in one
+pass by default:
 
 ```bash
 python reparse.py --all                    # reparse every stored record, all types
@@ -144,7 +152,7 @@ settings**, together with the `SYNC_SHARED_SECRET` you generated above.
 │   └── RUNBOOK.md           # operational playbook (fill in once deployed)
 ├── app/                    # FastAPI application
 │   ├── main.py               # app entrypoint, startup (DB init)
-│   ├── routes.py              # API handlers (GET /health, /v1/analysis/*, POST /v1/sessions|readiness|scale-weighins)
+│   ├── routes.py              # API handlers (GET /health, /v1/analysis/*, POST /v1/sessions|readiness|scale-weighins|ecg)
 │   ├── gui.py                  # server-rendered dashboard routes (no auth — see module docstring)
 │   ├── templates/                # Jinja2 templates for the dashboard
 │   ├── static/                    # vendored JS (Chart.js) served at /static

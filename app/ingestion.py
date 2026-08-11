@@ -1,6 +1,6 @@
-"""Core ingestion logic shared by all three record types (sessions,
-readiness events, scale weigh-ins): hash verification, raw write,
-idempotency check, and the parse-then-upsert step.
+"""Core ingestion logic shared by all four record types (sessions,
+readiness events, scale weigh-ins, raw ECG recordings): hash verification,
+raw write, idempotency check, and the parse-then-upsert step.
 
 Factored out of the route handlers so it has no dependency on FastAPI/HTTP —
 this is what makes reparse.py able to reuse the parse-then-upsert half
@@ -8,26 +8,31 @@ without pulling in a web framework. The route handlers (app/routes.py) are
 thin adapters that turn HTTP request parts into calls here.
 
 Steps 3-7 (see docs/sync-ingestion/SPEC.md "Request handling") are identical
-across all three record types modulo which table/parser/id-field is
+across sessions/readiness/scale modulo which table/parser/id-field is
 involved — `ingest_record` below is that shared shape, parameterized rather
-than copy-pasted three times. Each concrete `ingest_*` function is a thin,
-type-specific wrapper so callers (routes.py) still get a natural,
+than copy-pasted three times. `ingest_ecg` deliberately does *not* go through
+`ingest_record` — see its own docstring for why (compressed-vs-decompressed
+hashing, gunzip step, binary format). Each concrete `ingest_*` function is a
+thin, type-specific wrapper so callers (routes.py) still get a natural,
 concretely-typed API per endpoint.
 """
 
+import gzip
 import hashlib
 import logging
 import os
 import sqlite3
 import traceback
+import zlib
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
 from app.config import RAW_DIR
 from app.parsing import (
     SessionParseError,
+    parse_ecg_file,
     parse_readiness_file,
     parse_scale_weighin_file,
     parse_session_file,
@@ -35,6 +40,7 @@ from app.parsing import (
 from app.storage import (
     get_stored_content_hash,
     record_parse_failure,
+    upsert_parsed_ecg,
     upsert_parsed_readiness,
     upsert_parsed_scale_weighin,
     upsert_parsed_session,
@@ -196,3 +202,92 @@ def ingest_scale_weighin(
         parse_fn=parse_scale_weighin_file,
         upsert_fn=upsert_parsed_scale_weighin,
     )
+
+
+def ingest_ecg(
+    conn: sqlite3.Connection, envelope: Envelope, compressed_bytes: bytes
+) -> IngestResult:
+    """Steps 4-10 of POST /v1/ecg (docs/sync-ingestion/ECG_SPEC.md).
+
+    Deliberately its own function rather than a call into `ingest_record`:
+    the hash there is computed over the *compressed* bytes (verified by the
+    caller in app.routes, same as the other three — "hash what's on the
+    wire"), but the raw write and parse step both need the *decompressed*
+    bytes, and a bad/corrupt gunzip needs its own handling (still write to
+    disk for forensics, log loudly, but never crash the request) that the
+    generic helper has no reason to know about.
+    """
+    stored_hash = get_stored_content_hash(conn, envelope.record_id, table="ecg_recordings")
+
+    if stored_hash is not None and stored_hash == envelope.content_hash:
+        # Step 4: retried duplicate delivery — safe no-op.
+        return IngestResult(record_id=envelope.record_id, status="duplicate")
+
+    if stored_hash is not None:
+        # Step 5: a resend for a known sessionId with a *different* hash is
+        # unexpected (the phone captures ECG exactly once, never rewrites) —
+        # log it distinctly from the duplicate case above, but still treat
+        # as an overwrite rather than inventing a new rejection path.
+        logger.warning(
+            "unexpected ECG resend for session %s with a different contentHash "
+            "(stored=%s, incoming=%s) — overwriting",
+            envelope.record_id,
+            stored_hash,
+            envelope.content_hash,
+        )
+
+    received_at = datetime.now(UTC).isoformat()
+
+    # Step 6: gunzip the verified-good compressed bytes. Shouldn't fail if the
+    # hash check (step 3, in app.routes) passed — the hash covers exactly
+    # what we're gunzipping here — but per the raw-first principle a corrupt
+    # stream must still never fail the request. Fall back to storing the
+    # compressed bytes as-is (still forensically useful) and record this the
+    # same way as any other step 9 parse failure, rather than inventing a
+    # separate error path.
+    try:
+        raw_bytes = gzip.decompress(compressed_bytes)
+        target_path = envelope.rel_path
+    except (gzip.BadGzipFile, zlib.error, EOFError):
+        logger.exception(
+            "gunzip failed for ECG session %s despite passing hash check "
+            "(corrupted client-side gzip?) — storing compressed bytes as-is",
+            envelope.record_id,
+        )
+        raw_bytes = compressed_bytes
+        target_path = f"{envelope.rel_path}.gunzip-failed"
+
+    # Step 8: write the bytes (decompressed in the normal case) — the raw
+    # store stays directly usable without any reader needing to know it was
+    # ever gzipped in transit.
+    write_raw_file(raw_bytes, target_path)
+
+    # Step 9, wrapped so a bad/unrecognized header (or the gunzip failure
+    # above) can never fail the request — the raw file is already safely
+    # stored, which is what matters.
+    try:
+        parsed = replace(parse_ecg_file(raw_bytes), id=envelope.record_id)
+        upsert_parsed_ecg(
+            conn,
+            parsed,
+            content_hash=envelope.content_hash,
+            raw_path=target_path,
+            received_at=received_at,
+        )
+    except SessionParseError:
+        logger.exception("failed to parse ECG recording %s at %s", envelope.record_id, target_path)
+        record_parse_failure(
+            conn,
+            table="ecg_recordings",
+            record_type="ecg_recordings",
+            record_id=envelope.record_id,
+            content_hash=envelope.content_hash,
+            raw_path=target_path,
+            received_at=received_at,
+            error=traceback.format_exc(),
+        )
+
+    # Unlike sessions/readiness/scale, the spec calls for a plain "stored"
+    # here even on the different-hash-overwrite path (point 4/step 5 in
+    # ECG_SPEC.md) — no "updated" status for this endpoint's response contract.
+    return IngestResult(record_id=envelope.record_id, status="stored")
