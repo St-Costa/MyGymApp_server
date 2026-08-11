@@ -9,13 +9,11 @@ sessions, not at clinical rest, no labeled training data of the user's own).
 
 ## Why these five, and not others
 
-The review covered three tiers: **do first** (this document), **worth prototyping**
-(ECG-derived respiration, ensemble R-peak detection, AFib expert-feature mining, PVC/PAC
-morphology CNNs, T-wave alternans), and **not recommended now** (QTc from single-lead,
-ECG foundation models, training a bespoke classifier — all either unvalidated on
-noisy/exercise single-lead data, or requiring labeled data this project doesn't have).
-Only the first tier is implemented here; the others remain future work, not silently
-dropped — see the review notes kept in the PR/commit history for the full tiered writeup.
+The review covered three tiers: **do first** (this document — implemented), **worth
+prototyping** (tested one-by-one against real recordings and rejected — see "Tier 2 —
+investigated and rejected" below), and **not recommended now** (never attempted — see
+"Tier 3 — not recommended now" below). Nothing here is silently dropped; every tier is
+tracked in this file.
 
 ## What's implemented
 
@@ -243,6 +241,49 @@ delineator returns *something* even when the true T-wave isn't reliably identifi
 silent false positives, not genuine robustness. Without labeled/reference data there's no
 way to tell real alternans from residual noise passed through the same detector, and the
 literature itself already flags ambulatory/exercise TWA as lacking standardized detection
-thresholds (see the original literature review's tier-3 notes). Left as explicitly
-not-attempted beyond this delineation sanity-check — building the full spectral method
-would be speculative effort with no way to validate the result.
+thresholds (see "Tier 3" below). Left as explicitly not-attempted beyond this delineation
+sanity-check — building the full spectral method would be speculative effort with no way
+to validate the result.
+
+## Tier 3 — not recommended now
+
+From the original literature review, never attempted (not even prototyped) — each has a
+concrete blocker specific to this project's data (single-lead chest-strap ECG recorded
+during resistance exercise, single user, no labeled training data of their own), not a
+general "this technique doesn't work" judgment. Revisit if the blocker changes (e.g. once
+months of self-labeled data accumulate).
+
+**QTc estimation from single-lead ECG** — QTNet (deep learning, Lead-I, reported MAE~12ms,
+r=0.91 in the original paper) is real and was validated reasonably well, but against
+*clinical rest* 12-lead-derived Lead-I data, not noisy exercise chest-strap recordings, and
+no public weights/repo were found (paper-only as far as the literature review surfaced).
+T-wave detection itself is already unreliable under motion artifact before QT measurement
+is even attempted (see Tier 2's TWA finding above) — high risk of a confidently-wrong
+number with no way to catch the error.
+
+**Full ECG foundation models** (ECG-FM, ECGFounder, ST-MEM, DeepECG-SSL) — real, open-weight,
+permissively-licensed, genuinely strong 2024-2025 releases (e.g. `PKUDigitalHealth/ECGFounder`
+on GitHub, weights on Hugging Face, 150-class output). Blocked because every one of these is
+pretrained on 12-lead (or at minimum clean ambulatory) clinical datasets (MIMIC-IV-ECG,
+PTB-XL-scale corpora) — none documented as validated on single-lead chest-strap data
+collected *during resistance exercise*. Running one and trusting its output on this
+project's noisy signal without any of its own validation data would be exactly the
+"confidently wrong, hard to audit" failure mode this project's engineering discipline
+should avoid (see Tier 2's PVC/PAC and TWA findings — the same class of risk played out
+concretely there). Reasonable as a longer-term experiment (fine-tune on this project's own
+weakly-labeled sessions once enough accumulate, using the existing heuristics as weak
+labels), not now.
+
+**Training a bespoke arrhythmia/PVC classifier from scratch** (e.g. on MIT-BIH) — feasible
+technically, but this project has no labeled data of its own, and public databases
+(MIT-BIH, CPSC-2020) are the wrong noise domain (Holter/clinical, not barbell-and-motion
+noise) — a model trained purely on them risks being confidently wrong on this project's
+actual signal with no validation set to catch it. Don't build this until a self-labeled
+corpus exists (e.g. sessions where flagged episodes from the existing heuristics are
+manually confirmed/corrected).
+
+**TinyML / on-device quantized models** (heartKIT, ArrythML, MobileNet-compressed variants) —
+solves compute-constrained *edge* inference, which is irrelevant here: the whole motivation
+for server-side analysis (see `ECG_ANALYSIS_HANDOFF.md`) is that the server has compute the
+phone never did. Not worth the added complexity of quantization/TFLite conversion on a
+server that can run full-precision models.
