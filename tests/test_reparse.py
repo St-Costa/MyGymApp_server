@@ -6,7 +6,13 @@ import importlib
 import sqlite3
 import sys
 
-from tests.conftest import post_readiness, post_scale_weighin, post_session
+from tests.conftest import (
+    build_ecg_bytes,
+    post_ecg,
+    post_readiness,
+    post_scale_weighin,
+    post_session,
+)
 
 
 def test_reparse_all_reproduces_same_rows(app_client):
@@ -57,12 +63,13 @@ def _run_reparse_all(reparse_module):
         sys.argv = old_argv
 
 
-def test_reparse_all_covers_all_three_record_types(app_client):
+def test_reparse_all_covers_all_four_record_types(app_client):
     """--all with no --type restricts to nothing — it must sweep sessions,
-    readiness_events, and scale_weighins together."""
+    readiness_events, scale_weighins, and ecg_recordings together."""
     post_session(app_client)
     post_readiness(app_client)
     post_scale_weighin(app_client)
+    post_ecg(app_client)
 
     import app.config
 
@@ -78,4 +85,39 @@ def test_reparse_all_covers_all_three_record_types(app_client):
     assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM readiness_events").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM scale_weighins").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM ecg_recordings").fetchone()[0] == 1
     conn.close()
+
+
+def test_reparse_ecg_reproduces_same_row(app_client):
+    """ECG's parse function doesn't recover an id from the bytes (unlike the
+    other three) — this is the regression test that reparse.py's id-filling
+    wrapper (RECORD_TYPES["ecg"]) actually round-trips correctly."""
+    ecg_bytes = build_ecg_bytes(sample_rate=130)
+    post_ecg(app_client, ecg_bytes)
+
+    import app.config
+
+    conn = sqlite3.connect(app.config.DB_PATH)
+    before = conn.execute(
+        "SELECT session_id, sample_rate, duration_seconds FROM ecg_recordings WHERE session_id = ?",
+        ("3c4d5e6f",),
+    ).fetchone()
+    conn.close()
+    assert before == ("3c4d5e6f", 130, 5.0)
+
+    sys.modules.pop("reparse", None)
+    import reparse
+
+    importlib.reload(reparse)
+
+    exit_code = _run_reparse_all(reparse)
+    assert exit_code == 0
+
+    conn = sqlite3.connect(app.config.DB_PATH)
+    after = conn.execute(
+        "SELECT session_id, sample_rate, duration_seconds FROM ecg_recordings WHERE session_id = ?",
+        ("3c4d5e6f",),
+    ).fetchone()
+    conn.close()
+    assert after == before

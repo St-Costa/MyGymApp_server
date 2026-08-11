@@ -118,6 +118,36 @@ CREATE TABLE IF NOT EXISTS scale_weighins (
 -- scale_weekly_trend filters/orders by date over an 8-week window.
 CREATE INDEX IF NOT EXISTS idx_scale_weighins_date ON scale_weighins(date);
 
+-- Raw ECG recordings (docs/sync-ingestion/ECG_SPEC.md). Unlike the other
+-- three record types, the server's copy is the *only* copy once the phone's
+-- local file is gone (see ECG_SPEC.md "Retention asymmetry") — this table is
+-- a header-only index over raw/ecg/{session_id}.ecg, not a place to lose
+-- data if analysis logic changes; analysis results belong in their own
+-- table(s), designed alongside that later work.
+-- No FK to sessions(id): ECG_SPEC.md doesn't guarantee a session syncs
+-- before its ECG recording (they're uploaded independently) — with
+-- PRAGMA foreign_keys = ON (see connect() below), a hard FK here would
+-- reject a legitimate ECG upload whenever it races ahead of its session,
+-- which would silently lose the one copy of that waveform (see "Retention
+-- asymmetry" in the spec). session_id is still the natural join key to
+-- sessions.id in practice, just not DB-enforced.
+CREATE TABLE IF NOT EXISTS ecg_recordings (
+  session_id          TEXT PRIMARY KEY,
+  raw_path            TEXT NOT NULL,
+  -- Defaults to 0 (not a real sample rate) rather than NOT NULL-with-no-
+  -- default, so the shared record_parse_failure() bare-minimum row (id/
+  -- content_hash/raw_path/received_at/schema_version only, same as the other
+  -- three record types) can still be written when header parsing fails —
+  -- e.g. bad magic bytes. The raw file is still safely on disk either way.
+  sample_rate         INTEGER NOT NULL DEFAULT 0,
+  start_timestamp_ns  INTEGER,
+  duration_seconds    REAL,
+  content_hash        TEXT NOT NULL,
+  received_at         TEXT NOT NULL,
+  analyzed_at         TEXT,
+  schema_version      INTEGER NOT NULL
+);
+
 -- Records whose raw file was stored but whose parse step failed (step 6
 -- "on failure" case in the spec). schema_version = 0 on the corresponding
 -- row already marks this, but keeping the exception text separately makes
@@ -137,8 +167,9 @@ CREATE TABLE IF NOT EXISTS parse_failures (
 
 # Bumped by hand whenever the set of fields the parser extracts changes.
 # Stamped into sessions.schema_version on every successful parse; reparse.py
-# --stale finds rows below this value and re-parses them.
-PARSER_SCHEMA_VERSION = 2
+# --stale finds rows below this value and re-parses them. Bumped to 3 for the
+# addition of parse_ecg_file/ecg_recordings (docs/sync-ingestion/ECG_SPEC.md).
+PARSER_SCHEMA_VERSION = 3
 
 # schema_version stamped on a row written from step 6's "on failure" path —
 # the raw file is safely stored but nothing has been successfully parsed yet.
@@ -322,10 +353,42 @@ class ParsedScaleWeighin:
     lean_mass_percent: float
 
 
+@dataclass
+class ParsedEcg:
+    """See docs/sync-ingestion/ECG_SPEC.md. `id` is the sessionId (matches
+    `sessions.id`), not a namespace of its own — one ECG recording per
+    session, at most. `start_timestamp_ns` is stored verbatim; currently
+    informational only, unused by any analysis (mirrors the phone's own
+    reader, which doesn't consume it yet either)."""
+
+    id: str
+    sample_rate: int
+    start_timestamp_ns: int | None
+    duration_seconds: float
+
+
 # Tables that participate in the generic id -> content_hash / stale-lookup
 # helpers below. Whitelisted rather than interpolating an arbitrary caller-
 # supplied table name into SQL.
-_RECORD_TABLES = {"sessions", "readiness_events", "scale_weighins"}
+_RECORD_TABLES = {"sessions", "readiness_events", "scale_weighins", "ecg_recordings"}
+
+# Most record tables' primary key column is named `id`; ecg_recordings' is
+# `session_id` (per ECG_SPEC.md's suggested schema — it's the natural join
+# key to sessions.id, though not FK-enforced, see the table's own comment).
+# The generic helpers below look up the right column name here rather than
+# assuming "id" everywhere.
+_ID_COLUMNS = {"ecg_recordings": "session_id"}
+
+
+def id_column(table: str) -> str:
+    """Public for reparse.py, which needs to build its own lookup query
+    against a record table's primary key column (usually `id`, but
+    `ecg_recordings.session_id` — see _ID_COLUMNS above)."""
+    return _ID_COLUMNS.get(table, "id")
+
+
+# Internal alias, kept so existing call sites in this module read the same.
+_id_column = id_column
 
 
 def get_stored_content_hash(
@@ -333,7 +396,11 @@ def get_stored_content_hash(
 ) -> str | None:
     if table not in _RECORD_TABLES:
         raise ValueError(f"unknown table: {table}")
-    row = conn.execute(f"SELECT content_hash FROM {table} WHERE id = ?", (record_id,)).fetchone()  # noqa: S608
+    id_column = _id_column(table)
+    row = conn.execute(
+        f"SELECT content_hash FROM {table} WHERE {id_column} = ?",
+        (record_id,),  # noqa: S608
+    ).fetchone()
     return row[0] if row else None
 
 
@@ -562,6 +629,51 @@ def upsert_parsed_scale_weighin(
     )
 
 
+def upsert_parsed_ecg(
+    conn: sqlite3.Connection,
+    parsed: ParsedEcg,
+    *,
+    content_hash: str,
+    raw_path: str,
+    received_at: str,
+) -> None:
+    """Step 9 "on success" path for POST /v1/ecg — no child tables, header
+    fields only. `analyzed_at` is left NULL/untouched on every upsert (even a
+    re-parse of an existing row): it's the work queue for a later, separate
+    analysis job, not something the header parser has any business setting."""
+    conn.execute(
+        """
+        INSERT INTO ecg_recordings (
+            session_id, raw_path, sample_rate, start_timestamp_ns, duration_seconds,
+            content_hash, received_at, schema_version
+        ) VALUES (
+            :id, :raw_path, :sample_rate, :start_timestamp_ns, :duration_seconds,
+            :content_hash, :received_at, :schema_version
+        )
+        ON CONFLICT(session_id) DO UPDATE SET
+            raw_path=excluded.raw_path, sample_rate=excluded.sample_rate,
+            start_timestamp_ns=excluded.start_timestamp_ns,
+            duration_seconds=excluded.duration_seconds,
+            content_hash=excluded.content_hash, received_at=excluded.received_at,
+            schema_version=excluded.schema_version
+        """,
+        {
+            "id": parsed.id,
+            "raw_path": raw_path,
+            "sample_rate": parsed.sample_rate,
+            "start_timestamp_ns": parsed.start_timestamp_ns,
+            "duration_seconds": parsed.duration_seconds,
+            "content_hash": content_hash,
+            "received_at": received_at,
+            "schema_version": PARSER_SCHEMA_VERSION,
+        },
+    )
+    conn.execute(
+        "DELETE FROM parse_failures WHERE record_type = 'ecg_recordings' AND record_id = ?",
+        (parsed.id,),
+    )
+
+
 def record_parse_failure(
     conn: sqlite3.Connection,
     *,
@@ -583,14 +695,15 @@ def record_parse_failure(
     """
     if table not in _RECORD_TABLES:
         raise ValueError(f"unknown table: {table}")
+    id_column = _id_column(table)
     conn.execute(
         f"""
-        INSERT INTO {table} (id, content_hash, raw_path, received_at, schema_version)
+        INSERT INTO {table} ({id_column}, content_hash, raw_path, received_at, schema_version)
         VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
+        ON CONFLICT({id_column}) DO UPDATE SET
             content_hash=excluded.content_hash, raw_path=excluded.raw_path,
             received_at=excluded.received_at, schema_version=excluded.schema_version
-        """,  # noqa: S608 — table is whitelist-checked above
+        """,  # noqa: S608 — table/id_column are whitelist-checked above
         (record_id, content_hash, raw_path, received_at, UNPARSED_SCHEMA_VERSION),
     )
     conn.execute(
@@ -608,8 +721,9 @@ def get_stale_records(conn: sqlite3.Connection, table: str = "sessions") -> list
     """Records in `table` whose schema_version is behind the current parser version."""
     if table not in _RECORD_TABLES:
         raise ValueError(f"unknown table: {table}")
+    id_column = _id_column(table)
     rows = conn.execute(
-        f"SELECT id, raw_path FROM {table} WHERE schema_version < ?",  # noqa: S608
+        f"SELECT {id_column}, raw_path FROM {table} WHERE schema_version < ?",  # noqa: S608
         (PARSER_SCHEMA_VERSION,),
     ).fetchall()
     return [(r[0], r[1]) for r in rows]
@@ -618,5 +732,6 @@ def get_stale_records(conn: sqlite3.Connection, table: str = "sessions") -> list
 def get_all_records(conn: sqlite3.Connection, table: str = "sessions") -> list[tuple[str, str]]:
     if table not in _RECORD_TABLES:
         raise ValueError(f"unknown table: {table}")
-    rows = conn.execute(f"SELECT id, raw_path FROM {table}").fetchall()  # noqa: S608
+    id_column = _id_column(table)
+    rows = conn.execute(f"SELECT {id_column}, raw_path FROM {table}").fetchall()  # noqa: S608
     return [(r[0], r[1]) for r in rows]

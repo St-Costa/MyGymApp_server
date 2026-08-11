@@ -62,3 +62,12 @@ Operational playbook for MyGymApp Sync Server running on the self-hosted box.
 - **RTO / RPO targets**: informal — personal project. Losing `db.sqlite3` is fully recoverable
   from raw files; losing `DATA_ROOT/raw/` itself loses the source data (protect this directory
   with regular backups).
+- **`DATA_ROOT/raw/ecg/` needs extra care**: for sessions/readiness/scale, the phone keeps a
+  permanent local copy, so a lost raw file can always be re-synced by asking the phone. ECG is
+  different — the phone deletes its local `.ecg` file once this server confirms `stored`, and
+  unconditionally after 30 days pending either way (see
+  [ECG_SPEC.md](sync-ingestion/ECG_SPEC.md#phone-side-retention)). Once accepted here, the
+  server's copy is the *only* copy — losing `raw/ecg/` loses that waveform permanently, not
+  just until the next sync. Back this directory up with at least the same regularity as the
+  rest of `raw/`, and treat it as the higher-priority half of that backup if you ever have to
+  choose.
