@@ -731,7 +731,13 @@ def upsert_parsed_ecg(
 # independent of PARSER_SCHEMA_VERSION above, since re-analyzing a recording
 # never requires re-parsing its header and vice versa. Existing rows with
 # schema_version below this are stale and due for re-analysis.
-ECG_ANALYSIS_SCHEMA_VERSION = 1
+# Bumped to 2: detect_r_peaks gained a gap-filling pass that recovers real
+# beats missed when a sustained wide artifact inflates the trailing-max
+# threshold — see app.ecg_analysis's module comment and the commit that
+# introduced it. Rows analyzed under schema_version 1 can have
+# significantly inflated RMSSD/SDNN/AFib-suspicion counts on recordings
+# with this kind of artifact.
+ECG_ANALYSIS_SCHEMA_VERSION = 2
 
 
 def upsert_ecg_analysis(

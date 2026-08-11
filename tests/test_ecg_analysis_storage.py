@@ -1,24 +1,48 @@
 """Storage-layer tests for the ecg_analysis table and its work-queue helpers
 (docs/sync-ingestion/ECG_ANALYSIS_HANDOFF.md) — upsert, the analyzed_at IS
 NULL queue, and the schema_version staleness query. Analysis math itself is
-covered in tests/test_ecg_analysis.py; this file only exercises persistence."""
+covered in tests/test_ecg_analysis.py; this file only exercises persistence.
+
+Recordings are inserted directly via upsert_parsed_ecg rather than through
+POST /v1/ecg: since app.ingestion.ingest_ecg now runs analysis automatically
+on every upload (see tests/test_ecg_endpoint.py's automatic-analysis tests),
+going through the live endpoint here would immediately drain the very queue
+these tests need populated to exercise get_unanalyzed_ecg_recordings/
+upsert_ecg_analysis directly."""
 
 import sqlite3
 
 from app.storage import (
     ECG_ANALYSIS_SCHEMA_VERSION,
     EcgAnalysisResult,
+    ParsedEcg,
     get_stale_ecg_analysis,
     get_unanalyzed_ecg_recordings,
     upsert_ecg_analysis,
+    upsert_parsed_ecg,
 )
-from tests.conftest import build_ecg_bytes, post_ecg
 
 
 def _db_conn(app_client):
     import app.config
 
     return sqlite3.connect(app.config.DB_PATH)
+
+
+def _insert_unanalyzed_recording(app_client, session_id: str = "3c4d5e6f") -> None:
+    """Writes a bare ecg_recordings row (analyzed_at NULL by construction —
+    upsert_parsed_ecg never touches that column) without going through the
+    HTTP endpoint's automatic analysis."""
+    conn = _db_conn(app_client)
+    with conn:
+        upsert_parsed_ecg(
+            conn,
+            ParsedEcg(id=session_id, sample_rate=130, start_timestamp_ns=0, duration_seconds=5.0),
+            content_hash="sha256:" + "0" * 64,
+            raw_path=f"ecg/{session_id}.ecg",
+            received_at="2026-08-11T09:00:00Z",
+        )
+    conn.close()
 
 
 def _full_result(session_id: str) -> EcgAnalysisResult:
@@ -40,14 +64,14 @@ def _full_result(session_id: str) -> EcgAnalysisResult:
 
 
 def test_new_recording_is_in_the_unanalyzed_queue(app_client) -> None:
-    post_ecg(app_client, build_ecg_bytes())
+    _insert_unanalyzed_recording(app_client)
     conn = _db_conn(app_client)
     queue = get_unanalyzed_ecg_recordings(conn)
     assert ("3c4d5e6f", "ecg/3c4d5e6f.ecg") in queue
 
 
 def test_upsert_ecg_analysis_removes_recording_from_queue(app_client) -> None:
-    post_ecg(app_client, build_ecg_bytes())
+    _insert_unanalyzed_recording(app_client)
     conn = _db_conn(app_client)
     assert get_unanalyzed_ecg_recordings(conn) != []
 
@@ -72,7 +96,7 @@ def test_upsert_ecg_analysis_removes_recording_from_queue(app_client) -> None:
 def test_upsert_ecg_analysis_stores_none_metrics_as_null(app_client) -> None:
     """A "no result" EcgAnalysisResult (too-short recording) must round-trip
     as SQL NULL, not 0 — 0 would misleadingly look like a real measurement."""
-    post_ecg(app_client, build_ecg_bytes())
+    _insert_unanalyzed_recording(app_client)
     conn = _db_conn(app_client)
 
     no_result = EcgAnalysisResult(
@@ -101,7 +125,7 @@ def test_upsert_ecg_analysis_stores_none_metrics_as_null(app_client) -> None:
 
 
 def test_upsert_ecg_analysis_is_idempotent_on_session_id(app_client) -> None:
-    post_ecg(app_client, build_ecg_bytes())
+    _insert_unanalyzed_recording(app_client)
     conn = _db_conn(app_client)
 
     with conn:
@@ -124,7 +148,7 @@ def test_upsert_ecg_analysis_is_idempotent_on_session_id(app_client) -> None:
 
 
 def test_get_stale_ecg_analysis_finds_rows_below_current_schema_version(app_client) -> None:
-    post_ecg(app_client, build_ecg_bytes())
+    _insert_unanalyzed_recording(app_client)
     conn = _db_conn(app_client)
 
     with conn:
@@ -141,7 +165,7 @@ def test_get_stale_ecg_analysis_finds_rows_below_current_schema_version(app_clie
 
 
 def test_get_stale_ecg_analysis_excludes_up_to_date_rows(app_client) -> None:
-    post_ecg(app_client, build_ecg_bytes())
+    _insert_unanalyzed_recording(app_client)
     conn = _db_conn(app_client)
 
     with conn:
