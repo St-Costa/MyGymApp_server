@@ -42,13 +42,20 @@ These arrive pre-computed in the session/readiness YAML and just need to be stor
 queried — **do not recompute them**, they're already correct in the synced data:
 
 - `totalTonnage`, `tonnageByBodypart` (session)
-- `sessionCalories`, `sessionTrimp`, `vo2max` (session)
-- `ecgBeats`, `ecgDurationSec`, `ecgAvgHr`, `ecgSessionRmssd`, `ecgPacCount`,
-  `ecgPauseCount`, `ecgIrregularBeats`, `sdnn`, `pnn50`, `poincareSd1`, `poincareSd2`,
-  `poincareRatio`, `afibSuspicionEpisodes`, `cardiacDriftBpmMin`, `restingHr`, `hrr60s`
-  (session — all ECG/HRV metrics, already computed by the phone's offline ECG analyzer)
+- `sessionCalories`, `sessionTrimp`, `vo2max`, `cardiacDriftBpmMin`, `restingHr`, `hrr60s`
+  (session — still computed phone-side, cheap HR-series metrics, not ECG waveform analysis)
 - `readiness`, `lnRmssd`, `restingHr`, `vo2max`, `recommendation` (readiness event)
 - `weightKg`, `bmi`, `bodyFatPercent`, `leanMassPercent` (scale weigh-in)
+
+**No longer true as of the raw-ECG-sync change (see `ECG_SPEC.md` and
+`ECG_ANALYSIS_HANDOFF.md`)**: `ecgBeats`, `ecgDurationSec`, `ecgAvgHr`, `ecgSessionRmssd`,
+`ecgPacCount`, `ecgPauseCount`, `ecgIrregularBeats`, `sdnn`, `pnn50`, `poincareSd1`,
+`poincareSd2`, `poincareRatio`, `afibSuspicionEpisodes` are **no longer computed
+phone-side and no longer arrive in the session YAML** (they stay at their zero defaults
+going forward — old sessions saved before this change still have real values). The phone
+now only uploads the **raw ECG waveform** (`POST /v1/ecg`, see `ECG_SPEC.md`); computing
+these 12 fields from that raw waveform is now entirely a server-side job. §6 below is the
+exact formula reference for that job — it is not optional/skippable the way it used to be.
 
 What's below is everything **derived from these stored values** — the trend/aggregate/
 comparison layer that today only exists transiently in the phone's UI (recomputed on
@@ -262,12 +269,18 @@ Requires **at least 7** baseline values to classify (fewer → `NO_BASELINE`).
 
 ---
 
-## 6. Offline ECG analysis — already computed and stored, formulas for reference/validation
+## 6. Offline ECG analysis — now a required server-side job, not optional
 
-All of §6 arrives pre-computed in each session's ECG/HRV fields. Included here only so the
-server-side analysis job can validate/cross-check or recompute if you ever decide to sync
-raw ECG too (not currently planned). **Skip implementing this unless you specifically want
-to reprocess raw ECG server-side** — normally just consume the stored fields.
+**Status changed**: this used to arrive pre-computed from the phone; it no longer does.
+As of the raw-ECG-sync change, the phone only uploads the raw waveform (`POST /v1/ecg`,
+`ECG_SPEC.md`) and no longer runs this analysis at all. **Implementing §6 server-side is
+now required** to get these 12 fields back — see `ECG_ANALYSIS_HANDOFF.md` in this same
+directory for full context on why this moved, what changed, and a concrete implementation
+plan. The formulas below are the exact, verbatim algorithm the phone used to run —
+transcribed directly from the Kotlin source (`EcgAnalyzer.kt`) — implement server-side
+exactly as written for continuity with any historical sessions that already have
+phone-computed values, unless you have a deliberate reason to improve on it (and if so,
+that's precisely the point of moving this server-side — just note the change explicitly).
 
 <details>
 <summary>Pan-Tompkins QRS detection + HRV/arrhythmia formulas (click to expand if needed)</summary>
