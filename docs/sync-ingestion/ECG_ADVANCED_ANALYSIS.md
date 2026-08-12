@@ -184,6 +184,20 @@ same-day data that often doesn't exist. Computed once per analyzed recording in
 `analyze_ecg.py` (the batch/backfill path) — both call the same `resting_hr_7day_average`,
 per this project's one-parser-two-callers convention.
 
+**Second fallback — the session's own `sessions.resting_hr`, when readiness_events has
+nothing in the trailing window at all**: readiness tracking is a separate, newer feature
+than session syncing, so it accumulates history independently — most sessions historically
+have no `readiness_events` row anywhere near their date even when the phone's own
+per-session `resting_hr` reading exists (`sessions.resting_hr` is populated on nearly every
+synced session; `readiness_events.resting_hr` accumulates far more slowly). Rather than
+falling all the way through to the %HRmax fallback (or skipping the calorie/TRIMP recompute
+entirely — see §7 below) whenever readiness tracking simply hasn't caught up yet,
+`resting_hr_for_hr_zones` reads `sessions.resting_hr` for that exact session as a second
+choice: a real, same-day reading, just from a less-controlled measurement path than a
+dedicated morning HRV reading (see `app.ingestion.resting_hr_for_hr_zones`'s own
+docstring). Verified against this project's real data: this fallback alone raised %HRR/
+calorie-TRIMP eligibility from 2/37 to 35/35 analyzed recordings with a matching session.
+
 **Max HR is still age-based, not derived from this project's peak-HR data — same reasoning
 regardless of %HRR vs %HRmax** (see below): switching the zone *formula* doesn't change
 what's a safe *input* to it. Using an under-measured max HR would shift the whole %HRR
@@ -241,9 +255,11 @@ whatever static value the phone's profile happened to hold at the time.
 
 **Inputs and where they come from** (both required — see "no result" below if either is
 missing):
-- `resting_hr`: the same 7-day trailing average (`app.analysis.
-  resting_hr_7day_average`) already used for %HRR zone boundaries — reused rather than
-  computed twice, since both are zone-relative calculations off the same baseline.
+- `resting_hr`: `app.ingestion.resting_hr_for_hr_zones` — the same lookup (7-day
+  readiness_events average, falling back to the session's own sessions.resting_hr) already
+  used for %HRR zone boundaries — reused rather than computed twice, since both are
+  zone-relative calculations off the same baseline. See §6 above for the fallback's
+  rationale/impact.
 - `weight_kg`: `app.analysis.nearest_scale_weight_kg` — the closest scale weigh-in
   (before or after) to the session's date, within `_NEAREST_WEIGHT_MAX_DAYS` (14 days).
   Beyond that window body weight may have moved enough that using it risks being a worse

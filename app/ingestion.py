@@ -218,10 +218,34 @@ def resting_hr_for_hr_zones(
     matching session at all — see ECG_SPEC.md point 5). Either anchor is a
     reasonable "around when this recording happened" date for a 7-day
     trailing average; there's no case where neither is available, since
-    received_at is always set by the time this runs."""
-    row = conn.execute("SELECT date FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    received_at is always set by the time this runs.
+
+    Falls back to this session's own sessions.resting_hr (the phone's own
+    per-session reading, present on nearly every synced session) when the
+    readiness_events-based 7-day average has no reading in its window at
+    all — readiness tracking (a newer, separate feature) has far less
+    history than sessions do, so most sessions would otherwise never get a
+    %HRR/calorie-TRIMP recompute purely because readiness_events hasn't
+    caught up yet, not because no resting-HR data exists for that day. The
+    phone's own resting_hr for that exact session is a real, same-day
+    reading — just from a different, less-controlled measurement path than
+    a dedicated morning HRV reading — so it's a reasonable second choice,
+    strictly better than falling all the way through to no resting HR at
+    all (which forces the %HRmax fallback in compute_hr_zone_minutes and
+    skips the calorie/TRIMP recompute entirely). 0 (the phone's "omitted
+    means unmeasured" convention) is excluded, same as everywhere else."""
+    row = conn.execute(
+        "SELECT date, resting_hr FROM sessions WHERE id = ?", (session_id,)
+    ).fetchone()
     anchor_date = row[0] if row and row[0] else received_at[:10]
-    return resting_hr_7day_average(conn, as_of_date=anchor_date)
+
+    resting_hr = resting_hr_7day_average(conn, as_of_date=anchor_date)
+    if resting_hr is not None:
+        return resting_hr
+
+    if row and row[1]:
+        return float(row[1])
+    return None
 
 
 def weight_kg_for_calorie_recalc(
