@@ -142,6 +142,11 @@ In this repository, committing is part of finishing a unit of work — you do no
 
 ## Architecture notes
 
+See [docs/sync-ingestion/PENDING_IMPROVEMENTS.md](docs/sync-ingestion/PENDING_IMPROVEMENTS.md)
+for server-side calculation improvements identified but currently blocked on data the phone
+doesn't sync yet (not code gaps) — check it before telling the user "we can't improve X yet"
+without a reason, and update it when a blocked item becomes unblocked or a new one is found.
+
 <!-- Point to docs/adr/ for detailed decisions. Use this section only for a short map of major components and how they talk to each other. -->
 
 See [docs/adr/](docs/adr/) for the reasoning behind major architectural decisions.
