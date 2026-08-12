@@ -29,7 +29,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from app.analysis import resting_hr_7day_average
+from app.analysis import nearest_scale_weight_kg, resting_hr_7day_average
 from app.config import RAW_DIR
 from app.ecg_analysis import analyze_ecg_recording
 from app.parsing import (
@@ -224,6 +224,19 @@ def resting_hr_for_hr_zones(
     return resting_hr_7day_average(conn, as_of_date=anchor_date)
 
 
+def weight_kg_for_calorie_recalc(
+    conn: sqlite3.Connection, session_id: str, received_at: str
+) -> float | None:
+    """Same anchor-date lookup as resting_hr_for_hr_zones above, feeding
+    app.analysis.nearest_scale_weight_kg instead — both the calorie/TRIMP
+    recompute's weight and resting-HR inputs are anchored to the same
+    session date for consistency, rather than picking two different
+    reference points."""
+    row = conn.execute("SELECT date FROM sessions WHERE id = ?", (session_id,)).fetchone()
+    anchor_date = row[0] if row and row[0] else received_at[:10]
+    return nearest_scale_weight_kg(conn, as_of_date=anchor_date)
+
+
 def ingest_ecg(
     conn: sqlite3.Connection, envelope: Envelope, compressed_bytes: bytes
 ) -> IngestResult:
@@ -321,12 +334,14 @@ def ingest_ecg(
         try:
             samples = read_ecg_samples(raw_bytes)
             resting_hr = resting_hr_for_hr_zones(conn, envelope.record_id, received_at)
+            weight_kg = weight_kg_for_calorie_recalc(conn, envelope.record_id, received_at)
             result = analyze_ecg_recording(
                 envelope.record_id,
                 samples,
                 parsed.sample_rate,
                 file_size_bytes=len(raw_bytes),
                 resting_hr=resting_hr,
+                weight_kg=weight_kg,
             )
             upsert_ecg_analysis(conn, result, analyzed_at=received_at)
         except Exception:

@@ -31,7 +31,7 @@ from datetime import UTC, datetime
 
 from app.config import DATA_ROOT, DB_PATH, RAW_DIR
 from app.ecg_analysis import analyze_ecg_recording
-from app.ingestion import resting_hr_for_hr_zones
+from app.ingestion import resting_hr_for_hr_zones, weight_kg_for_calorie_recalc
 from app.parsing import SessionParseError, parse_ecg_file, read_ecg_samples
 from app.storage import (
     connect,
@@ -65,12 +65,14 @@ def analyze_one(conn, session_id: str, raw_path: str) -> bool:
 
     analyzed_at = datetime.now(UTC).isoformat()
     resting_hr = resting_hr_for_hr_zones(conn, session_id, analyzed_at)
+    weight_kg = weight_kg_for_calorie_recalc(conn, session_id, analyzed_at)
     result = analyze_ecg_recording(
         session_id,
         samples,
         parsed.sample_rate,
         file_size_bytes=len(raw_bytes),
         resting_hr=resting_hr,
+        weight_kg=weight_kg,
     )
 
     with conn:  # nested transaction scope per recording; keeps one bad file isolated

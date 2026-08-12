@@ -10,6 +10,9 @@ from tests.conftest import (
     content_hash_of,
     post_ecg,
     post_readiness,
+    post_scale_weighin,
+    recent_readiness_md,
+    recent_scale_weighin_md,
     synthetic_ecg_samples,
 )
 
@@ -301,7 +304,7 @@ def test_ecg_upload_uses_hrr_zones_when_a_readiness_reading_exists(app_client) -
     the automatic analysis to %HRR (Karvonen) — see
     app.analysis.resting_hr_7day_average and app.ingestion.
     resting_hr_for_hr_zones."""
-    readiness_response = post_readiness(app_client)
+    readiness_response = post_readiness(app_client, recent_readiness_md())
     assert readiness_response.status_code == 200
 
     ecg_bytes = build_ecg_bytes(
@@ -334,6 +337,54 @@ def test_ecg_upload_falls_back_to_hrmax_zones_without_a_readiness_reading(app_cl
     ).fetchone()
     assert row[0] == 0
     assert row[1] is not None
+
+
+def test_ecg_upload_recomputes_calories_and_trimp_with_readiness_and_scale_data(
+    app_client,
+) -> None:
+    """A resting-HR reading and a nearby scale weigh-in together unlock the
+    server-side calorie/TRIMP recompute — see app.ecg_analysis.
+    compute_calories_and_trimp and app.ingestion.weight_kg_for_calorie_recalc/
+    resting_hr_for_hr_zones."""
+    assert post_readiness(app_client, recent_readiness_md()).status_code == 200
+    assert post_scale_weighin(app_client, recent_scale_weighin_md()).status_code == 200
+
+    ecg_bytes = build_ecg_bytes(
+        sample_rate=130, samples=synthetic_ecg_samples(130, 90, 125, seed=3)
+    )
+    response = post_ecg(app_client, ecg_bytes)
+    assert response.status_code == 200
+
+    conn = _db_conn(app_client)
+    row = conn.execute(
+        "SELECT session_calories_ecg, session_trimp_ecg FROM ecg_analysis WHERE session_id = ?",
+        ("3c4d5e6f",),
+    ).fetchone()
+    assert row[0] is not None
+    assert row[0] > 0
+    assert row[1] is not None
+    assert row[1] > 0
+
+
+def test_ecg_upload_leaves_calorie_recompute_null_without_scale_data(app_client) -> None:
+    """A readiness reading alone (resting HR available) but no scale
+    weigh-in must leave session_calories_ecg/session_trimp_ecg NULL, not
+    guess a weight — same "no result, not a misleading number" convention
+    as the rest of this pipeline."""
+    assert post_readiness(app_client, recent_readiness_md()).status_code == 200
+
+    ecg_bytes = build_ecg_bytes(
+        sample_rate=130, samples=synthetic_ecg_samples(130, 90, 125, seed=3)
+    )
+    response = post_ecg(app_client, ecg_bytes)
+    assert response.status_code == 200
+
+    conn = _db_conn(app_client)
+    row = conn.execute(
+        "SELECT session_calories_ecg, session_trimp_ecg FROM ecg_analysis WHERE session_id = ?",
+        ("3c4d5e6f",),
+    ).fetchone()
+    assert row == (None, None)
 
 
 def test_flat_signal_upload_gets_no_result_not_zeros(app_client) -> None:

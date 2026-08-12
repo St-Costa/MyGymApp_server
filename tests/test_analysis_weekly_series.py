@@ -13,6 +13,7 @@ from app.analysis import (
     exercise_history,
     hr_zones_weekly_trend,
     latest_readiness,
+    nearest_scale_weight_kg,
     readiness_daily_trend,
     resting_hr_7day_average,
 )
@@ -142,6 +143,24 @@ def test_exercise_history_excludes_exclude_from_tonnage_sets(conn):
 
 def test_exercise_history_no_data_is_empty_list(conn):
     assert exercise_history(conn, "ex-nonexistent", today="2026-08-01") == []
+
+
+def _insert_scale_weighin(conn, weighin_id, date, **fields):
+    columns = {
+        "id": weighin_id,
+        "date": date,
+        "content_hash": "sha256:x",
+        "raw_path": f"{weighin_id}.md",
+        "received_at": "2026-01-01T00:00:00Z",
+        "schema_version": 1,
+        **fields,
+    }
+    cols = ", ".join(columns)
+    placeholders = ", ".join("?" for _ in columns)
+    conn.execute(
+        f"INSERT INTO scale_weighins ({cols}) VALUES ({placeholders})", list(columns.values())
+    )
+    conn.commit()
 
 
 def _insert_readiness(conn, event_id, measured_at, **fields):
@@ -433,3 +452,31 @@ def test_resting_hr_7day_average_excludes_zero_as_unmeasured(conn):
 
 def test_resting_hr_7day_average_no_readings_returns_none(conn):
     assert resting_hr_7day_average(conn, as_of_date="2026-08-10") is None
+
+
+def test_nearest_scale_weight_kg_picks_closest_reading(conn):
+    _insert_scale_weighin(conn, "2026-08-01", "2026-08-01", weight_kg=79.0)
+    _insert_scale_weighin(conn, "2026-08-09", "2026-08-09", weight_kg=80.5)
+
+    assert nearest_scale_weight_kg(conn, as_of_date="2026-08-10") == pytest.approx(80.5)
+
+
+def test_nearest_scale_weight_kg_prefers_closer_even_if_earlier(conn):
+    _insert_scale_weighin(conn, "2026-08-08", "2026-08-08", weight_kg=80.0)
+    _insert_scale_weighin(conn, "2026-08-20", "2026-08-20", weight_kg=82.0)
+
+    # 2026-08-14 is 6 days after the 08-08 reading, 6 days before the 08-20
+    # reading — exact tie, either is a defensible "nearest"; what matters is
+    # it doesn't blow past _NEAREST_WEIGHT_MAX_DAYS or crash.
+    result = nearest_scale_weight_kg(conn, as_of_date="2026-08-11")
+    assert result == pytest.approx(80.0)  # 3 days away vs. 9 days away
+
+
+def test_nearest_scale_weight_kg_none_beyond_max_days(conn):
+    _insert_scale_weighin(conn, "2026-06-01", "2026-06-01", weight_kg=79.0)
+
+    assert nearest_scale_weight_kg(conn, as_of_date="2026-08-10") is None
+
+
+def test_nearest_scale_weight_kg_no_data_returns_none(conn):
+    assert nearest_scale_weight_kg(conn, as_of_date="2026-08-10") is None

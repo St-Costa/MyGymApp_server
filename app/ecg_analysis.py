@@ -947,6 +947,82 @@ def compute_hr_zone_minutes(
 
 
 # ---------------------------------------------------------------------------
+# Calorie burn / TRIMP — server-side recompute from real beat-by-beat HR
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CaloriesAndTrimp:
+    calories: float
+    trimp: float
+
+
+def compute_calories_and_trimp(
+    peaks: list[int],
+    sample_rate: int,
+    *,
+    weight_kg: float,
+    resting_hr: float,
+    is_male: bool,
+    today: "datetime.date | None" = None,
+) -> CaloriesAndTrimp | None:
+    """Recomputes sessionCalories (Keytel et al. 2005) and sessionTrimp
+    (Banister exponential, gender-weighted) from the ECG's own beat-by-beat
+    instantaneous HR, instead of trusting the phone's incremental per-sample
+    computation off its optical wrist/chest-strap sensor. Same formulas as
+    docs/sync-ingestion/ANALYSIS_SPEC.md §2/§3 (phone-side reference); the
+    only thing that changes is the HR *input* — R-peak-derived HR from the
+    ECG waveform is a materially cleaner signal than an optical sensor
+    during resistance training (motion artifact, poor contact), and
+    `weight_kg`/`resting_hr` here are meant to be looked up fresh (nearest
+    scale weigh-in, 7-day resting-HR average) rather than a static phone
+    profile value — see app.ingestion/analyze_ecg.py callers for how those
+    are actually sourced.
+
+    Each inter-beat gap is attributed to the beat *before* it (same
+    "leading beat" convention as compute_hr_zone_minutes/
+    compute_heart_rate_recovery) — gaps longer than 12s (0.2min) are
+    skipped, same gate as the phone's own incremental computation, so a
+    sensor dropout or paused recording can't be misread as 12 seconds of
+    continuous max-effort output.
+
+    Returns None if there are too few valid instantaneous-HR readings to
+    compute anything meaningful — same threshold as compute_hr_zone_minutes.
+    `is_male` mirrors the phone's own gender-weighted formula split (see
+    ANALYSIS_SPEC.md §2/§3); this app has no stored sex, same known gap
+    documented on _estimated_max_hr for the Gulati-inclusion decision."""
+    inst_hr, inst_hr_times_s = _instantaneous_hr_series(peaks, sample_rate)
+    if len(inst_hr) < 3:
+        return None
+
+    age = (today or datetime.now(UTC).date()).year - ASSUMED_BIRTH_YEAR
+    max_hr = _estimated_max_hr(today=today)
+    hrr_range = max_hr - resting_hr
+    gender_exp = 1.92 if is_male else 1.67
+
+    calories = 0.0
+    trimp = 0.0
+    for i in range(len(inst_hr) - 1):
+        hr = inst_hr[i]
+        elapsed_min = (inst_hr_times_s[i + 1] - inst_hr_times_s[i]) / 60.0
+        if elapsed_min <= 0 or elapsed_min > 0.2:
+            continue
+
+        if is_male:
+            kcal_per_min = (-55.0969 + 0.6309 * hr + 0.1988 * weight_kg + 0.2017 * age) / 4.184
+        else:
+            kcal_per_min = (-20.4022 + 0.4472 * hr - 0.1263 * weight_kg + 0.0740 * age) / 4.184
+        if kcal_per_min > 0:
+            calories += kcal_per_min * elapsed_min
+
+        if hrr_range > 0:
+            hrr_frac = max(0.0, min(1.0, (hr - resting_hr) / hrr_range))
+            trimp += elapsed_min * hrr_frac * 0.64 * math.exp(gender_exp * hrr_frac)
+
+    return CaloriesAndTrimp(calories=calories, trimp=trimp)
+
+
+# ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
@@ -958,6 +1034,8 @@ def analyze_ecg_recording(
     *,
     file_size_bytes: int,
     resting_hr: float | None = None,
+    weight_kg: float | None = None,
+    is_male: bool = True,
 ) -> EcgAnalysisResult:
     """Runs §1-§5 plus the advanced-metrics tier (ECG_ADVANCED_ANALYSIS.md)
     against one recording's decoded sample stream.
@@ -972,9 +1050,19 @@ def analyze_ecg_recording(
 
     `resting_hr`: passed straight through to compute_hr_zone_minutes — see
     that function's docstring for the %HRR-vs-%HRmax fallback behavior.
-    Callers (app.ingestion.ingest_ecg, analyze_ecg.py) are responsible for
-    fetching app.analysis.resting_hr_7day_average themselves; this function
+    Also required (along with `weight_kg`) for the calorie/TRIMP recompute
+    below — the same resting HR value is reused for both, since both are
+    zone-relative computations. Callers (app.ingestion.ingest_ecg,
+    analyze_ecg.py) are responsible for fetching app.analysis.
+    resting_hr_7day_average/nearest scale weigh-in themselves; this function
     stays DB-free like the rest of this module.
+
+    `weight_kg`/`is_male`: inputs to compute_calories_and_trimp. When
+    `weight_kg` is None (no scale weigh-in available near the session date)
+    or `resting_hr` is None, session_calories_ecg/session_trimp_ecg are left
+    None rather than guessing — same "no result, not a misleading number"
+    convention as everything else here. `is_male` defaults True since this
+    app has no stored sex (same documented gap as _estimated_max_hr).
     """
     kurtosis_sqi = compute_kurtosis_sqi(samples)
     peaks = detect_r_peaks(samples, sample_rate) if sample_rate > 0 else []
@@ -1015,6 +1103,12 @@ def analyze_ecg_recording(
     hrr = compute_heart_rate_recovery(peaks, sample_rate)
     hr_zones = compute_hr_zone_minutes(peaks, sample_rate, resting_hr=resting_hr)
 
+    calories_trimp = None
+    if resting_hr is not None and weight_kg is not None:
+        calories_trimp = compute_calories_and_trimp(
+            peaks, sample_rate, weight_kg=weight_kg, resting_hr=resting_hr, is_male=is_male
+        )
+
     return EcgAnalysisResult(
         session_id=session_id,
         avg_hr=hrv.avg_hr,
@@ -1047,19 +1141,26 @@ def analyze_ecg_recording(
         hr_zone5_min=hr_zones.zone5 if hr_zones else None,
         hr_below_zone1_min=hr_zones.below_zone1 if hr_zones else None,
         hr_zones_used_hrr=hr_zones.used_hrr if hr_zones else None,
+        session_calories_ecg=calories_trimp.calories if calories_trimp else None,
+        session_trimp_ecg=calories_trimp.trimp if calories_trimp else None,
     )
 
 
 def analyze_ecg_file(
-    session_id: str, raw_bytes: bytes, *, resting_hr: float | None = None
+    session_id: str,
+    raw_bytes: bytes,
+    *,
+    resting_hr: float | None = None,
+    weight_kg: float | None = None,
+    is_male: bool = True,
 ) -> EcgAnalysisResult:
     """Convenience wrapper: decodes a raw (decompressed) .ecg file exactly as
     stored under raw/ecg/{session_id}.ecg and runs analyze_ecg_recording
     against it. This is what callers with only the file bytes (the analysis
     queue processor, reparse-style re-analysis) should use; analyze_ecg_recording
     itself stays the lower-level entry point for tests that want to hand-build
-    a sample list without a binary header. `resting_hr` passed straight
-    through — see analyze_ecg_recording's docstring."""
+    a sample list without a binary header. `resting_hr`/`weight_kg`/`is_male`
+    passed straight through — see analyze_ecg_recording's docstring."""
     parsed = parse_ecg_file(raw_bytes)
     samples = read_ecg_samples(raw_bytes)
     return analyze_ecg_recording(
@@ -1068,4 +1169,6 @@ def analyze_ecg_file(
         parsed.sample_rate,
         file_size_bytes=len(raw_bytes),
         resting_hr=resting_hr,
+        weight_kg=weight_kg,
+        is_male=is_male,
     )

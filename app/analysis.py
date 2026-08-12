@@ -601,6 +601,38 @@ def resting_hr_7day_average(conn: sqlite3.Connection, *, as_of_date: str) -> flo
     return (sum(values) / len(values)) if values else None
 
 
+# How far a scale weigh-in may be from a session's own date and still be
+# trusted as "close enough" to that session's actual bodyweight — beyond
+# this, body weight itself may have moved enough (illness, water weight,
+# a real trend) that using it would risk being a worse input to Keytel than
+# just not recomputing at all. Loose enough to cover a user who doesn't
+# weigh in every single day (this app's own scale-weighin data shows gaps
+# of several days between readings sometimes), tight enough to still mean
+# something.
+_NEAREST_WEIGHT_MAX_DAYS = 14
+
+
+def nearest_scale_weight_kg(conn: sqlite3.Connection, *, as_of_date: str) -> float | None:
+    """The scale weigh-in closest in calendar time to `as_of_date` (before
+    or after — a session and its Keytel/TRIMP recompute cares about "what did
+    the user weigh around this time", not strictly "most recent as of this
+    session"), feeding app.ecg_analysis.compute_calories_and_trimp as a
+    fresher weight input than a static phone-side profile value. Returns
+    None if the closest reading is further than _NEAREST_WEIGHT_MAX_DAYS
+    away, or if there's no weigh-in at all — callers must leave the
+    calorie/TRIMP recompute as "no result" in that case, not guess."""
+    row = conn.execute(
+        """SELECT weight_kg, ABS(julianday(date) - julianday(?)) AS diff_days
+           FROM scale_weighins
+           WHERE weight_kg IS NOT NULL AND weight_kg > 0
+           ORDER BY diff_days ASC LIMIT 1""",
+        (as_of_date,),
+    ).fetchone()
+    if row is None or row[1] > _NEAREST_WEIGHT_MAX_DAYS:
+        return None
+    return row[0]
+
+
 @dataclass
 class ReadinessPoint:
     date: str  # calendar date (measured_at truncated to YYYY-MM-DD)
@@ -1265,23 +1297,34 @@ class SessionMetricPoint:
 
 
 def _session_metric_trend(
-    conn: sqlite3.Connection, column: str, *, today: str | None = None
+    conn: sqlite3.Connection, column: str, *, ecg_column: str, today: str | None = None
 ) -> list[SessionMetricPoint]:
     """Shared shape for a plain per-session numeric trend: one point per
-    session with a positive value for `column`, over the same 12-week
-    window as the other training-load/cardio charts. Rows where the field
-    was omitted (parsed as 0, per the sender's space-saving convention —
-    see docs/sync-ingestion/SPEC.md) are skipped rather than plotted as 0,
-    same reasoning as vo2max_4week_trend's `> 0` filter."""
+    session, over the same 12-week window as the other training-load/cardio
+    charts. Rows where the field was omitted (parsed as 0, per the sender's
+    space-saving convention — see docs/sync-ingestion/SPEC.md) are skipped
+    rather than plotted as 0, same reasoning as vo2max_4week_trend's `> 0`
+    filter.
+
+    Prefers `ecg_analysis.{ecg_column}` (app.ecg_analysis.
+    compute_calories_and_trimp — real beat-by-beat ECG HR + nearest scale
+    weight, computed server-side) over `sessions.{column}` (the phone's own
+    incremental, optical-sensor-HR value) whenever the ECG recompute exists
+    for that session — COALESCE, not a WHERE filter, so a session without an
+    ECG recording still falls back to the phone's own number rather than
+    disappearing from the chart entirely."""
     today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
     window_start = today_date - timedelta(weeks=_SESSION_LOAD_SERIES_WEEKS)
 
     rows = conn.execute(
         f"""
-        SELECT date, {column} FROM sessions
-        WHERE date >= ? AND date <= ? AND schema_version > 0 AND {column} > 0
-        ORDER BY date
-        """,
+        SELECT s.date, COALESCE(e.{ecg_column}, s.{column}) AS value
+        FROM sessions s
+        LEFT JOIN ecg_analysis e ON e.session_id = s.id
+        WHERE s.date >= ? AND s.date <= ? AND s.schema_version > 0
+          AND COALESCE(e.{ecg_column}, s.{column}) > 0
+        ORDER BY s.date
+        """,  # noqa: S608
         (window_start.isoformat(), today_date.isoformat()),
     ).fetchall()
 
@@ -1292,8 +1335,11 @@ def session_calories_trend(
     conn: sqlite3.Connection, *, today: str | None = None
 ) -> list[SessionMetricPoint]:
     """Per-session calories burned, plotted alongside tonnage/session-load
-    in the Training load section."""
-    return _session_metric_trend(conn, "session_calories", today=today)
+    in the Training load section. Prefers the ECG-based recompute over the
+    phone's own value — see _session_metric_trend's docstring."""
+    return _session_metric_trend(
+        conn, "session_calories", ecg_column="session_calories_ecg", today=today
+    )
 
 
 def session_trimp_trend(
@@ -1301,8 +1347,9 @@ def session_trimp_trend(
 ) -> list[SessionMetricPoint]:
     """Per-session TRIMP (Banister training impulse), plotted in the
     Recovery & fitness trends section alongside the other per-session
-    cardio load metrics."""
-    return _session_metric_trend(conn, "session_trimp", today=today)
+    cardio load metrics. Prefers the ECG-based recompute over the phone's
+    own value — see _session_metric_trend's docstring."""
+    return _session_metric_trend(conn, "session_trimp", ecg_column="session_trimp_ecg", today=today)
 
 
 # ACWR applied to session_load instead of total_tonnage — the standard way

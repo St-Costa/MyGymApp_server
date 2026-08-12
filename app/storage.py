@@ -205,6 +205,13 @@ CREATE TABLE IF NOT EXISTS ecg_analysis (
   hr_zone5_min             REAL,
   hr_below_zone1_min       REAL,
   hr_zones_used_hrr        INTEGER,  -- 0/1/NULL: which method computed the zones above
+  -- Recompute of sessions.session_calories/session_trimp using the ECG's
+  -- real beat-by-beat HR + nearest scale weigh-in instead of the phone's
+  -- optical-sensor HR + static profile weight (app.ecg_analysis.
+  -- compute_calories_and_trimp). Prefer these over sessions.session_calories/
+  -- session_trimp when non-NULL — see EcgAnalysisResult's own docstring.
+  session_calories_ecg     REAL,
+  session_trimp_ecg        REAL,
   analyzed_at              TEXT NOT NULL,
   schema_version           INTEGER NOT NULL
 );
@@ -251,6 +258,7 @@ def init_db(db_path: Path = DB_PATH) -> None:
         _migrate_sessions_rpe_columns(conn)
         _migrate_ecg_analysis_advanced_columns(conn)
         _migrate_ecg_analysis_hr_zone_columns(conn)
+        _migrate_ecg_analysis_calorie_columns(conn)
         _migrate_exercise_sets_cardio_columns(conn)
 
 
@@ -354,6 +362,17 @@ def _migrate_ecg_analysis_hr_zone_columns(conn: sqlite3.Connection) -> None:
     # ALTER since it's INTEGER, not REAL like the columns above.
     if "hr_zones_used_hrr" not in columns:
         conn.execute("ALTER TABLE ecg_analysis ADD COLUMN hr_zones_used_hrr INTEGER")
+
+
+def _migrate_ecg_analysis_calorie_columns(conn: sqlite3.Connection) -> None:
+    """One-time migration: session_calories_ecg/session_trimp_ecg (app.
+    ecg_analysis.compute_calories_and_trimp) were added after ecg_analysis
+    already existed in deployed databases — same pattern as
+    _migrate_ecg_analysis_hr_zone_columns above."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(ecg_analysis)")}
+    for column in ("session_calories_ecg", "session_trimp_ecg"):
+        if column not in columns:
+            conn.execute(f"ALTER TABLE ecg_analysis ADD COLUMN {column} REAL")  # noqa: S608
 
 
 def _migrate_parse_failures_table(conn: sqlite3.Connection) -> None:
@@ -563,6 +582,21 @@ class EcgAnalysisResult:
     hr_zone5_min: float | None = None
     hr_below_zone1_min: float | None = None
     hr_zones_used_hrr: bool | None = None
+    # Server-side recompute of the phone's sessionCalories/sessionTrimp
+    # (app.ecg_analysis.compute_calories_and_trimp), using the ECG's real
+    # beat-by-beat HR instead of the phone's optical-sensor HR, plus the
+    # nearest scale weigh-in instead of a static profile weight. Stored here
+    # (not written back into sessions.session_calories/session_trimp) so the
+    # phone's own originally-reported values are never overwritten in their
+    # source table — raw-first still applies to the phone's own numbers, this
+    # is a *more accurate* value computed alongside, not a correction of the
+    # original record. Callers displaying "the" session calorie/TRIMP figure
+    # should prefer this column over sessions.session_calories/session_trimp
+    # whenever it's non-NULL — see get_display_calories/get_display_trimp
+    # (app.analysis) for that preference order. None when no ECG or no
+    # nearby scale weight was available to recompute from.
+    session_calories_ecg: float | None = None
+    session_trimp_ecg: float | None = None
 
 
 # Tables that participate in the generic id -> content_hash / stale-lookup
@@ -914,7 +948,13 @@ def upsert_parsed_ecg(
 # changes little day to day in a stable athlete. See hr_zones_used_hrr on each
 # row for which formula was actually used (NULL/0 rows fell back to %HRmax
 # because no resting-HR reading existed in the trailing week).
-ECG_ANALYSIS_SCHEMA_VERSION = 7
+# Bumped to 8: added session_calories_ecg/session_trimp_ecg (app.ecg_analysis.
+# compute_calories_and_trimp) — a recompute of the phone's sessionCalories/
+# sessionTrimp using the ECG's real beat-by-beat HR and the nearest scale
+# weigh-in, instead of the phone's optical-sensor HR and static profile
+# weight. Rows analyzed under schema_version < 8 have NULL in both columns
+# until re-analyzed.
+ECG_ANALYSIS_SCHEMA_VERSION = 8
 
 
 def upsert_ecg_analysis(
@@ -935,7 +975,8 @@ def upsert_ecg_analysis(
             hrv_lf, hrv_hf, hrv_lf_hf, sample_entropy, csi, cvi,
             hrr_1min, hrr_2min,
             hr_zone1_min, hr_zone2_min, hr_zone3_min, hr_zone4_min, hr_zone5_min,
-            hr_below_zone1_min, hr_zones_used_hrr, analyzed_at, schema_version
+            hr_below_zone1_min, hr_zones_used_hrr,
+            session_calories_ecg, session_trimp_ecg, analyzed_at, schema_version
         ) VALUES (
             :session_id, :avg_hr, :session_rmssd, :sdnn, :pnn50,
             :poincare_sd1, :poincare_sd2, :poincare_ratio,
@@ -944,7 +985,8 @@ def upsert_ecg_analysis(
             :hrv_lf, :hrv_hf, :hrv_lf_hf, :sample_entropy, :csi, :cvi,
             :hrr_1min, :hrr_2min,
             :hr_zone1_min, :hr_zone2_min, :hr_zone3_min, :hr_zone4_min, :hr_zone5_min,
-            :hr_below_zone1_min, :hr_zones_used_hrr, :analyzed_at, :schema_version
+            :hr_below_zone1_min, :hr_zones_used_hrr,
+            :session_calories_ecg, :session_trimp_ecg, :analyzed_at, :schema_version
         )
         ON CONFLICT(session_id) DO UPDATE SET
             avg_hr=excluded.avg_hr, session_rmssd=excluded.session_rmssd,
@@ -964,6 +1006,8 @@ def upsert_ecg_analysis(
             hr_zone5_min=excluded.hr_zone5_min,
             hr_below_zone1_min=excluded.hr_below_zone1_min,
             hr_zones_used_hrr=excluded.hr_zones_used_hrr,
+            session_calories_ecg=excluded.session_calories_ecg,
+            session_trimp_ecg=excluded.session_trimp_ecg,
             analyzed_at=excluded.analyzed_at,
             schema_version=excluded.schema_version
         """,
@@ -1001,6 +1045,8 @@ def upsert_ecg_analysis(
             "hr_zones_used_hrr": (
                 None if result.hr_zones_used_hrr is None else int(result.hr_zones_used_hrr)
             ),
+            "session_calories_ecg": result.session_calories_ecg,
+            "session_trimp_ecg": result.session_trimp_ecg,
             "analyzed_at": analyzed_at,
             "schema_version": ECG_ANALYSIS_SCHEMA_VERSION,
         },
