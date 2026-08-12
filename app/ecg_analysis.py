@@ -830,7 +830,7 @@ class HrZoneMinutes:
 _HR_ZONE_BOUNDS = (0.50, 0.60, 0.70, 0.80, 0.90)
 
 
-def _estimated_max_hr(*, today: "datetime.date | None" = None) -> float:
+def estimated_max_hr(*, today: "datetime.date | None" = None) -> float:
     """Mean of three published age-based max-HR formulas, rather than Fox
     et al. alone — each has a substantial standard error of estimate
     (roughly ±10-12bpm for any single one), so averaging independent
@@ -910,7 +910,7 @@ def compute_hr_zone_minutes(
     if len(inst_hr) < 3:
         return None
 
-    max_hr = _estimated_max_hr(today=today)
+    max_hr = estimated_max_hr(today=today)
     used_hrr = resting_hr is not None
     if used_hrr:
         bounds = [resting_hr + b * (max_hr - resting_hr) for b in _HR_ZONE_BOUNDS]
@@ -990,13 +990,13 @@ def compute_calories_and_trimp(
     compute anything meaningful — same threshold as compute_hr_zone_minutes.
     `is_male` mirrors the phone's own gender-weighted formula split (see
     ANALYSIS_SPEC.md §2/§3); this app has no stored sex, same known gap
-    documented on _estimated_max_hr for the Gulati-inclusion decision."""
+    documented on estimated_max_hr for the Gulati-inclusion decision."""
     inst_hr, inst_hr_times_s = _instantaneous_hr_series(peaks, sample_rate)
     if len(inst_hr) < 3:
         return None
 
     age = (today or datetime.now(UTC).date()).year - ASSUMED_BIRTH_YEAR
-    max_hr = _estimated_max_hr(today=today)
+    max_hr = estimated_max_hr(today=today)
     hrr_range = max_hr - resting_hr
     gender_exp = 1.92 if is_male else 1.67
 
@@ -1062,7 +1062,7 @@ def analyze_ecg_recording(
     or `resting_hr` is None, session_calories_ecg/session_trimp_ecg are left
     None rather than guessing — same "no result, not a misleading number"
     convention as everything else here. `is_male` defaults True since this
-    app has no stored sex (same documented gap as _estimated_max_hr).
+    app has no stored sex (same documented gap as estimated_max_hr).
     """
     kurtosis_sqi = compute_kurtosis_sqi(samples)
     peaks = detect_r_peaks(samples, sample_rate) if sample_rate > 0 else []

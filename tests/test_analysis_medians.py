@@ -125,3 +125,18 @@ def test_vo2max_4week_buckets_group_by_4_weeks_not_1(conn):
     assert len(non_empty) == 1
     assert non_empty[0].n == 2
     assert non_empty[0].value == 42.0
+
+
+def test_vo2max_4week_trend_prefers_estimated_vo2max_when_resting_hr_available(conn):
+    """A session with a resting_hr reading should use app.analysis.
+    estimated_vo2max's recompute (Fox/Tanaka/Gulati hr_max) rather than the
+    phone's own vo2max (Tanaka-only hr_max) — see vo2max_4week_trend's
+    docstring."""
+    _insert_session(conn, "s1", "2026-08-08", vo2max=999.0, resting_hr=60)
+
+    buckets = vo2max_4week_trend(conn, today="2026-08-09")
+    non_empty = [b for b in buckets if b.n > 0]
+    assert len(non_empty) == 1
+    # Must NOT be the phone's placeholder 999.0 — the recompute took over.
+    assert non_empty[0].value != pytest.approx(999.0)
+    assert non_empty[0].value == pytest.approx(15.3 * ((194.0 + 189.8 + 183.12) / 3.0) / 60.0)

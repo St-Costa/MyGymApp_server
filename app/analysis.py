@@ -26,6 +26,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from app.ecg_analysis import estimated_max_hr
+
 # ---------------------------------------------------------------------------
 # §11.1 Cardio 4-week trend card (semaphore-based)
 # ---------------------------------------------------------------------------
@@ -601,6 +603,71 @@ def resting_hr_7day_average(conn: sqlite3.Connection, *, as_of_date: str) -> flo
     return (sum(values) / len(values)) if values else None
 
 
+def resting_hr_7day_min(conn: sqlite3.Connection, *, as_of_date: str) -> int | None:
+    """7-day trailing MINIMUM of morning resting HR — ANALYSIS_SPEC.md §4.2's
+    `hr_rest_for_vo2` input to the VO2max formula specifically calls for a
+    minimum, not an average (unlike resting_hr_7day_average above, which
+    feeds the unrelated %HRR zone calculation): a resting HR reading can be
+    inflated by acute stress/poor sleep/illness on a given morning, and the
+    spec's own reasoning is that the *lowest* trailing reading is closer to
+    true resting physiology than any single day's number, average included.
+    Falls back further to `sessions.resting_hr` over the same window when
+    readiness_events has nothing at all in range — same reasoning/fallback
+    order as app.ingestion.resting_hr_for_hr_zones (readiness tracking has
+    far less history than session syncing does). 0 (the phone's "omitted
+    means unmeasured" convention) is excluded from both sources. Returns
+    None only if neither source has anything in the trailing week."""
+    as_of = datetime.strptime(as_of_date, "%Y-%m-%d").date()
+    window_start = as_of - timedelta(days=6)
+
+    readiness_rows = conn.execute(
+        """SELECT resting_hr FROM readiness_events
+           WHERE substr(measured_at, 1, 10) >= ? AND substr(measured_at, 1, 10) <= ?
+             AND resting_hr IS NOT NULL AND resting_hr > 0""",
+        (window_start.isoformat(), as_of.isoformat()),
+    ).fetchall()
+    values = [r[0] for r in readiness_rows]
+    if values:
+        return min(values)
+
+    session_rows = conn.execute(
+        """SELECT resting_hr FROM sessions
+           WHERE date >= ? AND date <= ? AND resting_hr IS NOT NULL AND resting_hr > 0""",
+        (window_start.isoformat(), as_of.isoformat()),
+    ).fetchall()
+    values = [r[0] for r in session_rows]
+    return min(values) if values else None
+
+
+def estimated_vo2max(conn: sqlite3.Connection, *, as_of_date: str) -> float | None:
+    """Recomputes VO2max (ANALYSIS_SPEC.md §4.2, Uth-Sørensen-Overgaard-
+    Pedersen: `15.3 * hr_max / hr_rest_for_vo2`) server-side, rather than
+    trusting sessions.vo2max/readiness_events.vo2max as-is from the phone.
+
+    Two deviations from the phone's own reference formula, both already
+    established for the HR-zone/calorie-TRIMP recomputes and reused here
+    for consistency rather than maintaining a third, slightly different
+    max-HR estimate:
+    - `hr_max`: app.ecg_analysis.estimated_max_hr (mean of Fox/Tanaka/
+      Gulati) instead of the phone's Tanaka-only formula (ANALYSIS_SPEC.md
+      §4.1) — see that function's docstring for why averaging three
+      published formulas is preferred over trusting Tanaka's coefficients
+      alone.
+    - `hr_rest_for_vo2`: resting_hr_7day_min above, which itself falls back
+      to sessions.resting_hr when readiness_events has no reading in the
+      trailing week — see that function's docstring.
+
+    Returns None if hr_rest_for_vo2 can't be resolved at all (no resting-HR
+    reading anywhere in the trailing week, from either source)."""
+    hr_rest = resting_hr_7day_min(conn, as_of_date=as_of_date)
+    if hr_rest is None or hr_rest <= 0:
+        return None
+
+    today_date = datetime.strptime(as_of_date, "%Y-%m-%d").date()
+    hr_max = estimated_max_hr(today=today_date)
+    return 15.3 * (hr_max / hr_rest)
+
+
 # How far a scale weigh-in may be from a session's own date and still be
 # trusted as "close enough" to that session's actual bodyweight — beyond
 # this, body weight itself may have moved enough (illness, water weight,
@@ -694,7 +761,16 @@ def readiness_daily_trend(
 def vo2max_4week_trend(conn: sqlite3.Connection, *, today: str | None = None) -> list[WeeklyBucket]:
     """§11.3: 4-week buckets (not weekly) over a 6-month fetch window, bucket
     boundary = window_start + floor(weeks_since_start / 4) * 4 weeks,
-    value = median(vo2max where >0)."""
+    value = median(vo2max where >0).
+
+    Prefers estimated_vo2max (Fox/Tanaka/Gulati hr_max + 7-day min resting
+    HR, falling back through sessions.resting_hr — see that function's
+    docstring) over the phone's own sessions.vo2max (Tanaka-only hr_max)
+    per-session, same "recompute with richer server-side inputs, fall back
+    to the phone's value when the recompute can't run" pattern as
+    _session_metric_trend's calorie/TRIMP recompute. Computed per-row in
+    Python rather than a SQL COALESCE, since estimated_vo2max needs its own
+    trailing-window query per date, not a single joinable column."""
     today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
     window_start = today_date - timedelta(days=182)  # ~6 months
 
@@ -711,7 +787,8 @@ def vo2max_4week_trend(conn: sqlite3.Connection, *, today: str | None = None) ->
         cursor += timedelta(weeks=4)
 
     bucket_starts = sorted(datetime.strptime(k, "%Y-%m-%d").date() for k in buckets)
-    for date_str, vo2max in rows:
+    for date_str, phone_vo2max in rows:
+        vo2max = estimated_vo2max(conn, as_of_date=date_str) or phone_vo2max
         if vo2max is None or vo2max <= 0:
             continue
         d = datetime.strptime(date_str, "%Y-%m-%d").date()
