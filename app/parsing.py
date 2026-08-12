@@ -31,6 +31,13 @@ the source of truth):
   "missing means 0" numeric fields above, these stay `None` when absent —
   0 is not a valid RPE value, so "not answered" must be distinguishable from
   a reported effort. Use `_optional_int`/`_optional_num`, not `_int`/`_num`.
+- `exercises[].type == "CARDIO"` (docs/sync-ingestion/CARDIO_BLOCKS_SPEC.md):
+  a set is `{startedAt, endedAt, avgHr, maxHr}` instead of `{reps, weight}`
+  (FORZA) or `{timeSeconds, done}` (STRETCH). `reps`/`weight` stay `None` on
+  these rows and vice versa — `started_at`/`ended_at`/`avg_hr`/`max_hr` stay
+  `None` on non-CARDIO rows. Unlike the "missing means 0/''" convention
+  above, blank/missing here means "not applicable" or "block still running/
+  abandoned," so it maps to `None`, not `0`/`""`.
 """
 
 import struct
@@ -307,7 +314,30 @@ def _parse_exercises(raw_exercises: list) -> list[ExerciseSet]:
         exclude_from_tonnage = bool(exercise.get("excludeFromTonnage", False))
         is_daily = bool(exercise.get("isDaily", False))
 
+        is_cardio = exercise_type == "CARDIO"
+
         for set_index, raw_set in enumerate(exercise.get("sets") or []):
+            if is_cardio:
+                exercise_sets.append(
+                    ExerciseSet(
+                        exercise_id=exercise_id,
+                        exercise_name=exercise_name,
+                        exercise_type=exercise_type,
+                        bodypart=bodypart,
+                        set_index=set_index,
+                        reps=None,
+                        weight=None,
+                        exclude_from_tonnage=exclude_from_tonnage,
+                        is_daily=is_daily,
+                        is_bodyweight=False,
+                        started_at=raw_set.get("startedAt") or None,
+                        ended_at=raw_set.get("endedAt") or None,
+                        avg_hr=_optional_int(raw_set, "avgHr"),
+                        max_hr=_optional_int(raw_set, "maxHr"),
+                    )
+                )
+                continue
+
             exercise_sets.append(
                 ExerciseSet(
                     exercise_id=exercise_id,

@@ -65,7 +65,15 @@ CREATE TABLE IF NOT EXISTS exercise_sets (
   weight                REAL,
   exclude_from_tonnage  INTEGER NOT NULL DEFAULT 0,
   is_daily              INTEGER NOT NULL DEFAULT 0,
-  is_bodyweight         INTEGER NOT NULL DEFAULT 0
+  is_bodyweight         INTEGER NOT NULL DEFAULT 0,
+  -- CARDIO-only (docs/sync-ingestion/CARDIO_BLOCKS_SPEC.md). NULL (not 0/'')
+  -- for FORZA/STRETCH rows, and for CARDIO rows too when the underlying
+  -- value is itself absent/blank — 0/'' are valid values for a real
+  -- (if degenerate) cardio block, so NULL is the only unambiguous "n/a".
+  started_at            TEXT,
+  ended_at              TEXT,
+  avg_hr                INTEGER,
+  max_hr                INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_exercise_sets_session ON exercise_sets(session_id);
 -- app.analysis filters on exercise_id in PR lookups (all_time_tonnage_pr,
@@ -222,7 +230,12 @@ CREATE TABLE IF NOT EXISTS parse_failures (
 # Stamped into sessions.schema_version on every successful parse; reparse.py
 # --stale finds rows below this value and re-parses them. Bumped to 3 for the
 # addition of parse_ecg_file/ecg_recordings (docs/sync-ingestion/ECG_SPEC.md).
-PARSER_SCHEMA_VERSION = 3
+# Bumped to 4: exercise_sets gained started_at/ended_at/avg_hr/max_hr for
+# ExerciseType.CARDIO (docs/sync-ingestion/CARDIO_BLOCKS_SPEC.md) — any
+# session synced before this that contains a CARDIO exercise silently
+# dropped its cardio sets under the old "unknown fields are ignored"
+# tolerance; reparse.py --stale re-extracts them once picked up.
+PARSER_SCHEMA_VERSION = 4
 
 # schema_version stamped on a row written from step 6's "on failure" path —
 # the raw file is safely stored but nothing has been successfully parsed yet.
@@ -238,6 +251,7 @@ def init_db(db_path: Path = DB_PATH) -> None:
         _migrate_sessions_rpe_columns(conn)
         _migrate_ecg_analysis_advanced_columns(conn)
         _migrate_ecg_analysis_hr_zone_columns(conn)
+        _migrate_exercise_sets_cardio_columns(conn)
 
 
 def _migrate_sessions_rpe_columns(conn: sqlite3.Connection) -> None:
@@ -270,6 +284,26 @@ def _migrate_exercise_sets_is_bodyweight_column(conn: sqlite3.Connection) -> Non
         conn.execute(
             "ALTER TABLE exercise_sets ADD COLUMN is_bodyweight INTEGER NOT NULL DEFAULT 0"
         )
+
+
+def _migrate_exercise_sets_cardio_columns(conn: sqlite3.Connection) -> None:
+    """One-time migration: the four CARDIO-only columns (docs/sync-ingestion/
+    CARDIO_BLOCKS_SPEC.md) were added after `exercise_sets` already existed
+    in deployed databases — same pattern as
+    _migrate_exercise_sets_is_bodyweight_column above. Left NULL for all
+    existing rows (correct for every pre-existing FORZA/STRETCH row, and for
+    any already-synced CARDIO session too, since it was necessarily parsed
+    before this column existed — reparse.py --stale backfills those once
+    PARSER_SCHEMA_VERSION is bumped)."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(exercise_sets)")}
+    if "started_at" not in columns:
+        conn.execute("ALTER TABLE exercise_sets ADD COLUMN started_at TEXT")
+    if "ended_at" not in columns:
+        conn.execute("ALTER TABLE exercise_sets ADD COLUMN ended_at TEXT")
+    if "avg_hr" not in columns:
+        conn.execute("ALTER TABLE exercise_sets ADD COLUMN avg_hr INTEGER")
+    if "max_hr" not in columns:
+        conn.execute("ALTER TABLE exercise_sets ADD COLUMN max_hr INTEGER")
 
 
 def _migrate_ecg_analysis_advanced_columns(conn: sqlite3.Connection) -> None:
@@ -382,11 +416,20 @@ class ExerciseSet:
     exercise_type: str | None
     bodypart: str | None
     set_index: int
-    reps: int
-    weight: float
+    # None for CARDIO rows — see started_at/ended_at/avg_hr/max_hr below.
+    reps: int | None
+    weight: float | None
     exclude_from_tonnage: bool
     is_daily: bool
     is_bodyweight: bool = False
+    # CARDIO-only (docs/sync-ingestion/CARDIO_BLOCKS_SPEC.md) — None for
+    # FORZA/STRETCH rows, and reps/weight stay None for CARDIO rows, same
+    # "NULL means n/a, not a valid degenerate value" reasoning as the SQL
+    # column comments.
+    started_at: str | None = None
+    ended_at: str | None = None
+    avg_hr: int | None = None
+    max_hr: int | None = None
 
 
 @dataclass
@@ -655,8 +698,9 @@ def upsert_parsed_session(
         """
         INSERT INTO exercise_sets (
             session_id, exercise_id, exercise_name, exercise_type, bodypart,
-            set_index, reps, weight, exclude_from_tonnage, is_daily, is_bodyweight
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            set_index, reps, weight, exclude_from_tonnage, is_daily, is_bodyweight,
+            started_at, ended_at, avg_hr, max_hr
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -671,6 +715,10 @@ def upsert_parsed_session(
                 int(s.exclude_from_tonnage),
                 int(s.is_daily),
                 int(s.is_bodyweight),
+                s.started_at,
+                s.ended_at,
+                s.avg_hr,
+                s.max_hr,
             )
             for s in parsed.exercise_sets
         ],

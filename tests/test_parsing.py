@@ -106,6 +106,94 @@ def test_is_bodyweight_parsed_when_present() -> None:
     assert parsed.exercise_sets[0].is_bodyweight is True
 
 
+def test_cardio_exercise_populates_cardio_fields_and_nulls_reps_weight() -> None:
+    md = (
+        b"---\n"
+        b"id: ffffffff\n"
+        b"exercises:\n"
+        b"  - exerciseId: ex-c9d8e7f6\n"
+        b"    exerciseName: Corsa leggera\n"
+        b"    type: CARDIO\n"
+        b"    bodypart: cardio\n"
+        b"    excludeFromTonnage: true\n"
+        b"    sets:\n"
+        b'      - startedAt: "2026-08-12T10:15:03"\n'
+        b'        endedAt: "2026-08-12T10:45:10"\n'
+        b"        avgHr: 138\n"
+        b"        maxHr: 156\n"
+        b"---\n"
+    )
+    parsed = parse_session_file(md)
+    assert len(parsed.exercise_sets) == 1
+    cardio_set = parsed.exercise_sets[0]
+    assert cardio_set.exercise_type == "CARDIO"
+    assert cardio_set.started_at == "2026-08-12T10:15:03"
+    assert cardio_set.ended_at == "2026-08-12T10:45:10"
+    assert cardio_set.avg_hr == 138
+    assert cardio_set.max_hr == 156
+    assert cardio_set.reps is None
+    assert cardio_set.weight is None
+    assert cardio_set.exclude_from_tonnage is True
+
+
+def test_cardio_exercise_blank_ended_at_means_block_still_running() -> None:
+    # Per CARDIO_BLOCKS_SPEC.md: endedAt: "" means the block is still
+    # running/abandoned — must land as None/NULL, not "", since "" is itself
+    # a distinct (if degenerate) value elsewhere. avgHr/maxHr: 0 in this same
+    # example are literal on-device-computed values (however degenerate for
+    # an unfinished block) and parse as the int 0, not None — 0 is a
+    # meaningfully different case from "field omitted entirely".
+    md = (
+        b"---\n"
+        b"id: 11111112\n"
+        b"exercises:\n"
+        b"  - exerciseId: ex-c9d8e7f6\n"
+        b"    type: CARDIO\n"
+        b"    sets:\n"
+        b'      - startedAt: "2026-08-12T10:50:00"\n'
+        b'        endedAt: ""\n'
+        b"        avgHr: 0\n"
+        b"        maxHr: 0\n"
+        b"---\n"
+    )
+    parsed = parse_session_file(md)
+    cardio_set = parsed.exercise_sets[0]
+    assert cardio_set.started_at == "2026-08-12T10:50:00"
+    assert cardio_set.ended_at is None
+    assert cardio_set.avg_hr == 0
+    assert cardio_set.max_hr == 0
+
+
+def test_cardio_exercise_omitted_hr_fields_stay_none() -> None:
+    # avgHr/maxHr entirely absent from the YAML (not even present as 0) must
+    # stay None — distinguishable from an explicit 0 reading, same
+    # "_optional_int, not _int" convention as sessionRpe.
+    md = (
+        b"---\n"
+        b"id: 11111113\n"
+        b"exercises:\n"
+        b"  - exerciseId: ex-c9d8e7f6\n"
+        b"    type: CARDIO\n"
+        b"    sets:\n"
+        b'      - startedAt: "2026-08-12T10:50:00"\n'
+        b'        endedAt: ""\n'
+        b"---\n"
+    )
+    parsed = parse_session_file(md)
+    cardio_set = parsed.exercise_sets[0]
+    assert cardio_set.avg_hr is None
+    assert cardio_set.max_hr is None
+
+
+def test_non_cardio_exercise_leaves_cardio_fields_none() -> None:
+    parsed = parse_session_file(SESSION_MD.encode())
+    forza_set = parsed.exercise_sets[0]
+    assert forza_set.started_at is None
+    assert forza_set.ended_at is None
+    assert forza_set.avg_hr is None
+    assert forza_set.max_hr is None
+
+
 def test_unknown_top_level_keys_are_ignored() -> None:
     md = b"---\nid: cccccccc\ntotalTonnage: 1.0\nsomeFutureField: whatever\n---\n"
     parsed = parse_session_file(md)

@@ -119,6 +119,56 @@ def test_updated_session_overwrites_and_replaces_child_rows(app_client) -> None:
     assert set_count == 2  # same exercise re-inserted once, not accumulated
 
 
+def test_cardio_exercise_lands_in_exercise_sets_with_reps_weight_null(app_client) -> None:
+    # docs/sync-ingestion/CARDIO_BLOCKS_SPEC.md
+    md = SESSION_MD.replace(
+        "exercises:\n"
+        "  - exerciseId: ex-a1b2c3d4\n"
+        "    exerciseName: Bench Press\n"
+        "    type: FORZA\n"
+        "    bodypart: chest\n"
+        "    excludeFromTonnage: true\n"
+        "    isDaily: true\n"
+        "    sets:\n"
+        "      - reps: 8\n"
+        "        weight: 80.0\n"
+        "      - reps: 6\n"
+        "        weight: 85.0\n",
+        "exercises:\n"
+        "  - exerciseId: ex-c9d8e7f6\n"
+        "    exerciseName: Corsa leggera\n"
+        "    type: CARDIO\n"
+        "    bodypart: cardio\n"
+        "    excludeFromTonnage: true\n"
+        "    sets:\n"
+        '      - startedAt: "2026-08-12T10:15:03"\n'
+        '        endedAt: "2026-08-12T10:45:10"\n'
+        "        avgHr: 138\n"
+        "        maxHr: 156\n",
+    ).encode()
+    response = post_session(app_client, md, content_hash=content_hash_of(md))
+    assert response.status_code == 200
+    assert response.json()["status"] == "stored"
+
+    conn = _db_conn(app_client)
+    row = conn.execute(
+        """SELECT exercise_type, reps, weight, started_at, ended_at, avg_hr, max_hr
+           FROM exercise_sets WHERE session_id = ?""",
+        ("3c4d5e6f",),
+    ).fetchone()
+    assert row == ("CARDIO", None, None, "2026-08-12T10:15:03", "2026-08-12T10:45:10", 138, 156)
+
+
+def test_forza_only_session_leaves_cardio_columns_null(app_client) -> None:
+    post_session(app_client)
+    conn = _db_conn(app_client)
+    rows = conn.execute(
+        "SELECT started_at, ended_at, avg_hr, max_hr FROM exercise_sets WHERE session_id = ?",
+        ("3c4d5e6f",),
+    ).fetchall()
+    assert rows == [(None, None, None, None), (None, None, None, None)]
+
+
 def test_malformed_envelope_json_returns_400(app_client) -> None:
     response = app_client.post(
         "/v1/sessions",
