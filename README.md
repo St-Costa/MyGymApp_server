@@ -48,6 +48,11 @@ exist, so `raw/ecg/` needs the same (or better) backup discipline as `raw/`'s se
 cardio trend/alerts, weekly resting-HR/VO2max/scale trends, exercise PRs — as JSON; see
 [docs/sync-ingestion/ANALYSIS_SPEC.md](docs/sync-ingestion/ANALYSIS_SPEC.md).
 
+**Cardio blocks**: the phone can mark explicit start/end cardio phases within a session
+(`ExerciseType.CARDIO`) — no new endpoint, this rides the existing `POST /v1/sessions`
+transport; `exercise_sets` gained four nullable columns (`started_at`/`ended_at`/`avg_hr`/
+`max_hr`) for it. See [CARDIO_BLOCKS_SPEC.md](docs/sync-ingestion/CARDIO_BLOCKS_SPEC.md).
+
 ### ECG waveform analysis
 
 [app/ecg_analysis.py](app/ecg_analysis.py) is a from-source port of the phone's
