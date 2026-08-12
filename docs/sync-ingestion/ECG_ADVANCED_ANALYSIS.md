@@ -220,6 +220,70 @@ Age is derived from `ASSUMED_BIRTH_YEAR` (`app.config`) — see that constant's 
 docstring; recomputed from the current date on every call, not cached, so it drifts
 forward automatically as years pass.
 
+### 7. Calorie burn / TRIMP recompute (`compute_calories_and_trimp`)
+
+The phone already computes `sessionCalories` (Keytel et al. 2005) and `sessionTrimp`
+(Banister exponential, gender-weighted — see `ANALYSIS_SPEC.md` §2/§3) incrementally,
+per-sample, off its own optical wrist/chest-strap HR sensor and a static profile weight.
+`compute_calories_and_trimp` recomputes the *same two formulas* server-side, from the
+ECG's real beat-by-beat instantaneous HR (`_instantaneous_hr_series`, the same series
+`compute_hr_zone_minutes`/`compute_heart_rate_recovery` use) instead of the phone's
+optical sensor, and a scale weigh-in close to the session date instead of a static
+profile value. Only the *inputs* change — the formulas are transcribed unchanged from
+the spec, not redesigned.
+
+**Why this is more accurate, not just "a second opinion"**: an optical HR sensor is
+materially noisier than ECG during resistance training specifically (motion artifact,
+poor skin contact from gripping a bar, etc.) — R-peak detection off the raw ECG waveform
+doesn't have that failure mode. Weight is looked up per-session from the nearest scale
+weigh-in (`app.analysis.nearest_scale_weight_kg`, within a 14-day window) rather than
+whatever static value the phone's profile happened to hold at the time.
+
+**Inputs and where they come from** (both required — see "no result" below if either is
+missing):
+- `resting_hr`: the same 7-day trailing average (`app.analysis.
+  resting_hr_7day_average`) already used for %HRR zone boundaries — reused rather than
+  computed twice, since both are zone-relative calculations off the same baseline.
+- `weight_kg`: `app.analysis.nearest_scale_weight_kg` — the closest scale weigh-in
+  (before or after) to the session's date, within `_NEAREST_WEIGHT_MAX_DAYS` (14 days).
+  Beyond that window body weight may have moved enough that using it risks being a worse
+  input than not recomputing at all, so it's treated as absent instead.
+- `max_hr`: `_estimated_max_hr` — the same Fox/Tanaka/Gulati average as the HR-zone
+  feature (§6), not the phone's Tanaka-only formula. This is a deliberate divergence
+  from `ANALYSIS_SPEC.md` §4.1's phone-side reference formula, for the same reasoning
+  documented in §6 above — one max-HR estimate for both features, not two.
+- `is_male`: defaults `True` — this app has no stored sex, same documented gap as
+  `_estimated_max_hr`'s Gulati-inclusion decision.
+
+**"No result" when inputs are missing**: `session_calories_ecg`/`session_trimp_ecg` are
+left `NULL` (not a value computed from a guessed weight/resting HR) whenever either
+`resting_hr` or `weight_kg` can't be resolved for a session — e.g. no readiness reading
+in the trailing week, no scale weigh-in within two weeks of the session date, or (for
+very early adopters of readiness/scale tracking) no history at all yet.
+
+**Where these values are surfaced**: `app.analysis._session_metric_trend` (backing
+`session_calories_trend`/`session_trimp_trend`, the dashboard's Training-load charts)
+prefers `ecg_analysis.session_calories_ecg`/`session_trimp_ecg` over `sessions.
+session_calories`/`session_trimp` via `COALESCE`, falling back to the phone's own value
+whenever the ECG recompute is unavailable (no ECG synced for that session, or missing
+resting-HR/weight inputs) — a session's plotted point never disappears just because the
+recompute couldn't run.
+
+**Rejected: a MET-based correction for resistance-training blocks.** Keytel/TRIMP are
+both validated against cardio steady-state effort, not resistance training — HR rises
+during a heavy set for reasons that aren't purely metabolic (isometric strain, Valsalva,
+acute stress), so applying a pure HR-based formula across a whole session risks over/
+under-estimating the strength-training portions specifically. A Compendium-of-Physical-
+Activities MET value (~6.0 for vigorous resistance training) applied during `forza`-typed
+sets was prototyped and rejected: `exercise_sets.started_at`/`ended_at`/`avg_hr`/`max_hr`
+are currently populated only for `CARDIO`-typed blocks (`CARDIO_BLOCKS_SPEC.md`), not
+`forza`/`stretch` — so there's no way to know *when* within a recording a strength set
+actually happened versus rest between sets. A coarse proxy (session-wide fraction of
+`forza` sets, distributed evenly across the recording) was tested against real data and
+produced unstable, physiologically-meaningless swings (-8% to +43% versus plain Keytel
+across sessions with near-identical composition) — worse than not correcting at all.
+Revisit this once per-set timing exists for `forza`/`stretch` blocks too, not before.
+
 ## Schema
 
 `ecg_analysis` (see `app/storage.py`) gains:
@@ -243,14 +307,18 @@ ALTER TABLE ecg_analysis ADD COLUMN hr_zone4_min       REAL;
 ALTER TABLE ecg_analysis ADD COLUMN hr_zone5_min       REAL;
 ALTER TABLE ecg_analysis ADD COLUMN hr_below_zone1_min REAL;
 ALTER TABLE ecg_analysis ADD COLUMN hr_zones_used_hrr    INTEGER;
+ALTER TABLE ecg_analysis ADD COLUMN session_calories_ecg REAL;
+ALTER TABLE ecg_analysis ADD COLUMN session_trimp_ecg    REAL;
 ```
 
 All nullable, same "no result" convention as the existing twelve fields: `None`/`NULL`
 when the underlying computation couldn't run (too little clean data, no RR series, no
 detectable peak HR), never a misleading zero. `hr_zones_used_hrr` is 0/1/NULL: which
 formula (%HRR vs %HRmax fallback) computed the zone columns on that row — see "%HRR
-(Karvonen)" above. `ECG_ANALYSIS_SCHEMA_VERSION` bumped accordingly — existing rows are
-stale and due for re-analysis via `analyze_ecg.py --stale`.
+(Karvonen)" above. `session_calories_ecg`/`session_trimp_ecg` are `NULL` whenever
+`resting_hr`/`weight_kg` couldn't be resolved for that session — see §7 above.
+`ECG_ANALYSIS_SCHEMA_VERSION` bumped accordingly — existing rows are stale and due for
+re-analysis via `analyze_ecg.py --stale`.
 
 ## Tier 2 — investigated and rejected
 

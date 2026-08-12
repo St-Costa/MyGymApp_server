@@ -834,3 +834,99 @@ def test_hr_zone_minutes_karvonen_below_zone1_for_resting_hr() -> None:
     assert result is not None
     assert result.used_hrr is True
     assert result.below_zone1 == pytest.approx(1.0, abs=0.05)
+
+
+# ---------------------------------------------------------------------------
+# Calorie burn / TRIMP (compute_calories_and_trimp)
+# ---------------------------------------------------------------------------
+
+
+def test_calories_and_trimp_matches_keytel_and_banister_by_hand() -> None:
+    """Constant 130bpm for ~1 minute, age 26 (2026), weight 80kg, male,
+    resting_hr=60: expected values computed by hand from the Keytel/Banister
+    formulas (ANALYSIS_SPEC.md §2/§3), same max_hr as the other HR-zone
+    tests (mean of Fox/Tanaka/Gulati ≈ 188.97) — not just "whatever the code
+    outputs", per this file's own stated convention."""
+    from datetime import date
+
+    from app.ecg_analysis import compute_calories_and_trimp
+
+    sample_rate = 130
+    peaks = _constant_hr_peaks(sample_rate, bpm=130, duration_s=60)
+
+    result = compute_calories_and_trimp(
+        peaks,
+        sample_rate,
+        weight_kg=80.0,
+        resting_hr=60.0,
+        is_male=True,
+        today=date(2026, 1, 1),
+    )
+    assert result is not None
+    # kcal_per_min = (-55.0969 + 0.6309*130 + 0.1988*80 + 0.2017*26) / 4.184 ≈ 11.489
+    # ~1 minute of constant HR -> total calories ≈ that per-minute rate.
+    assert result.calories == pytest.approx(11.49, abs=0.1)
+    # hrr_frac = (130-60)/(188.97-60) ≈ 0.5427
+    # trimp_per_min = hrr_frac*0.64*exp(1.92*hrr_frac) ≈ 0.985
+    assert result.trimp == pytest.approx(0.985, abs=0.02)
+
+
+def test_calories_and_trimp_uses_female_coefficients_when_not_male() -> None:
+    """Same constant-HR setup as the male test above, but is_male=False —
+    must use the Keytel female coefficients and gender_exp=1.67 (Banister),
+    not silently fall through to the male formula."""
+    from datetime import date
+
+    from app.ecg_analysis import compute_calories_and_trimp
+
+    sample_rate = 130
+    peaks = _constant_hr_peaks(sample_rate, bpm=130, duration_s=60)
+
+    result = compute_calories_and_trimp(
+        peaks,
+        sample_rate,
+        weight_kg=80.0,
+        resting_hr=60.0,
+        is_male=False,
+        today=date(2026, 1, 1),
+    )
+    assert result is not None
+    # kcal_per_min = (-20.4022 + 0.4472*130 - 0.1263*80 + 0.0740*26) / 4.184 ≈ 7.064
+    assert result.calories == pytest.approx(7.06, abs=0.1)
+    # trimp_per_min = hrr_frac*0.64*exp(1.67*hrr_frac), hrr_frac ≈ 0.5427
+    assert result.trimp == pytest.approx(0.860, abs=0.02)
+
+
+def test_calories_and_trimp_none_for_too_few_peaks() -> None:
+    from app.ecg_analysis import compute_calories_and_trimp
+
+    assert (
+        compute_calories_and_trimp([0, 100], 130, weight_kg=80.0, resting_hr=60.0, is_male=True)
+        is None
+    )
+    assert (
+        compute_calories_and_trimp([], 130, weight_kg=80.0, resting_hr=60.0, is_male=True) is None
+    )
+
+
+def test_calories_and_trimp_trimp_clamped_to_zero_below_resting_hr() -> None:
+    """A recording at/below resting_hr shouldn't produce negative TRIMP —
+    hrr_frac is clamped to [0, 1], same convention as compute_hr_zone_minutes'
+    below-zone1 bucket for sub-resting HR."""
+    from datetime import date
+
+    from app.ecg_analysis import compute_calories_and_trimp
+
+    sample_rate = 130
+    peaks = _constant_hr_peaks(sample_rate, bpm=55, duration_s=60)
+
+    result = compute_calories_and_trimp(
+        peaks,
+        sample_rate,
+        weight_kg=80.0,
+        resting_hr=60.0,
+        is_male=True,
+        today=date(2026, 1, 1),
+    )
+    assert result is not None
+    assert result.trimp == pytest.approx(0.0)

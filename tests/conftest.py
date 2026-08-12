@@ -6,6 +6,7 @@ import hashlib
 import importlib
 import random
 import struct
+from datetime import UTC, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -67,6 +68,22 @@ recommendation: "HRV above baseline. Good day to push intensity."
 ---
 """
 
+
+def recent_readiness_md(*, resting_hr: int = 65) -> bytes:
+    """A readiness fixture with `measuredAt` pinned to "today" at call time,
+    not READINESS_MD's fixed 2026-08-05 — needed by any test relying on
+    app.analysis.resting_hr_7day_average's trailing window actually
+    containing the reading (a fixed past date would silently fall outside
+    that window as real wall-clock time moves forward past it; this broke
+    once already — see the git history of this fixture)."""
+    measured_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000")
+    return (
+        f'---\nid: a1b2c3d4\nmeasuredAt: "{measured_at}"\nreadiness: "GOOD"\n'
+        f"lnRmssd: 4.30\nrestingHr: {resting_hr}\nvo2max: 45.2\n"
+        'recommendation: "HRV above baseline. Good day to push intensity."\n---\n'
+    ).encode()
+
+
 SCALE_WEIGHIN_MD = """---
 id: "2026-08-05"
 date: "2026-08-05"
@@ -77,6 +94,20 @@ bodyFatPercent: 16.8
 leanMassPercent: 81.2
 ---
 """
+
+
+def recent_scale_weighin_md(*, weight_kg: float = 78.4) -> bytes:
+    """A scale-weighin fixture with date/recordedAt pinned to "today" at
+    call time, not SCALE_WEIGHIN_MD's fixed 2026-08-05 — needed by any test
+    relying on app.analysis.nearest_scale_weight_kg's _NEAREST_WEIGHT_MAX_DAYS
+    window actually containing the reading. Same reasoning as
+    recent_readiness_md above."""
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+    return (
+        f'---\nid: "{today}"\ndate: "{today}"\nrecordedAt: "{today}T07:12:34"\n'
+        f"weightKg: {weight_kg}\nbmi: 24.1\nbodyFatPercent: 16.8\nleanMassPercent: 81.2\n---\n"
+    ).encode()
+
 
 SHARED_SECRET = "test-secret-for-unit-tests"
 

@@ -6,7 +6,15 @@ import importlib
 import sqlite3
 import sys
 
-from tests.conftest import build_ecg_bytes, post_ecg, post_readiness, synthetic_ecg_samples
+from tests.conftest import (
+    build_ecg_bytes,
+    post_ecg,
+    post_readiness,
+    post_scale_weighin,
+    recent_readiness_md,
+    recent_scale_weighin_md,
+    synthetic_ecg_samples,
+)
 
 
 def _db_conn(app_client):
@@ -139,7 +147,7 @@ def test_stale_reanalysis_picks_up_hrr_zones_from_a_readiness_reading(app_client
         conn.execute(
             "UPDATE ecg_analysis SET schema_version = 0 WHERE session_id = ?", ("3c4d5e6f",)
         )
-    assert post_readiness(app_client).status_code == 200
+    assert post_readiness(app_client, recent_readiness_md()).status_code == 200
 
     module = _load_analyze_ecg()
     exit_code = _run(module, "--stale")
@@ -150,6 +158,33 @@ def test_stale_reanalysis_picks_up_hrr_zones_from_a_readiness_reading(app_client
         "SELECT hr_zones_used_hrr FROM ecg_analysis WHERE session_id = ?", ("3c4d5e6f",)
     ).fetchone()[0]
     assert used_hrr == 1
+
+
+def test_stale_reanalysis_picks_up_calorie_recompute_from_scale_and_readiness(app_client) -> None:
+    """Same batch-path parity as the %HRR test above, for the calorie/TRIMP
+    recompute — a readiness reading and scale weigh-in synced after the
+    original (stale) analysis should be picked up on re-analysis."""
+    post_ecg(app_client, build_ecg_bytes(samples=synthetic_ecg_samples(130, 90, 125, seed=5)))
+
+    conn = _db_conn(app_client)
+    with conn:
+        conn.execute(
+            "UPDATE ecg_analysis SET schema_version = 0 WHERE session_id = ?", ("3c4d5e6f",)
+        )
+    assert post_readiness(app_client, recent_readiness_md()).status_code == 200
+    assert post_scale_weighin(app_client, recent_scale_weighin_md()).status_code == 200
+
+    module = _load_analyze_ecg()
+    exit_code = _run(module, "--stale")
+    assert exit_code == 0
+
+    conn = _db_conn(app_client)
+    row = conn.execute(
+        "SELECT session_calories_ecg, session_trimp_ecg FROM ecg_analysis WHERE session_id = ?",
+        ("3c4d5e6f",),
+    ).fetchone()
+    assert row[0] is not None and row[0] > 0
+    assert row[1] is not None and row[1] > 0
 
 
 def test_missing_raw_file_is_reported_as_a_failure_not_a_crash(app_client, monkeypatch) -> None:
