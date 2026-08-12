@@ -10,12 +10,14 @@ import pytest
 from app.analysis import (
     all_cardio_metrics_weekly_trend,
     ecg_advanced_metrics_weekly_trend,
+    estimated_vo2max,
     exercise_history,
     hr_zones_weekly_trend,
     latest_readiness,
     nearest_scale_weight_kg,
     readiness_daily_trend,
     resting_hr_7day_average,
+    resting_hr_7day_min,
 )
 from app.storage import (
     EcgAnalysisResult,
@@ -480,3 +482,48 @@ def test_nearest_scale_weight_kg_none_beyond_max_days(conn):
 
 def test_nearest_scale_weight_kg_no_data_returns_none(conn):
     assert nearest_scale_weight_kg(conn, as_of_date="2026-08-10") is None
+
+
+def test_resting_hr_7day_min_takes_minimum_not_average(conn):
+    """ANALYSIS_SPEC.md §4.2: hr_rest_for_vo2 is a MIN over the trailing
+    week, not an average — deliberately different from
+    resting_hr_7day_average (which feeds the unrelated %HRR calculation)."""
+    _insert_readiness(conn, "r1", "2026-08-08T07:00:00Z", resting_hr=58)
+    _insert_readiness(conn, "r2", "2026-08-09T07:00:00Z", resting_hr=70)
+    _insert_readiness(conn, "r3", "2026-08-10T07:00:00Z", resting_hr=62)
+
+    assert resting_hr_7day_min(conn, as_of_date="2026-08-10") == 58
+
+
+def test_resting_hr_7day_min_falls_back_to_sessions_when_no_readiness(conn):
+    _insert_session(conn, "s1", "2026-08-05", resting_hr=64)
+    _insert_session(conn, "s2", "2026-08-08", resting_hr=59)
+
+    assert resting_hr_7day_min(conn, as_of_date="2026-08-10") == 59
+
+
+def test_resting_hr_7day_min_excludes_zero_from_both_sources(conn):
+    _insert_readiness(conn, "r1", "2026-08-09T07:00:00Z", resting_hr=0)
+    _insert_session(conn, "s1", "2026-08-08", resting_hr=0)
+
+    assert resting_hr_7day_min(conn, as_of_date="2026-08-10") is None
+
+
+def test_resting_hr_7day_min_no_data_anywhere_returns_none(conn):
+    assert resting_hr_7day_min(conn, as_of_date="2026-08-10") is None
+
+
+def test_estimated_vo2max_uses_three_formula_hr_max_average(conn):
+    """15.3 * hr_max / hr_rest, hr_max = mean(Fox/Tanaka/Gulati) for age 26
+    (2026 - ASSUMED_BIRTH_YEAR 2000) ≈ 188.97 — same value as the HR-zone
+    tests (test_estimated_max_hr_is_the_mean_of_three_published_formulas in
+    test_ecg_analysis.py)."""
+    _insert_readiness(conn, "r1", "2026-08-09T07:00:00Z", resting_hr=60)
+
+    result = estimated_vo2max(conn, as_of_date="2026-08-10")
+    expected_hr_max = (194.0 + 189.8 + 183.12) / 3.0
+    assert result == pytest.approx(15.3 * expected_hr_max / 60.0)
+
+
+def test_estimated_vo2max_none_without_any_resting_hr(conn):
+    assert estimated_vo2max(conn, as_of_date="2026-08-10") is None

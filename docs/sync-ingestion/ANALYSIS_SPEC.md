@@ -223,6 +223,21 @@ non-zero `restingHr`) for this user, take `min(restingHr)` across them, and reco
 to "just today's value" when the baseline is empty — same rule applies: `min` over
 however many are actually available).
 
+**Implemented server-side, one deliberate deviation from §4.1 above**:
+`app.analysis.estimated_vo2max` recomputes this per-session, preferred over the phone's own
+`vo2max` in `vo2max_4week_trend` whenever it can run (falls back to the phone's value when
+it can't — see that function's docstring). `hr_max` uses `app.ecg_analysis.
+estimated_max_hr` (mean of Fox/Tanaka/Gulati) instead of this section's Tanaka-only
+formula — the same max-HR estimate already used for HR-zone/calorie-TRIMP recomputes (see
+`docs/sync-ingestion/ECG_ADVANCED_ANALYSIS.md` §6), reused here rather than maintaining a
+third slightly-different formula. `hr_rest_for_vo2` (`app.analysis.resting_hr_7day_min`)
+matches this section exactly (7-day trailing min, not average), with one addition: it falls
+back to `sessions.resting_hr` over the same window when `readiness_events` has nothing in
+range — readiness tracking is a much newer feature than session syncing and has far less
+history, so most sessions historically had no nearby `readiness_events` row at all even
+though the phone's own per-session `resting_hr` was available. Verified against this
+project's real data: this raised VO2max-recompute eligibility to 15/15 sessions sampled.
+
 ---
 
 ## 5. HRV Readiness (LnRMSSD z-score) — already computed and stored, formulas for reference

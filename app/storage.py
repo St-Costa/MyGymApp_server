@@ -937,7 +937,7 @@ def upsert_parsed_ecg(
 # compute_hr_zone_minutes) — %HRmax training-zone time breakdown per
 # recording. Rows below this version have NULL in the hr_zone*/
 # hr_below_zone1_min columns until re-analyzed.
-# Bumped to 6: _estimated_max_hr changed from Fox et al. alone (220-age) to
+# Bumped to 6: estimated_max_hr changed from Fox et al. alone (220-age) to
 # the mean of three published formulas (Fox/Tanaka/Gulati) — see
 # app.ecg_analysis's docstring for why. Rows analyzed under schema_version 5
 # have hr_zone*/hr_below_zone1_min computed against a slightly different

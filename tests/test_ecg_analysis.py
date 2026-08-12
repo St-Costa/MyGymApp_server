@@ -694,21 +694,21 @@ def _constant_hr_peaks(sample_rate: int, bpm: float, duration_s: float) -> list[
     return peaks
 
 
-def test_estimated_max_hr_is_the_mean_of_three_published_formulas() -> None:
+def testestimated_max_hr_is_the_mean_of_three_published_formulas() -> None:
     """Age 26 (2026 - ASSUMED_BIRTH_YEAR 2000): Fox (220-26=194),
     Tanaka (208-0.7*26=189.8), Gulati (206-0.88*26=183.12) — averaged, not
-    just Fox et al. alone (see _estimated_max_hr's docstring for why)."""
+    just Fox et al. alone (see estimated_max_hr's docstring for why)."""
     from datetime import date
 
-    from app.ecg_analysis import _estimated_max_hr
+    from app.ecg_analysis import estimated_max_hr
 
     expected = (194.0 + 189.8 + 183.12) / 3.0
-    assert _estimated_max_hr(today=date(2026, 1, 1)) == pytest.approx(expected)
+    assert estimated_max_hr(today=date(2026, 1, 1)) == pytest.approx(expected)
 
 
 def test_hr_zone_minutes_constant_hr_lands_in_expected_zone() -> None:
     """Age 26 (2026 - ASSUMED_BIRTH_YEAR 2000) -> max_hr = mean(Fox, Tanaka,
-    Gulati) ≈ 188.97 (see test_estimated_max_hr_is_the_mean_of_three_
+    Gulati) ≈ 188.97 (see testestimated_max_hr_is_the_mean_of_three_
     published_formulas). Z2 is 60-70% ≈ 113.4-132.3bpm; 125bpm sits inside
     it, so ~1 minute of constant 125bpm HR should land almost entirely in
     zone2."""

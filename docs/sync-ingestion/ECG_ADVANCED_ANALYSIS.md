@@ -148,6 +148,23 @@ beat gets averaged away. Real HRR is always measured against a sustained rate in
 clinical literature too, never a single instant, so this isn't just noise reduction — it
 matches how the metric is actually defined.
 
+**Not coalesced with `sessions.hrr60s` in the dashboard trend, despite both being "HRR" —
+investigated and rejected**: `hrr60s` (ANALYSIS_SPEC.md §7) is the phone's own *mean of
+multiple per-set recovery deltas* within a session (`peak_qualifies` gate + 90s debounce
+between queued peaks), while `hrr_1min` here is a *single* delta from the recording's one
+highest smoothed peak, per the whole-recording approximation described above — not the
+same measurement, not "the same thing computed more accurately". Verified against this
+project's real data before deciding: the two values diverge systematically, not just
+noisily, by roughly +40% to +500% across 33 sessions with both values present (`hrr_1min`
+consistently higher, since a single whole-session peak effort typically recovers less
+steeply per-minute than the smaller, more frequent per-set peaks `hrr60s` averages). A
+straight `COALESCE(hrr_1min, hrr60s)` — the pattern used for calories/TRIMP and VO2max
+elsewhere in this codebase — would silently swap in a differently-defined number, not a
+more-accurate version of the same one. Revisit only alongside the session/set-timing
+integration mentioned above, which would let `compute_heart_rate_recovery` replicate the
+phone's actual multi-peak/debounce logic against ECG data rather than approximating a
+single whole-recording peak — at that point the two would be directly comparable.
+
 **Cardiac drift / aerobic decoupling**: reviewed and *not* implemented in this round — it
 needs a genuine steady-state cardio segment (pace/power vs HR, first half vs second half)
 that this pipeline has no way to identify automatically from ECG alone, and approximating
