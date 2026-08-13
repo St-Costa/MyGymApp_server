@@ -25,6 +25,15 @@
   </div>
 </div>
 
+<div class="chart-wrap" id="wrap-chart-stepsAvgPerDay">
+  <p class="chart-desc">
+    Weekly median of the daily step average reported with each readiness reading
+    (SYNC.md "Daily step average"). Weeks with no reading are left blank, not zero —
+    a gap in this data means "not measured", not "sat still all week".
+  </p>
+  <div class="chart-canvas-box"><canvas id="chart-stepsAvgPerDay"></canvas></div>
+</div>
+
 <h2 class="section-title">Rhythm &amp; cardiac issues</h2>
 
 <div class="chart-grid">
@@ -425,6 +434,23 @@
       { value: 6, severity: "info", label: "Athletes 6-13% (ACE, men's table)" },
       { value: 2, severity: "info", label: "Essential fat 2-5% (ACE, men's table)" },
     ],
+    // Tudor-Locke et al. 2011 daily step-count classification — a widely
+    // cited scale (sedentary/low active/somewhat active/active/highly
+    // active), not an official WHO/CDC guideline (WHO itself doesn't
+    // publish a tiered steps/day scale, just a general "more is better"
+    // activity recommendation) but the closest thing to a standard
+    // reference for absolute daily step counts. This chart plots a WEEKLY
+    // median of a per-reading daily average, so every cutoff is the daily
+    // figure ×7 per the user's own framing — these are not separately
+    // published weekly thresholds.
+    // https://pmc.ncbi.nlm.nih.gov/articles/PMC3197470/
+    stepsAvgPerDay: [
+      { value: 12500 * 7, severity: "info", label: "Highly active ≥ 12,500/day (Tudor-Locke)" },
+      { value: 10000 * 7, severity: "info", label: "Active 10,000-12,499/day (Tudor-Locke)" },
+      { value: 7500 * 7, severity: "info", label: "Somewhat active 7,500-9,999/day (Tudor-Locke)" },
+      { value: 5000 * 7, severity: "warning", label: "Low active 5,000-7,499/day (Tudor-Locke)" },
+      { value: 0, severity: "danger", label: "Sedentary < 5,000/day (Tudor-Locke)" },
+    ],
   };
 
   // Shaded background bands. Poincaré ratio's optimal range (SD2/SD1
@@ -699,6 +725,27 @@
     },
     "date",
     THRESHOLDS.vo2max
+  );
+
+  document.getElementById("wrap-chart-stepsAvgPerDay").insertAdjacentHTML(
+    "afterbegin",
+    chartHeader({ name: "Steps (weekly)", unit: "steps/week", good: "up" })
+  );
+  lineChart(
+    "chart-stepsAvgPerDay",
+    {{ steps_avg_per_day_trend | map(attribute="week_start") | list | tojson }},
+    {
+      label: "Steps/week",
+      // steps_avg_per_day_weekly_trend already medians a per-reading DAILY
+      // average per week; ×7 here converts that to a weekly total so it's
+      // directly comparable to THRESHOLDS.stepsAvgPerDay's ×7'd daily
+      // cutoffs, per the user's own "daily standards ×7" framing.
+      values: {{ steps_avg_per_day_trend | map(attribute="value") | list | tojson }}
+        .map(v => v === null ? null : v * 7),
+      color: "#ff9f6b",
+    },
+    "week",
+    THRESHOLDS.stepsAvgPerDay
   );
 
   document.getElementById("wrap-vo2maxChart").insertAdjacentHTML(

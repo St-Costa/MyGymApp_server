@@ -10,6 +10,7 @@ from app.analysis import (
     median,
     resting_hr_weekly_trend,
     scale_weekly_trend,
+    steps_avg_per_day_weekly_trend,
     vo2max_4week_trend,
 )
 from app.storage import init_db
@@ -113,6 +114,56 @@ def test_scale_weekly_trend_lean_mass_only_counted_with_real_bia_reading(conn):
     assert week.n == 0
     weight_week = next(b for b in trends["weightKg"] if b.week_start == "2026-08-03")
     assert weight_week.value == 80
+
+
+def _insert_readiness_event(conn, event_id, measured_at, **fields):
+    columns = {
+        "id": event_id,
+        "measured_at": measured_at,
+        "content_hash": "sha256:x",
+        "raw_path": f"{event_id}.md",
+        "received_at": "2026-01-01T00:00:00Z",
+        "schema_version": 1,
+        "steps_avg_per_day": None,
+        "steps_days_spanned": None,
+        **fields,
+    }
+    cols = ", ".join(columns)
+    placeholders = ", ".join("?" for _ in columns)
+    conn.execute(
+        f"INSERT INTO readiness_events ({cols}) VALUES ({placeholders})", list(columns.values())
+    )
+    conn.commit()
+
+
+def test_steps_avg_per_day_weekly_trend_buckets_by_monday(conn):
+    # 2026-08-03 is a Monday; 2026-08-05 (Wed) falls in the same week.
+    _insert_readiness_event(conn, "r1", "2026-08-03T07:00:00", steps_avg_per_day=8000.0)
+    _insert_readiness_event(conn, "r2", "2026-08-05T07:00:00", steps_avg_per_day=10000.0)
+    buckets = steps_avg_per_day_weekly_trend(conn, today="2026-08-09")
+    week = next(b for b in buckets if b.week_start == "2026-08-03")
+    assert week.value == 9000.0
+    assert week.n == 2
+
+
+def test_steps_avg_per_day_weekly_trend_excludes_null_but_keeps_zero(conn):
+    """NULL means "no data available" and must be dropped from the median;
+    a genuinely measured 0 is a real value and must NOT be treated the
+    same way — see READINESS_SPEC.md's field notes."""
+    _insert_readiness_event(conn, "r1", "2026-08-03T07:00:00", steps_avg_per_day=None)
+    _insert_readiness_event(conn, "r2", "2026-08-04T07:00:00", steps_avg_per_day=0.0)
+    buckets = steps_avg_per_day_weekly_trend(conn, today="2026-08-09")
+    week = next(b for b in buckets if b.week_start == "2026-08-03")
+    assert week.value == 0.0
+    assert week.n == 1
+
+
+def test_steps_avg_per_day_weekly_trend_all_null_week_stays_none(conn):
+    _insert_readiness_event(conn, "r1", "2026-08-03T07:00:00", steps_avg_per_day=None)
+    buckets = steps_avg_per_day_weekly_trend(conn, today="2026-08-09")
+    week = next(b for b in buckets if b.week_start == "2026-08-03")
+    assert week.value is None
+    assert week.n == 0
 
 
 def test_vo2max_4week_buckets_group_by_4_weeks_not_1(conn):
