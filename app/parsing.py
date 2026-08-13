@@ -185,6 +185,13 @@ def parse_readiness_file(raw_bytes: bytes) -> ParsedReadiness:
         resting_hr=_int(data, "restingHr"),
         vo2max=_num(data, "vo2max"),
         recommendation=data.get("recommendation") or "",
+        # Frontmatter fallback for reparse.py, which has no envelope to read
+        # from. The live POST /v1/readiness path overrides these with the
+        # envelope's values (see ingest_readiness) — the envelope is the
+        # primary source, per SYNC.md "Daily step average". None (not 0)
+        # means "no data available" — see ParsedReadiness's docstring.
+        steps_avg_per_day=_optional_num(data, "stepsAvgPerDay"),
+        steps_days_spanned=_optional_int(data, "stepsDaysSpanned"),
     )
 
 

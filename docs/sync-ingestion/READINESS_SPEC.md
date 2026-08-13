@@ -23,6 +23,8 @@ readiness: "GOOD"
 lnRmssd: 4.30
 restingHr: 65
 vo2max: 45.2
+stepsAvgPerDay: 8214.5
+stepsDaysSpanned: 1
 recommendation: "HRV above baseline. Good day to push intensity."
 ---
 ```
@@ -39,6 +41,15 @@ Field notes:
   unmeasured — same "reader defaults missing numeric fields to 0" tolerance as sessions).
 - `recommendation`: free-text string, human-readable guidance already generated
   phone-side. Store as-is, no parsing needed.
+- `stepsAvgPerDay` / `stepsDaysSpanned` (SYNC.md "Daily step average", phone-side
+  spec): daily step average and how many days it was averaged over. Both nullable —
+  `null` means "no data available" (no reading yet, sensor absent, permission
+  denied, phone rebooted between readings), **not** zero steps. Never coerce
+  `null` to 0 in the DB — a day with no step reading must stay indistinguishable
+  from "unmeasured", not collapse into "measured as fully sedentary", or aggregate
+  stats/graphs over this column are silently wrong. `stepsDaysSpanned` lets
+  downstream analysis tell a clean same-day reading from one smeared across
+  several skipped days, without discarding the value outright.
 
 ## API
 
@@ -54,11 +65,23 @@ same request/response contract:
   "relPath": "readiness/a1b2c3d4.md",
   "contentHash": "sha256:...",
   "appVersion": "1.0-...",
-  "clientSentAt": "2026-08-05T07:04:12Z"
+  "clientSentAt": "2026-08-05T07:04:12Z",
+  "stepsAvgPerDay": 8214.5,
+  "stepsDaysSpanned": 1
 }
 ```
 (Note: field is `eventId`, not `sessionId` — mirrors the phone's envelope for this
 endpoint exactly.)
+
+`stepsAvgPerDay`/`stepsDaysSpanned` are always present as explicit keys — `null`
+when there's no data, never omitted — and are the *primary* source for those two
+columns (avoids a Markdown parse on the hot path); the same two fields also live
+in the `.md` frontmatter as a redundant copy, which `reparse.py` falls back to
+since it has no envelope to read from. The live endpoint always trusts the
+envelope's value over the frontmatter's when both are present. A sender that
+omits the keys entirely (rather than sending explicit `null`) is tolerated the
+same as any other envelope field — it degrades to "no data available", not an
+error.
 
 **Part `file`** (`text/markdown`): the raw bytes above.
 
@@ -75,10 +98,13 @@ endpoint exactly.)
 5. Write raw bytes to `<RAW_STORAGE_ROOT>/<relPath>` — i.e. `raw/readiness/{id}.md`,
    mirroring the phone's own `gymdata/readiness/{id}.md` layout.
 6. Parse the YAML frontmatter (reuse the same tolerant parsing approach as the session
-   parser — unknown fields ignored, missing numeric fields default to 0). On success,
-   upsert into `readiness_events` (schema below). On failure, log it, keep the raw file,
-   still respond `200 stored` — same "raw write and parse are different failure domains"
-   principle as sessions.
+   parser — unknown fields ignored, missing numeric fields default to 0, **except**
+   `stepsAvgPerDay`/`stepsDaysSpanned`, which stay `null` when missing — see field notes
+   above). Then overwrite `stepsAvgPerDay`/`stepsDaysSpanned` with the envelope's values
+   (the primary source — see the envelope section above), since only the live endpoint has
+   an envelope to read from at all. On success, upsert into `readiness_events` (schema
+   below). On failure, log it, keep the raw file, still respond `200 stored` — same "raw
+   write and parse are different failure domains" principle as sessions.
 7. Respond `200 OK`, `{"eventId": "...", "status": "stored"}` (or `"duplicate"`).
 
 ### `GET /health` — unchanged, already covers this endpoint too.
@@ -87,17 +113,19 @@ endpoint exactly.)
 
 ```sql
 CREATE TABLE readiness_events (
-  id             TEXT PRIMARY KEY,     -- 8-hex event id (own namespace, not sessions.id)
-  measured_at    TEXT NOT NULL,
-  readiness      TEXT,                 -- MEASURING|DELOAD_RECOMMENDED|LIGHT_DAY|NORMAL|GOOD|PEAK|NO_BASELINE
-  ln_rmssd       REAL,
-  resting_hr     INTEGER,
-  vo2max         REAL,
-  recommendation TEXT,
-  content_hash   TEXT NOT NULL,
-  raw_path       TEXT NOT NULL,
-  received_at    TEXT NOT NULL,
-  schema_version INTEGER NOT NULL
+  id                 TEXT PRIMARY KEY,     -- 8-hex event id (own namespace, not sessions.id)
+  measured_at        TEXT NOT NULL,
+  readiness          TEXT,                 -- MEASURING|DELOAD_RECOMMENDED|LIGHT_DAY|NORMAL|GOOD|PEAK|NO_BASELINE
+  ln_rmssd           REAL,
+  resting_hr         INTEGER,
+  vo2max             REAL,
+  recommendation     TEXT,
+  steps_avg_per_day  REAL,                 -- NULL = no data available, never 0
+  steps_days_spanned INTEGER,              -- NULL = no data available, never 0
+  content_hash       TEXT NOT NULL,
+  raw_path           TEXT NOT NULL,
+  received_at        TEXT NOT NULL,
+  schema_version     INTEGER NOT NULL
 );
 ```
 

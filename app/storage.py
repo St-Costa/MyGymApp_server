@@ -92,13 +92,22 @@ CREATE INDEX IF NOT EXISTS idx_tonnage_by_bodypart_session ON tonnage_by_bodypar
 -- sessions — an 8-hex id, but in its own namespace/table, since a readiness
 -- event and a session could coincidentally share the same id string.
 CREATE TABLE IF NOT EXISTS readiness_events (
-  id              TEXT PRIMARY KEY,
-  measured_at     TEXT NOT NULL,
-  readiness       TEXT,
-  ln_rmssd        REAL,
-  resting_hr      INTEGER,
-  vo2max          REAL,
-  recommendation  TEXT,
+  id                    TEXT PRIMARY KEY,
+  measured_at           TEXT NOT NULL,
+  readiness             TEXT,
+  ln_rmssd              REAL,
+  resting_hr            INTEGER,
+  vo2max                REAL,
+  recommendation        TEXT,
+  -- Daily step average (SYNC.md "Daily step average"). NULL means "no data
+  -- available" (no reading yet, sensor absent, permission denied, phone
+  -- rebooted between readings) — never coerce to 0, which would read as a
+  -- genuine zero-step (fully sedentary) day and corrupt any aggregate.
+  steps_avg_per_day     REAL,
+  -- How many days steps_avg_per_day was actually averaged over. Lets
+  -- downstream analysis distinguish a clean same-day reading from one
+  -- smeared across several skipped days, without discarding the value.
+  steps_days_spanned    INTEGER,
   content_hash    TEXT NOT NULL,
   raw_path        TEXT NOT NULL,
   received_at     TEXT NOT NULL,
@@ -242,7 +251,11 @@ CREATE TABLE IF NOT EXISTS parse_failures (
 # session synced before this that contains a CARDIO exercise silently
 # dropped its cardio sets under the old "unknown fields are ignored"
 # tolerance; reparse.py --stale re-extracts them once picked up.
-PARSER_SCHEMA_VERSION = 4
+# Bumped to 5: readiness_events gained steps_avg_per_day/steps_days_spanned
+# (SYNC.md "Daily step average") — readiness events synced before this have
+# both columns NULL, indistinguishable from "no step data available" until
+# reparse.py --stale re-extracts them from the frontmatter fallback.
+PARSER_SCHEMA_VERSION = 5
 
 # schema_version stamped on a row written from step 6's "on failure" path —
 # the raw file is safely stored but nothing has been successfully parsed yet.
@@ -260,6 +273,23 @@ def init_db(db_path: Path = DB_PATH) -> None:
         _migrate_ecg_analysis_hr_zone_columns(conn)
         _migrate_ecg_analysis_calorie_columns(conn)
         _migrate_exercise_sets_cardio_columns(conn)
+        _migrate_readiness_events_steps_columns(conn)
+
+
+def _migrate_readiness_events_steps_columns(conn: sqlite3.Connection) -> None:
+    """One-time migration: `readiness_events.steps_avg_per_day`/
+    `steps_days_spanned` (SYNC.md "Daily step average") were added after
+    `readiness_events` already existed in deployed databases. Left NULL for
+    existing rows, same "no data available" convention as any readiness
+    event synced before the phone started sending this field —
+    reparse.py --stale backfills them from frontmatter once
+    PARSER_SCHEMA_VERSION is bumped (the live endpoint always prefers the
+    envelope over frontmatter, but reparse has no envelope to read)."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(readiness_events)")}
+    if "steps_avg_per_day" not in columns:
+        conn.execute("ALTER TABLE readiness_events ADD COLUMN steps_avg_per_day REAL")
+    if "steps_days_spanned" not in columns:
+        conn.execute("ALTER TABLE readiness_events ADD COLUMN steps_days_spanned INTEGER")
 
 
 def _migrate_sessions_rpe_columns(conn: sqlite3.Connection) -> None:
@@ -504,6 +534,12 @@ class ParsedReadiness:
     resting_hr: int
     vo2max: float
     recommendation: str
+    # Daily step average (SYNC.md "Daily step average"). None means "no data
+    # available", not zero steps — see readiness_events' schema comment in
+    # this module's SCHEMA_SQL. Defaults keep older frontmatter fixtures
+    # (pre-dating this field) parsing as "no data" rather than failing.
+    steps_avg_per_day: float | None = None
+    steps_days_spanned: int | None = None
 
 
 @dataclass
@@ -787,15 +823,19 @@ def upsert_parsed_readiness(
         """
         INSERT INTO readiness_events (
             id, measured_at, readiness, ln_rmssd, resting_hr, vo2max,
-            recommendation, content_hash, raw_path, received_at, schema_version
+            recommendation, steps_avg_per_day, steps_days_spanned,
+            content_hash, raw_path, received_at, schema_version
         ) VALUES (
             :id, :measured_at, :readiness, :ln_rmssd, :resting_hr, :vo2max,
-            :recommendation, :content_hash, :raw_path, :received_at, :schema_version
+            :recommendation, :steps_avg_per_day, :steps_days_spanned,
+            :content_hash, :raw_path, :received_at, :schema_version
         )
         ON CONFLICT(id) DO UPDATE SET
             measured_at=excluded.measured_at, readiness=excluded.readiness,
             ln_rmssd=excluded.ln_rmssd, resting_hr=excluded.resting_hr,
             vo2max=excluded.vo2max, recommendation=excluded.recommendation,
+            steps_avg_per_day=excluded.steps_avg_per_day,
+            steps_days_spanned=excluded.steps_days_spanned,
             content_hash=excluded.content_hash, raw_path=excluded.raw_path,
             received_at=excluded.received_at, schema_version=excluded.schema_version
         """,
@@ -807,6 +847,8 @@ def upsert_parsed_readiness(
             "resting_hr": parsed.resting_hr,
             "vo2max": parsed.vo2max,
             "recommendation": parsed.recommendation,
+            "steps_avg_per_day": parsed.steps_avg_per_day,
+            "steps_days_spanned": parsed.steps_days_spanned,
             "content_hash": content_hash,
             "raw_path": raw_path,
             "received_at": received_at,

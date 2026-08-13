@@ -70,6 +70,7 @@ async def _handle_ingest(
     response_id_key: str,
     ingest_fn: Callable[[sqlite3.Connection, Envelope, bytes], IngestResult],
     extra_required_fields: tuple[str, ...] = (),
+    include_steps: bool = False,
 ) -> JSONResponse:
     """Steps 1-7 minus auth (already enforced by the route's dependency).
     `id_field` is the envelope JSON key holding the record id
@@ -108,6 +109,13 @@ async def _handle_ingest(
         content_hash=envelope_data["contentHash"],
         app_version=envelope_data["appVersion"],
         client_sent_at=envelope_data["clientSentAt"],
+        # SYNC.md "Daily step average": the phone always sends these two keys
+        # (explicit JSON null when there's no data), but read with .get()
+        # rather than indexing — a sender that omits them entirely should
+        # degrade to "no data available", not 400, same leniency as the rest
+        # of this envelope's optional fields.
+        steps_avg_per_day=envelope_data.get("stepsAvgPerDay") if include_steps else None,
+        steps_days_spanned=envelope_data.get("stepsDaysSpanned") if include_steps else None,
     )
 
     raw_bytes = await file.read()
@@ -159,6 +167,7 @@ async def post_readiness(
         id_field="eventId",
         response_id_key="eventId",
         ingest_fn=ingest_readiness,
+        include_steps=True,
     )
 
 

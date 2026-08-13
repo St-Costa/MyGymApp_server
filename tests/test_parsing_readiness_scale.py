@@ -36,6 +36,37 @@ def test_readiness_omitted_numeric_fields_default_to_zero() -> None:
     assert parsed.recommendation == ""
 
 
+def test_readiness_steps_fields_read_from_frontmatter() -> None:
+    """SYNC.md "Daily step average": the frontmatter copy is the fallback
+    reparse.py relies on, since it has no envelope to read from."""
+    md = (
+        b'---\nid: aaaaaaaa\nmeasuredAt: "2026-08-05T07:00:00"\n'
+        b"stepsAvgPerDay: 8214.5\nstepsDaysSpanned: 1\n---\n"
+    )
+    parsed = parse_readiness_file(md)
+    assert parsed.steps_avg_per_day == 8214.5
+    assert parsed.steps_days_spanned == 1
+
+
+def test_readiness_missing_steps_fields_stay_none_not_zero() -> None:
+    """None means "no data available" — must never collapse to 0, which
+    would misread as a genuine zero-step (fully sedentary) day."""
+    md = b'---\nid: aaaaaaaa\nmeasuredAt: "2026-08-05T07:00:00"\n---\n'
+    parsed = parse_readiness_file(md)
+    assert parsed.steps_avg_per_day is None
+    assert parsed.steps_days_spanned is None
+
+
+def test_readiness_explicit_null_steps_fields_stay_none() -> None:
+    md = (
+        b'---\nid: aaaaaaaa\nmeasuredAt: "2026-08-05T07:00:00"\n'
+        b"stepsAvgPerDay: null\nstepsDaysSpanned: null\n---\n"
+    )
+    parsed = parse_readiness_file(md)
+    assert parsed.steps_avg_per_day is None
+    assert parsed.steps_days_spanned is None
+
+
 def test_parses_full_scale_weighin_example() -> None:
     parsed = parse_scale_weighin_file(SCALE_WEIGHIN_MD.encode())
     assert parsed.id == "2026-08-05"

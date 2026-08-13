@@ -37,6 +37,68 @@ def test_valid_readiness_event_is_stored(app_client) -> None:
     )
 
 
+def test_readiness_steps_average_stored_from_envelope(app_client) -> None:
+    """SYNC.md "Daily step average": the envelope is the primary source."""
+    response = post_readiness(app_client, steps_avg_per_day=8214.5, steps_days_spanned=1)
+    assert response.status_code == 200
+
+    conn = _db_conn(app_client)
+    row = conn.execute(
+        "SELECT steps_avg_per_day, steps_days_spanned FROM readiness_events WHERE id = ?",
+        ("a1b2c3d4",),
+    ).fetchone()
+    assert row == (8214.5, 1)
+
+
+def test_readiness_steps_average_null_stays_null_not_zero(app_client) -> None:
+    """The core "don't sink" requirement: no data available must stay NULL
+    in the DB, never coerced to 0 (which would read as a genuinely
+    sedentary day and corrupt aggregates)."""
+    response = post_readiness(app_client, steps_avg_per_day=None, steps_days_spanned=None)
+    assert response.status_code == 200
+
+    conn = _db_conn(app_client)
+    row = conn.execute(
+        "SELECT steps_avg_per_day, steps_days_spanned FROM readiness_events WHERE id = ?",
+        ("a1b2c3d4",),
+    ).fetchone()
+    assert row == (None, None)
+
+
+def test_readiness_steps_average_envelope_overrides_frontmatter(app_client) -> None:
+    """The envelope is the primary source over the .md frontmatter copy —
+    even when they disagree, the live endpoint trusts the envelope."""
+    md = (
+        b'---\nid: a1b2c3d4\nmeasuredAt: "2026-08-05T07:04:10.123"\n'
+        b'readiness: "GOOD"\nlnRmssd: 4.30\nrestingHr: 65\nvo2max: 45.2\n'
+        b"stepsAvgPerDay: 1000.0\nstepsDaysSpanned: 4\n"
+        b'recommendation: "HRV above baseline."\n---\n'
+    )
+    response = post_readiness(app_client, md, steps_avg_per_day=8214.5, steps_days_spanned=1)
+    assert response.status_code == 200
+
+    conn = _db_conn(app_client)
+    row = conn.execute(
+        "SELECT steps_avg_per_day, steps_days_spanned FROM readiness_events WHERE id = ?",
+        ("a1b2c3d4",),
+    ).fetchone()
+    assert row == (8214.5, 1)
+
+
+def test_readiness_steps_keys_omitted_from_envelope_falls_back_to_no_data(app_client) -> None:
+    """Leniency case: a sender that omits the keys entirely (rather than the
+    spec's explicit null) still degrades to "no data", not a 400/500."""
+    response = post_readiness(app_client, omit_steps_keys=True)
+    assert response.status_code == 200
+
+    conn = _db_conn(app_client)
+    row = conn.execute(
+        "SELECT steps_avg_per_day, steps_days_spanned FROM readiness_events WHERE id = ?",
+        ("a1b2c3d4",),
+    ).fetchone()
+    assert row == (None, None)
+
+
 def test_duplicate_readiness_delivery_is_a_safe_noop(app_client) -> None:
     first = post_readiness(app_client)
     assert first.json()["status"] == "stored"

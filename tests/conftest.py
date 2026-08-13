@@ -193,6 +193,7 @@ def _post_record(
     rel_path: str,
     content_hash: str | None,
     headers: dict | None,
+    extra_envelope: dict | None = None,
 ):
     import json
 
@@ -202,6 +203,7 @@ def _post_record(
         "contentHash": content_hash or content_hash_of(md_bytes),
         "appVersion": "1.0-test",
         "clientSentAt": "2025-04-15T10:05:42Z",
+        **(extra_envelope or {}),
     }
     return client.post(
         endpoint,
@@ -240,7 +242,19 @@ def post_readiness(
     rel_path=None,
     content_hash=None,
     headers=None,
+    steps_avg_per_day=None,
+    steps_days_spanned=None,
+    omit_steps_keys=False,
 ):
+    # SYNC.md "Daily step average": the real phone always sends both keys,
+    # defaulting here to explicit JSON null (not omission) to match that
+    # contract by default. omit_steps_keys exists only to test the
+    # leniency fallback in routes.py for a sender that doesn't.
+    extra_envelope = (
+        {}
+        if omit_steps_keys
+        else {"stepsAvgPerDay": steps_avg_per_day, "stepsDaysSpanned": steps_days_spanned}
+    )
     return _post_record(
         client,
         "/v1/readiness",
@@ -250,6 +264,7 @@ def post_readiness(
         rel_path=rel_path or f"readiness/{event_id}.md",
         content_hash=content_hash,
         headers=headers,
+        extra_envelope=extra_envelope,
     )
 
 
