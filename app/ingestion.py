@@ -41,6 +41,7 @@ from app.parsing import (
     read_ecg_samples,
 )
 from app.storage import (
+    ParsedReadiness,
     get_stored_content_hash,
     record_parse_failure,
     upsert_ecg_analysis,
@@ -64,6 +65,12 @@ class Envelope:
     content_hash: str  # "sha256:<hex>", as received
     app_version: str
     client_sent_at: str
+    # Readiness-only (SYNC.md "Daily step average"). The envelope is the
+    # primary source for these two — always present as explicit JSON keys,
+    # possibly null — see routes.py's extraction. None here means "no step
+    # data available", not zero; never coerce to 0 (see ParsedReadiness).
+    steps_avg_per_day: float | None = None
+    steps_days_spanned: int | None = None
 
 
 @dataclass
@@ -181,14 +188,31 @@ def ingest_session(conn: sqlite3.Connection, envelope: Envelope, raw_bytes: byte
 def ingest_readiness(
     conn: sqlite3.Connection, envelope: Envelope, raw_bytes: bytes
 ) -> IngestResult:
-    """Steps 4-7 of POST /v1/readiness (docs/sync-ingestion/READINESS_SPEC.md)."""
+    """Steps 4-7 of POST /v1/readiness (docs/sync-ingestion/READINESS_SPEC.md).
+
+    stepsAvgPerDay/stepsDaysSpanned (SYNC.md "Daily step average") are read
+    from the envelope, not the frontmatter — the envelope is the primary
+    source (it avoids a Markdown parse), the frontmatter copy is only a
+    fallback for reparse.py, which has no envelope to read. `replace()`
+    overrides the parsed frontmatter values with the envelope's here so the
+    live endpoint always trusts the envelope, per spec.
+    """
+
+    def parse_fn(raw: bytes) -> ParsedReadiness:
+        parsed = parse_readiness_file(raw)
+        return replace(
+            parsed,
+            steps_avg_per_day=envelope.steps_avg_per_day,
+            steps_days_spanned=envelope.steps_days_spanned,
+        )
+
     return ingest_record(
         conn,
         envelope,
         raw_bytes,
         table="readiness_events",
         record_type="readiness_events",
-        parse_fn=parse_readiness_file,
+        parse_fn=parse_fn,
         upsert_fn=upsert_parsed_readiness,
     )
 
