@@ -809,6 +809,36 @@ def vo2max_4week_trend(conn: sqlite3.Connection, *, today: str | None = None) ->
     ]
 
 
+def steps_avg_per_day_weekly_trend(
+    conn: sqlite3.Connection, *, today: str | None = None
+) -> list[WeeklyBucket]:
+    """8-week rolling window, median(steps_avg_per_day) per Monday-keyed
+    week — same shape as resting_hr_weekly_trend/scale_weekly_trend, sourced
+    from readiness_events (SYNC.md "Daily step average") instead of
+    sessions/scale_weighins.
+
+    Unlike resting_hr's positive_only filter, 0 is not excluded here — a
+    genuinely measured zero-step day is a real (if unusual) value, and
+    that's exactly what NULL exists to be distinguished from (see
+    READINESS_SPEC.md's field notes: NULL means "no data available", never
+    coerced to/from 0). Only NULL rows are dropped; a bucket with no
+    non-NULL readings that week is left at value=None by
+    _weekly_median_buckets, same "no data this week" semantics as every
+    other weekly trend here."""
+    today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
+    window_start = today_date - timedelta(weeks=8)
+
+    rows = conn.execute(
+        """SELECT substr(measured_at, 1, 10), steps_avg_per_day FROM readiness_events
+           WHERE substr(measured_at, 1, 10) >= ? AND substr(measured_at, 1, 10) <= ?
+           ORDER BY measured_at""",
+        (window_start.isoformat(), today_date.isoformat()),
+    ).fetchall()
+
+    filtered = [(d, v) for d, v in rows if v is not None]
+    return _weekly_median_buckets(filtered, window_start=window_start, window_end=today_date)
+
+
 def scale_weekly_trend(
     conn: sqlite3.Connection, *, today: str | None = None
 ) -> dict[str, list[WeeklyBucket]]:

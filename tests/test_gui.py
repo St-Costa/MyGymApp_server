@@ -153,6 +153,49 @@ def test_dashboard_pauses_chart_has_diagnostic_description(app_client) -> None:
     assert "worth mentioning to a doctor" in response.text
 
 
+def test_dashboard_has_steps_weekly_chart(app_client) -> None:
+    response = app_client.get("/")
+    assert response.status_code == 200
+    assert 'id="chart-stepsAvgPerDay"' in response.text
+    assert "Weekly median of the daily step average" in response.text
+
+
+def test_dashboard_steps_chart_has_tudor_locke_thresholds_times_seven(app_client) -> None:
+    response = app_client.get("/")
+    assert response.status_code == 200
+    idx = response.text.find("stepsAvgPerDay: [")
+    assert idx != -1
+    block = response.text[idx : idx + 700]
+    assert "Tudor-Locke" in block
+    # Daily cutoffs ×7 for the weekly view, per the user's own framing.
+    assert "12500 * 7" in block
+    assert "10000 * 7" in block
+    assert "7500 * 7" in block
+    assert "5000 * 7" in block
+    assert "Sedentary" in block
+    assert "Highly active" in block
+
+
+def test_dashboard_steps_chart_reflects_ingested_readiness_event(app_client) -> None:
+    post_readiness(app_client, steps_avg_per_day=8214.5, steps_days_spanned=1)
+    response = app_client.get("/", params={"today": "2026-08-10"})
+    assert response.status_code == 200
+    idx = response.text.rfind('"chart-stepsAvgPerDay"')
+    call = response.text[idx : idx + 1000]
+    assert "8214.5" in call
+
+
+def test_dashboard_steps_chart_leaves_no_data_weeks_null_not_zero(app_client) -> None:
+    # No readiness events synced at all -> every weekly bucket has n=0
+    # readings and must stay null, never render as a literal 0 (which would
+    # misread as "measured, zero steps" instead of "not measured").
+    response = app_client.get("/")
+    assert response.status_code == 200
+    idx = response.text.rfind('"chart-stepsAvgPerDay"')
+    call = response.text[idx : idx + 1000]
+    assert "null" in call
+
+
 def test_dashboard_includes_all_weekly_cardio_charts(app_client) -> None:
     response = app_client.get("/")
     assert response.status_code == 200

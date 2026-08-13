@@ -36,6 +36,7 @@ from app.analysis import (
     session_calories_trend,
     session_load_trend,
     session_trimp_trend,
+    steps_avg_per_day_weekly_trend,
     vo2max_4week_trend,
 )
 from app.config import DB_PATH
@@ -57,6 +58,7 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
         resting_hr = resting_hr_weekly_trend(conn, today=today)
         vo2max = vo2max_4week_trend(conn, today=today)
         scale = scale_weekly_trend(conn, today=today)
+        steps_avg_per_day_trend = steps_avg_per_day_weekly_trend(conn, today=today)
         readiness_trend = readiness_daily_trend(conn, today=today)
         acwr_trend = acwr_daily_trend(conn, today=today)
         session_load = session_load_trend(conn, today=today)
@@ -80,6 +82,7 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
             "resting_hr_trend": resting_hr,
             "vo2max_trend": vo2max,
             "scale_trend": scale,
+            "steps_avg_per_day_trend": [asdict(b) for b in steps_avg_per_day_trend],
             "readiness_trend": [asdict(p) for p in readiness_trend],
             "acwr_trend": [asdict(p) for p in acwr_trend],
             "session_load_trend": [asdict(p) for p in session_load],
