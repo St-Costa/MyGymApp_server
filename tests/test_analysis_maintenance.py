@@ -99,12 +99,43 @@ def test_bmr_only_matches_mifflin_st_jeor(conn):
     age = 2026 - ASSUMED_BIRTH_YEAR
     expected_bmr = 10 * 80.0 + 6.25 * ASSUMED_HEIGHT_CM - 5 * age + 5
     assert result.bmr == pytest.approx(expected_bmr)
+    assert result.bmr_formula == "mifflin-st-jeor"
     assert result.neat == 0.0
     assert result.eat == 0.0
     assert result.mid == pytest.approx(expected_bmr * 1.10)
     assert result.low == pytest.approx(result.mid * 0.85)
     assert result.high == pytest.approx(result.mid * 1.15)
     assert result.low < result.mid < result.high
+
+
+def test_katch_mcardle_used_when_real_bia_reading_present(conn):
+    """A real BIA reading (body_fat_percent > 0, same convention as
+    scale_weekly_trend's leanMassPercent bucket) should switch the BMR
+    formula to Katch-McArdle (lean-mass-based), not the height/age/sex
+    Mifflin-St Jeor fallback."""
+    _insert_weighin(
+        conn, "w1", "2026-08-01", weight_kg=80.0, body_fat_percent=15.0, lean_mass_percent=85.0
+    )
+
+    result = estimated_maintenance_calories(conn, today="2026-08-09")
+
+    assert result is not None
+    lean_mass_kg = 80.0 * 0.85
+    expected_bmr = 370 + 21.6 * lean_mass_kg
+    assert result.bmr == pytest.approx(expected_bmr)
+    assert result.bmr_formula == "katch-mcardle"
+
+
+def test_mifflin_fallback_when_bia_reading_missing(conn):
+    """body_fat_percent<=0/missing means "no real BIA reading" (same
+    convention as scale_weekly_trend) — must fall back to Mifflin-St Jeor,
+    not silently compute a bogus Katch-McArdle from a zero lean mass."""
+    _insert_weighin(conn, "w1", "2026-08-01", weight_kg=80.0, body_fat_percent=0)
+
+    result = estimated_maintenance_calories(conn, today="2026-08-09")
+
+    assert result is not None
+    assert result.bmr_formula == "mifflin-st-jeor"
 
 
 def test_uses_most_recent_weight_not_average(conn):
