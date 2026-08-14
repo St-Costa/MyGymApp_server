@@ -1514,6 +1514,7 @@ class MaintenanceEstimate:
     high: float
     bmr: float
     bmr_formula: str  # "katch-mcardle" or "mifflin-st-jeor" — see estimated_maintenance_calories
+    bmr_inputs: str  # human-readable "(...)" of the inputs bmr_formula actually used, for display
     neat: float
     eat: float
     tef: float
@@ -1574,11 +1575,13 @@ def estimated_maintenance_calories(
         lean_mass_kg = weight_kg * (lean_mass_percent / 100.0)
         bmr = 370 + 21.6 * lean_mass_kg
         bmr_formula = "katch-mcardle"
+        bmr_inputs = f"lean mass {lean_mass_kg:.1f}kg"
     else:
         age_years = today_date.year - ASSUMED_BIRTH_YEAR
         sex_constant = 5 if ASSUMED_SEX == "male" else -161
         bmr = 10 * weight_kg + 6.25 * ASSUMED_HEIGHT_CM - 5 * age_years + sex_constant
         bmr_formula = "mifflin-st-jeor"
+        bmr_inputs = f"{weight_kg:.1f}kg, {ASSUMED_HEIGHT_CM}cm, {age_years}y, {ASSUMED_SEX}"
 
     steps_row = conn.execute(
         "SELECT steps_avg_per_day FROM readiness_events WHERE steps_avg_per_day IS NOT NULL "
@@ -1613,6 +1616,7 @@ def estimated_maintenance_calories(
         high=mid * (1 + _MAINTENANCE_RANGE_FRACTION),
         bmr=bmr,
         bmr_formula=bmr_formula,
+        bmr_inputs=bmr_inputs,
         neat=neat,
         eat=eat,
         tef=tef,

@@ -124,6 +124,7 @@ def test_katch_mcardle_used_when_real_bia_reading_present(conn):
     expected_bmr = 370 + 21.6 * lean_mass_kg
     assert result.bmr == pytest.approx(expected_bmr)
     assert result.bmr_formula == "katch-mcardle"
+    assert result.bmr_inputs == "lean mass 68.0kg"
 
 
 def test_mifflin_fallback_when_bia_reading_missing(conn):
@@ -136,6 +137,7 @@ def test_mifflin_fallback_when_bia_reading_missing(conn):
 
     assert result is not None
     assert result.bmr_formula == "mifflin-st-jeor"
+    assert result.bmr_inputs == f"80.0kg, {ASSUMED_HEIGHT_CM}cm, 26y, male"
 
 
 def test_uses_most_recent_weight_not_average(conn):

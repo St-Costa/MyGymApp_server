@@ -204,6 +204,10 @@
   <div class="metric-label" style="font-size: 1.1rem; color: var(--text);">Daily maintenance: caloric intake</div>
   <div class="metric-value" style="font-size: 2.08rem;">{{ "%.0f"|format(maintenance.mid) }} &plusmn; {{ "%.0f"|format(maintenance.high - maintenance.mid) }}</div>
   <div class="metric-value" style="font-size: 1.77rem; opacity: 0.6;">[{{ "%.0f"|format(maintenance.low) }}, {{ "%.0f"|format(maintenance.high) }}]</div>
+  <div class="metric-delta">
+    {{ "Katch-McArdle" if maintenance.bmr_formula == "katch-mcardle" else "Mifflin-St Jeor" }}
+    ({{ maintenance.bmr_inputs }})
+  </div>
 </div>
 {% endif %}
 
