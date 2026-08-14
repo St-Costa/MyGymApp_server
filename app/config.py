@@ -32,3 +32,12 @@ LOGS_DIR = DATA_ROOT / "logs"
 # NOT this user's actual birth year. Replace with a real stored profile
 # field if one is ever added.
 ASSUMED_BIRTH_YEAR = 2000
+
+# Same "no real stored profile field yet" situation as ASSUMED_BIRTH_YEAR
+# above — height and biological sex are never synced from the phone (no
+# session/readiness/scale field carries either), but are needed for the
+# Mifflin-St Jeor BMR term of app.analysis.estimated_maintenance_calories.
+# Hardcoded constants, not derived from anything else. Replace with a real
+# stored profile field if one is ever added.
+ASSUMED_HEIGHT_CM = 170
+ASSUMED_SEX = "male"  # "male" or "female" — Mifflin-St Jeor has a sex-specific constant term.
