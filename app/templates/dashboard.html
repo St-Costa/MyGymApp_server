@@ -10,18 +10,6 @@
 </ul>
 {% endif %}
 
-{% if maintenance %}
-<div class="card" style="max-width: 26rem; margin: 0 0 2rem;">
-  <div class="metric-label">Daily maintenance kcal</div>
-  <div class="metric-value">{{ "%.0f"|format(maintenance.low) }}&ndash;{{ "%.0f"|format(maintenance.high) }}</div>
-  <div class="metric-delta">
-    Rough estimate (&plusmn;15%) &mdash;
-    formula-only (BMR + steps + training), not calibrated against your actual weight trend.
-    Use as a diet starting point, then adjust from how your weight actually moves.
-  </div>
-</div>
-{% endif %}
-
 <div class="chart-wrap" id="wrap-readinessChart">
   <div class="chart-canvas-box"><canvas id="readinessChart"></canvas></div>
 </div>
@@ -210,6 +198,14 @@
 </div>
 
 <h2 class="section-title">Body composition</h2>
+
+{% if maintenance %}
+<div class="card" style="max-width: 26rem; margin: 0 auto 2rem; text-align: center;">
+  <div class="metric-label" style="font-size: 1.1rem; color: var(--text);">Daily maintenance: caloric intake</div>
+  <div class="metric-value" style="font-size: 2.08rem;">{{ "%.0f"|format(maintenance.mid) }} &plusmn; {{ "%.0f"|format(maintenance.high - maintenance.mid) }}</div>
+  <div class="metric-value" style="font-size: 1.77rem; opacity: 0.6;">[{{ "%.0f"|format(maintenance.low) }}, {{ "%.0f"|format(maintenance.high) }}]</div>
+</div>
+{% endif %}
 
 <div class="chart-wrap" id="wrap-weightChart">
   <div class="chart-canvas-box"><canvas id="weightChart"></canvas></div>
