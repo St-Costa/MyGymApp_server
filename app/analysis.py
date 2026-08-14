@@ -1477,3 +1477,120 @@ def compute_rpe_acwr_trend(conn: sqlite3.Connection, *, today: str | None = None
 def rpe_acwr_daily_trend(conn: sqlite3.Connection, *, today: str | None = None) -> list[AcwrPoint]:
     """§13.1 chart series: session-load-based ACWR, same shape as acwr_daily_trend."""
     return _acwr_daily_trend(conn, "session_load", _rpe_acwr_semaphore, today=today)
+
+
+# ---------------------------------------------------------------------------
+# Estimated daily maintenance calories — NOT in ANALYSIS_SPEC.md, added on
+# user request. A rough, formula-only TDEE estimate for deciding a diet
+# starting point (cut/bulk), *not* derived from the weight trend itself —
+# weight is the thing the user will move deliberately in response to this
+# number, so it can't also be an input to computing it (that would be
+# circular: the estimate would just chase whatever the diet already did).
+# ---------------------------------------------------------------------------
+
+# Deliberately wide — a priori BMR+NEAT+EAT+TEF stacking has no empirical
+# anchor (unlike a weight-trend-calibrated TDEE), so the honest uncertainty
+# band is wider than the trend charts elsewhere in this module. See the
+# chat discussion this was added from: expect roughly ±15-20% real-world
+# accuracy from formulas alone.
+_MAINTENANCE_RANGE_FRACTION = 0.15
+
+# Rough published estimate (~0.04-0.05 kcal per kg body weight per step);
+# reference-only constant, not a citation-grade figure — steps are a NEAT
+# proxy here, not a precise pedometer-calorie formula.
+_KCAL_PER_STEP_PER_KG = 0.0005
+
+# Thermic effect of food as a fixed fraction of BMR+NEAT+EAT, since actual
+# food intake isn't tracked by this server at all (see PENDING_IMPROVEMENTS.md
+# for other data gaps) — a fixed +10% stand-in is standard practice when
+# intake is unknown.
+_TEF_FRACTION = 0.10
+
+
+@dataclass
+class MaintenanceEstimate:
+    low: float
+    mid: float
+    high: float
+    bmr: float
+    neat: float
+    eat: float
+    tef: float
+    weight_kg: float
+    steps_avg_per_day: float | None
+    session_calories_per_day: float
+
+
+def estimated_maintenance_calories(
+    conn: sqlite3.Connection, *, today: str | None = None
+) -> MaintenanceEstimate | None:
+    """A priori daily maintenance (TDEE) estimate: Mifflin-St Jeor BMR +
+    step-based NEAT + averaged-out session EAT + fixed-fraction TEF, given
+    as a range rather than a point value (see _MAINTENANCE_RANGE_FRACTION).
+
+    Deliberately does NOT use the scale weight *trend* or any other
+    feedback signal — see this function's module-level comment block for
+    why. Only the most recent single weight reading is used, as a BMR
+    input, same as any other "current state" input (height/age/sex).
+
+    Returns None if there's no weight reading to anchor the BMR term —
+    every other input degrades gracefully (missing steps -> neat=0, no
+    recent sessions -> eat=0), but BMR has no reasonable default and
+    without it the whole estimate is meaningless.
+    """
+    from app.config import ASSUMED_BIRTH_YEAR, ASSUMED_HEIGHT_CM, ASSUMED_SEX
+
+    today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
+
+    weight_row = conn.execute(
+        "SELECT weight_kg FROM scale_weighins WHERE weight_kg IS NOT NULL "
+        "AND date <= ? ORDER BY date DESC LIMIT 1",
+        (today_date.isoformat(),),
+    ).fetchone()
+    if weight_row is None:
+        return None
+    weight_kg = weight_row[0]
+
+    age_years = today_date.year - ASSUMED_BIRTH_YEAR
+    sex_constant = 5 if ASSUMED_SEX == "male" else -161
+    bmr = 10 * weight_kg + 6.25 * ASSUMED_HEIGHT_CM - 5 * age_years + sex_constant
+
+    steps_row = conn.execute(
+        "SELECT steps_avg_per_day FROM readiness_events WHERE steps_avg_per_day IS NOT NULL "
+        "AND substr(measured_at, 1, 10) <= ? ORDER BY measured_at DESC LIMIT 1",
+        (today_date.isoformat(),),
+    ).fetchone()
+    steps_avg_per_day = steps_row[0] if steps_row else None
+    neat = (steps_avg_per_day or 0.0) * _KCAL_PER_STEP_PER_KG * weight_kg
+
+    # Same "prefer ECG recompute, fall back to phone's own value" pattern as
+    # _session_metric_trend, averaged over the trailing week and spread
+    # across all 7 days (not just training days) to get a daily rate.
+    window_start = today_date - timedelta(days=7)
+    calorie_rows = conn.execute(
+        """
+        SELECT COALESCE(e.session_calories_ecg, s.session_calories) AS value
+        FROM sessions s
+        LEFT JOIN ecg_analysis e ON e.session_id = s.id
+        WHERE s.date > ? AND s.date <= ? AND s.schema_version > 0
+          AND COALESCE(e.session_calories_ecg, s.session_calories) > 0
+        """,  # noqa: S608
+        (window_start.isoformat(), today_date.isoformat()),
+    ).fetchall()
+    eat = sum(value for (value,) in calorie_rows) / 7.0
+
+    tef = (bmr + neat + eat) * _TEF_FRACTION
+    mid = bmr + neat + eat + tef
+
+    return MaintenanceEstimate(
+        low=mid * (1 - _MAINTENANCE_RANGE_FRACTION),
+        mid=mid,
+        high=mid * (1 + _MAINTENANCE_RANGE_FRACTION),
+        bmr=bmr,
+        neat=neat,
+        eat=eat,
+        tef=tef,
+        weight_kg=weight_kg,
+        steps_avg_per_day=steps_avg_per_day,
+        session_calories_per_day=eat,
+    )

@@ -25,6 +25,7 @@ from app.analysis import (
     all_time_tonnage_pr,
     compute_cardio_trend_card,
     ecg_advanced_metrics_weekly_trend,
+    estimated_maintenance_calories,
     exercise_history,
     hr_zones_weekly_trend,
     list_exercises,
@@ -65,6 +66,7 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
         rpe_acwr_trend = rpe_acwr_daily_trend(conn, today=today)
         session_calories = session_calories_trend(conn, today=today)
         session_trimp = session_trimp_trend(conn, today=today)
+        maintenance = estimated_maintenance_calories(conn, today=today)
 
     return templates.TemplateResponse(
         request,
@@ -89,6 +91,7 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
             "rpe_acwr_trend": [asdict(p) for p in rpe_acwr_trend],
             "session_calories_trend": [asdict(p) for p in session_calories],
             "session_trimp_trend": [asdict(p) for p in session_trimp],
+            "maintenance": asdict(maintenance) if maintenance else None,
         },
     )
 
