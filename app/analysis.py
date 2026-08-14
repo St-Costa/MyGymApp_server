@@ -1513,6 +1513,7 @@ class MaintenanceEstimate:
     mid: float
     high: float
     bmr: float
+    bmr_formula: str  # "katch-mcardle" or "mifflin-st-jeor" — see estimated_maintenance_calories
     neat: float
     eat: float
     tef: float
@@ -1524,14 +1525,32 @@ class MaintenanceEstimate:
 def estimated_maintenance_calories(
     conn: sqlite3.Connection, *, today: str | None = None
 ) -> MaintenanceEstimate | None:
-    """A priori daily maintenance (TDEE) estimate: Mifflin-St Jeor BMR +
+    """A priori daily maintenance (TDEE) estimate: BMR (see below) +
     step-based NEAT + averaged-out session EAT + fixed-fraction TEF, given
     as a range rather than a point value (see _MAINTENANCE_RANGE_FRACTION).
 
     Deliberately does NOT use the scale weight *trend* or any other
     feedback signal — see this function's module-level comment block for
-    why. Only the most recent single weight reading is used, as a BMR
-    input, same as any other "current state" input (height/age/sex).
+    why. Only the most recent single weight/body-composition reading is
+    used, as a BMR input, same as any other "current state" input
+    (height/age/sex).
+
+    BMR formula — prefers real measured body composition over assumed
+    profile constants:
+    - Katch-McArdle (`370 + 21.6 * lean_mass_kg`) whenever the latest
+      weigh-in has a real BIA reading (`body_fat_percent > 0`, same
+      "real reading" convention as scale_weekly_trend's leanMassPercent
+      bucket) — lean mass is a better BMR predictor than height/age/sex
+      per the research this was added from (Mifflin-St Jeor's own inputs
+      are a weaker proxy for the same thing Katch-McArdle measures
+      directly). VO2max/HRV were considered too (both readily available
+      here from readiness_events) but the literature shows both lose
+      their predictive power once you control for lean mass, so neither
+      is used as a BMR input.
+    - Mifflin-St Jeor fallback (original formula) when there's a weight
+      but no real BIA reading yet (bodyFatPercent<=0/missing) — same
+      ASSUMED_HEIGHT_CM/ASSUMED_SEX/ASSUMED_BIRTH_YEAR placeholders as
+      before.
 
     Returns None if there's no weight reading to anchor the BMR term —
     every other input degrades gracefully (missing steps -> neat=0, no
@@ -1543,17 +1562,23 @@ def estimated_maintenance_calories(
     today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
 
     weight_row = conn.execute(
-        "SELECT weight_kg FROM scale_weighins WHERE weight_kg IS NOT NULL "
-        "AND date <= ? ORDER BY date DESC LIMIT 1",
+        "SELECT weight_kg, body_fat_percent, lean_mass_percent FROM scale_weighins "
+        "WHERE weight_kg IS NOT NULL AND date <= ? ORDER BY date DESC LIMIT 1",
         (today_date.isoformat(),),
     ).fetchone()
     if weight_row is None:
         return None
-    weight_kg = weight_row[0]
+    weight_kg, body_fat_percent, lean_mass_percent = weight_row
 
-    age_years = today_date.year - ASSUMED_BIRTH_YEAR
-    sex_constant = 5 if ASSUMED_SEX == "male" else -161
-    bmr = 10 * weight_kg + 6.25 * ASSUMED_HEIGHT_CM - 5 * age_years + sex_constant
+    if body_fat_percent is not None and body_fat_percent > 0 and lean_mass_percent is not None:
+        lean_mass_kg = weight_kg * (lean_mass_percent / 100.0)
+        bmr = 370 + 21.6 * lean_mass_kg
+        bmr_formula = "katch-mcardle"
+    else:
+        age_years = today_date.year - ASSUMED_BIRTH_YEAR
+        sex_constant = 5 if ASSUMED_SEX == "male" else -161
+        bmr = 10 * weight_kg + 6.25 * ASSUMED_HEIGHT_CM - 5 * age_years + sex_constant
+        bmr_formula = "mifflin-st-jeor"
 
     steps_row = conn.execute(
         "SELECT steps_avg_per_day FROM readiness_events WHERE steps_avg_per_day IS NOT NULL "
@@ -1587,6 +1612,7 @@ def estimated_maintenance_calories(
         mid=mid,
         high=mid * (1 + _MAINTENANCE_RANGE_FRACTION),
         bmr=bmr,
+        bmr_formula=bmr_formula,
         neat=neat,
         eat=eat,
         tef=tef,
