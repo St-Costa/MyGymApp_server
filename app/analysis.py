@@ -1507,6 +1507,145 @@ def rpe_acwr_daily_trend(conn: sqlite3.Connection, *, today: str | None = None) 
 
 
 # ---------------------------------------------------------------------------
+# §14 Training monotony & strain (Foster et al. 1998) — NOT in ANALYSIS_SPEC.md,
+# added 2026-08 as a second training-load lens alongside §12/§13's ACWR, on the
+# same session_load (RPE × duration) input already collected for §13.
+#
+# monotony = mean(daily_load) / stdev(daily_load) over a 7-day window — high
+# monotony means every day carries a similar load (little easy/hard variation),
+# which Foster's original study (collegiate swimmers) found associated with a
+# higher rate of illness/injury/overreaching than the same weekly load spread
+# unevenly across hard and easy days.
+# strain = sum(daily_load) * monotony — a single number meant to be tracked
+# against the athlete's OWN history over time, not compared to a population
+# cutoff; the literature does not establish one (see below).
+#
+# Days with no session are treated as load=0 for both the mean/stdev (a rest
+# day is real information about variation, not a missing data point to skip —
+# omitting rest days would make monotony compute "average hard-day load
+# smoothness" instead of "how varied was this week", which is a different and
+# less useful quantity for exactly what this metric is meant to catch: a
+# string of same-intensity days with no easy day mixed in).
+#
+# Threshold honesty (checked before implementing, per this project's own
+# standard of not inventing cutoffs — see _rpe_acwr_semaphore's docstring for
+# the precedent): monotony > 2.0 is the one value that recurs across secondary
+# literature (e.g. Gabbett 2016's training-load review) as an "attention"
+# zone, but it traces back to a single observational study on a specific
+# athlete population (collegiate swimmers), not an independently validated
+# clinical cutoff — same epistemic tier as this project's own ACWR bands, one
+# rung below something like HRR60s's Cole et al. mortality-risk cutoff. Shown
+# as a labeled reference line, not a RED/YELLOW/GREEN semaphore. Strain has no
+# recurring absolute reference at all in the literature (it's discussed as
+# "compare against your own recent weeks", not a population number) — plotted
+# as a bare trend, no reference line, same "don't invent a threshold" posture
+# already applied to e.g. afibEpisodes/pauses/premature/uneven in the
+# dashboard (see dashboard.html's THRESHOLDS comment).
+# ---------------------------------------------------------------------------
+
+_MONOTONY_WINDOW_DAYS = 7
+_MONOTONY_ATTENTION_THRESHOLD = 2.0  # Foster et al. 1998 — see docstring above for caveats
+
+
+@dataclass
+class MonotonyPoint:
+    week_end: str  # ISO date, last day of the 7-day window this point summarizes
+    monotony: float | None  # None if stdev is 0 (all-equal or single-day load) or no load data
+    strain: float | None
+    daily_loads: list[float]  # 7 values, oldest first, 0.0 for rest/no-RPE days
+
+
+def _daily_session_loads(conn: sqlite3.Connection, *, window_start, window_end) -> dict[str, float]:
+    """Sum of session_load per calendar date within the window (a day could
+    in principle have more than one logged session). Days with no row default
+    to 0.0 by the caller (_compute_monotony below), not here — this only
+    returns what's actually present."""
+    rows = conn.execute(
+        """
+        SELECT date, SUM(session_load) FROM sessions
+        WHERE date >= ? AND date <= ? AND schema_version > 0
+          AND session_load IS NOT NULL
+        GROUP BY date
+        """,
+        (window_start.isoformat(), window_end.isoformat()),
+    ).fetchall()
+    return {date_str: total for date_str, total in rows}
+
+
+def _compute_monotony(daily_loads: list[float]) -> tuple[float | None, float | None]:
+    """daily_loads: 7 values, rest days already zero-filled by the caller.
+    Population stdev (like §5.3's HRV baseline z-score), not sample stdev —
+    this is a full description of the observed week, not an estimate of a
+    larger population's spread."""
+    n = len(daily_loads)
+    mean_load = sum(daily_loads) / n
+    variance = sum((x - mean_load) ** 2 for x in daily_loads) / n
+    stdev = variance**0.5
+    if stdev == 0:
+        return None, None  # flat week (all-zero or all-identical load) — ratio undefined
+    monotony = mean_load / stdev
+    strain = sum(daily_loads) * monotony
+    return monotony, strain
+
+
+def training_monotony(conn: sqlite3.Connection, *, today: str | None = None) -> MonotonyPoint:
+    """Current 7-day monotony/strain — the single-value card, same shape as
+    compute_acwr_trend's "as of today" evaluation."""
+    today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
+    window_start = today_date - timedelta(days=_MONOTONY_WINDOW_DAYS - 1)
+    loads_by_date = _daily_session_loads(conn, window_start=window_start, window_end=today_date)
+
+    daily_loads = [
+        loads_by_date.get((window_start + timedelta(days=i)).isoformat(), 0.0)
+        for i in range(_MONOTONY_WINDOW_DAYS)
+    ]
+    monotony, strain = _compute_monotony(daily_loads)
+    return MonotonyPoint(
+        week_end=today_date.isoformat(), monotony=monotony, strain=strain, daily_loads=daily_loads
+    )
+
+
+def training_monotony_weekly_trend(
+    conn: sqlite3.Connection, *, weeks: int = 12, today: str | None = None
+) -> list[MonotonyPoint]:
+    """Chart series: one point per Monday-keyed week (same cadence as the
+    other weekly trend charts — resting_hr_weekly_trend, ACWR's weekly
+    sampling, etc.), each the full trailing-7-day monotony/strain evaluated
+    as of that week's Sunday (its last day), not a daily-resolution series —
+    same "coarser cadence reads less noisy" reasoning already applied to
+    ACWR's chart sampling (see compute_acwr_trend's docstring)."""
+    today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
+    # Anchor on Mondays like every other weekly chart, but evaluate each
+    # window ending on that week's Sunday (start-of-week + 6 days) so the
+    # 7-day trailing window aligns with a full calendar week rather than
+    # spilling into the next one.
+    first_monday = _monday_of(today_date) - timedelta(weeks=weeks - 1)
+
+    points = []
+    for i in range(weeks):
+        week_start = first_monday + timedelta(weeks=i)
+        week_end = min(week_start + timedelta(days=6), today_date)
+        if week_end < week_start:
+            continue
+        loads_by_date = _daily_session_loads(conn, window_start=week_start, window_end=week_end)
+        span_days = (week_end - week_start).days + 1
+        daily_loads = [
+            loads_by_date.get((week_start + timedelta(days=i)).isoformat(), 0.0)
+            for i in range(span_days)
+        ]
+        monotony, strain = _compute_monotony(daily_loads)
+        points.append(
+            MonotonyPoint(
+                week_end=week_end.isoformat(),
+                monotony=monotony,
+                strain=strain,
+                daily_loads=daily_loads,
+            )
+        )
+    return points
+
+
+# ---------------------------------------------------------------------------
 # Estimated daily maintenance calories — NOT in ANALYSIS_SPEC.md, added on
 # user request. A rough, formula-only TDEE estimate for deciding a diet
 # starting point (cut/bulk), *not* derived from the weight trend itself —

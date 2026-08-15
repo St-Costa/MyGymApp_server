@@ -41,6 +41,7 @@ from app.analysis import (
     session_load_trend,
     session_trimp_trend,
     steps_avg_per_day_weekly_trend,
+    training_monotony_weekly_trend,
     vo2max_4week_trend,
 )
 from app.config import DB_PATH
@@ -69,6 +70,7 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
         rpe_acwr_trend = rpe_acwr_daily_trend(conn, today=today)
         session_calories = session_calories_trend(conn, today=today)
         session_trimp = session_trimp_trend(conn, today=today)
+        monotony_trend = training_monotony_weekly_trend(conn, today=today)
         maintenance = estimated_maintenance_calories(conn, today=today)
         exercise_analysis = _exercise_analysis_context(conn, today)
 
@@ -95,6 +97,7 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
             "rpe_acwr_trend": [asdict(p) for p in rpe_acwr_trend],
             "session_calories_trend": [asdict(p) for p in session_calories],
             "session_trimp_trend": [asdict(p) for p in session_trimp],
+            "monotony_trend": [asdict(p) for p in monotony_trend],
             "maintenance": asdict(maintenance) if maintenance else None,
             "current_week": exercise_analysis["current_week"],
             "overload_rows": exercise_analysis["overload_rows"],
