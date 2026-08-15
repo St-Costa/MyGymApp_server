@@ -8,7 +8,11 @@ import sqlite3
 
 import pytest
 
-from app.analysis import muscle_group_weekly_trend, progressive_overload_verdict
+from app.analysis import (
+    exercise_ids_trained_this_week,
+    muscle_group_weekly_trend,
+    progressive_overload_verdict,
+)
 from app.storage import init_db
 
 
@@ -212,17 +216,32 @@ def test_muscle_group_weekly_trend_separates_bodyparts(conn):
 # ---------------------------------------------------------------------------
 
 
-def test_progressive_overload_verdict_up_when_e1rm_rises(conn):
+def test_progressive_overload_verdict_up_healthy_when_e1rm_rises_moderately(conn):
+    # ~1.7%/week average over 2 weeks -> within the plausible band, not stalled/too-fast.
     for i, (date, weight) in enumerate(
-        [("2026-07-01", 80), ("2026-07-08", 85), ("2026-07-15", 92)]
+        [("2026-07-01", 80), ("2026-07-08", 81.5), ("2026-07-15", 83)]
     ):
         _insert_session(conn, f"s{i}", date)
         _insert_set(conn, f"s{i}", "ex-a", 0, reps=5, weight=weight)
     conn.commit()
 
     verdict = progressive_overload_verdict(conn, "ex-a", today="2026-08-01")
-    assert verdict.verdict == "UP"
+    assert verdict.e1rm.verdict == "UP_HEALTHY"
     assert verdict.point_count == 3
+
+
+def test_progressive_overload_verdict_up_too_fast_flags_implausible_jump(conn):
+    # +15% over 2 weeks (~7.5%/week) -> well above the plausible band, likely
+    # a data/warmup artifact rather than genuine sustained progression.
+    for i, (date, weight) in enumerate(
+        [("2026-07-01", 80), ("2026-07-08", 88), ("2026-07-15", 92)]
+    ):
+        _insert_session(conn, f"s{i}", date)
+        _insert_set(conn, f"s{i}", "ex-a", 0, reps=5, weight=weight)
+    conn.commit()
+
+    verdict = progressive_overload_verdict(conn, "ex-a", today="2026-08-01")
+    assert verdict.e1rm.verdict == "UP_TOO_FAST"
 
 
 def test_progressive_overload_verdict_down_when_e1rm_falls(conn):
@@ -234,19 +253,19 @@ def test_progressive_overload_verdict_down_when_e1rm_falls(conn):
     conn.commit()
 
     verdict = progressive_overload_verdict(conn, "ex-a", today="2026-08-01")
-    assert verdict.verdict == "DOWN"
+    assert verdict.e1rm.verdict == "DOWN"
 
 
-def test_progressive_overload_verdict_flat_within_tolerance(conn):
+def test_progressive_overload_verdict_stalled_within_tolerance(conn):
     for i, (date, weight) in enumerate(
-        [("2026-07-01", 100), ("2026-07-08", 100.5), ("2026-07-15", 100.8)]
+        [("2026-07-01", 100), ("2026-07-08", 100.05), ("2026-07-15", 100.08)]
     ):
         _insert_session(conn, f"s{i}", date)
         _insert_set(conn, f"s{i}", "ex-a", 0, reps=5, weight=weight)
     conn.commit()
 
     verdict = progressive_overload_verdict(conn, "ex-a", today="2026-08-01")
-    assert verdict.verdict == "FLAT"
+    assert verdict.e1rm.verdict == "STALLED"
 
 
 def test_progressive_overload_verdict_insufficient_data_below_three_points(conn):
@@ -255,13 +274,56 @@ def test_progressive_overload_verdict_insufficient_data_below_three_points(conn)
     conn.commit()
 
     verdict = progressive_overload_verdict(conn, "ex-a", today="2026-08-01")
-    assert verdict.verdict == "INSUFFICIENT_DATA"
+    assert verdict.e1rm.verdict == "INSUFFICIENT_DATA"
     assert verdict.point_count == 1
 
 
 def test_progressive_overload_verdict_no_data_at_all(conn):
     verdict = progressive_overload_verdict(conn, "ex-nonexistent", today="2026-08-01")
-    assert verdict.verdict == "INSUFFICIENT_DATA"
+    assert verdict.e1rm.verdict == "INSUFFICIENT_DATA"
+    assert verdict.tonnage.verdict == "INSUFFICIENT_DATA"
     assert verdict.point_count == 0
-    assert verdict.first_e1rm is None
-    assert verdict.last_e1rm is None
+    assert verdict.e1rm.first_value is None
+    assert verdict.e1rm.last_value is None
+
+
+def test_progressive_overload_verdict_tonnage_independent_of_e1rm(conn):
+    # Same top weight every session (e1RM flat) but rising set count -> tonnage
+    # should trend UP while e1RM stays STALLED, demonstrating the two verdicts
+    # can genuinely disagree rather than being redundant.
+    for i, (date, set_count) in enumerate(
+        [("2026-07-01", 3), ("2026-07-08", 4), ("2026-07-15", 6)]
+    ):
+        _insert_session(conn, f"s{i}", date)
+        for j in range(set_count):
+            _insert_set(conn, f"s{i}", "ex-a", j, reps=8, weight=80)
+    conn.commit()
+
+    verdict = progressive_overload_verdict(conn, "ex-a", today="2026-08-01")
+    assert verdict.e1rm.verdict == "STALLED"
+    assert verdict.tonnage.verdict in ("UP_HEALTHY", "UP_TOO_FAST")
+    assert verdict.tonnage.last_value > verdict.tonnage.first_value
+
+
+# ---------------------------------------------------------------------------
+# exercise_ids_trained_this_week
+# ---------------------------------------------------------------------------
+
+
+def test_exercise_ids_trained_this_week_calendar_week_not_rolling(conn):
+    # today="2026-08-01" (Saturday) -> current week is Mon 2026-07-27..Sun
+    # 2026-08-02. A session on 2026-07-26 (the Sunday just before) is outside
+    # that calendar week even though it's within a trailing 7 days of today —
+    # this is the "week means Monday-anchored, not rolling 7 days" contract.
+    _insert_session(conn, "s_prev_week", "2026-07-26")
+    _insert_set(conn, "s_prev_week", "ex-prev", 0, reps=8, weight=80)
+    _insert_session(conn, "s_this_week", "2026-07-27")
+    _insert_set(conn, "s_this_week", "ex-this", 0, reps=8, weight=80)
+    conn.commit()
+
+    trained = exercise_ids_trained_this_week(conn, today="2026-08-01")
+    assert trained == {"ex-this"}
+
+
+def test_exercise_ids_trained_this_week_no_sessions_returns_empty_set(conn):
+    assert exercise_ids_trained_this_week(conn, today="2026-08-01") == set()

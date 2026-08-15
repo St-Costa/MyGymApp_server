@@ -27,6 +27,7 @@ from app.analysis import (
     ecg_advanced_metrics_weekly_trend,
     estimated_maintenance_calories,
     exercise_history,
+    exercise_ids_trained_this_week,
     hr_zones_weekly_trend,
     list_exercises,
     muscle_group_weekly_trend,
@@ -112,43 +113,107 @@ def weekly_report_preview(request: Request, week_end: str | None = Query(default
     return templates.TemplateResponse(request, "weekly_report.html", {"report": report})
 
 
-@router.get("/hypertrophy", response_class=HTMLResponse)
-def hypertrophy(request: Request, today: str | None = Query(default=None)):
-    """Weekly muscle-group volume/frequency (Schoenfeld-et-al.-derived
-    semaphores) and per-exercise progressive-overload verdicts — built on
-    top of exercise_sets.bodypart. See app.analysis's module comments above
-    muscle_group_weekly_trend and progressive_overload_verdict for the full
-    reasoning/thresholds."""
-    with connect(DB_PATH) as conn:
-        muscle_trend = muscle_group_weekly_trend(conn, today=today)
-        exercises = list_exercises(conn)
-        overload = [
-            progressive_overload_verdict(conn, e.exercise_id, today=today) for e in exercises
-        ]
+# Display semaphore for muscle_group_weekly_trend's session_count — mirrors
+# _frequency_semaphore in app.analysis exactly (0 -> RED, 1 -> YELLOW, 2+ ->
+# GREEN); duplicated here as a tiny display-only lookup rather than
+# importing the private function, since MuscleGroupWeek already carries
+# frequency_semaphore precomputed — this only exists because the dashboard
+# card needs the same color as a dict key, not a dataclass attribute lookup.
+def _frequency_dot(session_count: int) -> str:
+    if session_count <= 0:
+        return "RED"
+    if session_count == 1:
+        return "YELLOW"
+    return "GREEN"
 
-    # Only the most recent week per bodypart for the summary cards — the
-    # full series still goes to the chart below.
-    current_week = {
-        bodypart: weeks[-1] if weeks else None for bodypart, weeks in muscle_trend.items()
+
+# Display metadata per OverloadMetricVerdict.verdict value — label + dot
+# color for the progressive-overload table cells. UP_TOO_FAST is YELLOW, not
+# GREEN, since it's flagged as a likely data/warmup artifact rather than
+# genuine healthy progression (see progressive_overload_verdict's docstring).
+_OVERLOAD_VERDICT_DISPLAY = {
+    "UP_HEALTHY": ("GREEN", "▲ growing"),
+    "UP_TOO_FAST": ("YELLOW", "▲▲ fast (check data)"),
+    "STALLED": ("YELLOW", "→ stalled"),
+    "DOWN": ("RED", "▼ dropping"),
+    "INSUFFICIENT_DATA": ("GRAY", "not enough data"),
+}
+
+
+def _overload_cell(v) -> dict:
+    """Formats one OverloadMetricVerdict for template display: dot color,
+    label, and the first->last numbers/rate when available."""
+    color, label = _OVERLOAD_VERDICT_DISPLAY[v.verdict]
+    return {
+        "color": color,
+        "label": label,
+        "detail": (
+            f"{v.first_value:.1f} → {v.last_value:.1f} ({v.percent_per_week:+.1f}%/w)"
+            if v.percent_per_week is not None
+            else None
+        ),
     }
 
+
+@router.get("/hypertrophy", response_class=HTMLResponse)
+def hypertrophy(request: Request, today: str | None = Query(default=None)):
+    """Current-week muscle-group volume/frequency (Schoenfeld-et-al.-derived
+    semaphores) and progressive-overload verdicts for exercises trained this
+    week — built on top of exercise_sets.bodypart. See app.analysis's module
+    comments above muscle_group_weekly_trend and progressive_overload_verdict
+    for the full reasoning/thresholds. "This week" is the calendar Monday..
+    Sunday containing `today`, not a rolling 7-day window — same convention
+    as exercise_ids_trained_this_week/muscle_group_weekly_trend's own
+    Monday-keyed buckets."""
+    with connect(DB_PATH) as conn:
+        muscle_trend = muscle_group_weekly_trend(conn, today=today)
+        trained_this_week = exercise_ids_trained_this_week(conn, today=today)
+        exercises = list_exercises(conn)
+        exercises_this_week = [e for e in exercises if e.exercise_id in trained_this_week]
+        overload = [
+            progressive_overload_verdict(conn, e.exercise_id, today=today)
+            for e in exercises_this_week
+        ]
+
+    # Only the most recent week per bodypart, and only bodyparts actually
+    # trained this week (set_count > 0) — per user decision, an empty card
+    # for a muscle group not touched this week adds noise, not signal; the
+    # historical trend for it is still available via muscle_trend if ever
+    # needed, just not surfaced as a "this week" card.
+    current_week = [
+        {
+            "bodypart": bodypart,
+            "set_count": weeks[-1].set_count,
+            "volume_color": weeks[-1].volume_semaphore,
+            "session_count": weeks[-1].session_count,
+            "frequency_color": _frequency_dot(weeks[-1].session_count),
+        }
+        for bodypart, weeks in sorted(muscle_trend.items())
+        if weeks and weeks[-1].set_count > 0
+    ]
+
     exercise_names = {e.exercise_id: e.exercise_name or e.exercise_id for e in exercises}
-    overload_by_verdict = {"UP": [], "FLAT": [], "DOWN": [], "INSUFFICIENT_DATA": []}
-    for v in overload:
-        overload_by_verdict[v.verdict].append(
-            {**asdict(v), "exercise_name": exercise_names.get(v.exercise_id, v.exercise_id)}
-        )
-    # Most-changed first within UP/DOWN, so the biggest movers surface first.
-    overload_by_verdict["UP"].sort(key=lambda v: v["change_percent"] or 0, reverse=True)
-    overload_by_verdict["DOWN"].sort(key=lambda v: v["change_percent"] or 0)
+    overload_rows = [
+        {
+            "exercise_id": v.exercise_id,
+            "exercise_name": exercise_names.get(v.exercise_id, v.exercise_id),
+            "e1rm": _overload_cell(v.e1rm),
+            "tonnage": _overload_cell(v.tonnage),
+            "_sort_key": v.e1rm.percent_per_week or v.tonnage.percent_per_week or 0,
+        }
+        for v in overload
+    ]
+    # Biggest movers (by e1RM rate, falling back to tonnage) surface first —
+    # a single sort key since the table shows one row per exercise, not one
+    # per metric; e1RM and tonnage verdicts can still disagree within a row.
+    overload_rows.sort(key=lambda r: r["_sort_key"], reverse=True)
 
     return templates.TemplateResponse(
         request,
         "hypertrophy.html",
         {
             "current_week": current_week,
-            "muscle_trend": {k: [asdict(b) for b in v] for k, v in muscle_trend.items()},
-            "overload_by_verdict": overload_by_verdict,
+            "overload_rows": overload_rows,
         },
     )
 

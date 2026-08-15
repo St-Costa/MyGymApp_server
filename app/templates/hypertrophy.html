@@ -3,133 +3,75 @@
 {% block content %}
 <h1>Hypertrophy &amp; muscle groups</h1>
 <p class="section-desc" style="max-width: 70ch; margin-left: auto; margin-right: auto; text-align: center;">
-  Weekly working-set volume and frequency per muscle group, and whether each exercise is
-  actually progressing. Volume bands are Schoenfeld et al. 2017's dose-response findings
-  (&lt;5 sets/week suboptimal, 5-9 moderate, 10-20 the well-supported "optimal" range,
-  &gt;20 where evidence thins and recovery cost starts working against you) — a single
-  fixed band, not tiered by experience level. Frequency reflects the finding that training
-  a muscle group 2+ times/week outperforms 1x/week at equal volume. Neither is medical
-  guidance, just a well-cited training-science reference point.
+  This week's (Monday–today) working-set volume and frequency per muscle group, and
+  whether exercises trained this week are actually progressing. Volume bands are
+  Schoenfeld et al. 2017's dose-response findings (&lt;5 sets/week suboptimal, 5-9
+  moderate, 10-20 the well-supported "optimal" range, &gt;20 where evidence thins and
+  recovery cost starts working against you) — a single fixed band, not tiered by
+  experience level. Frequency reflects the finding that training a muscle group 2+
+  times/week outperforms 1x/week at equal volume. Neither is medical guidance, just a
+  well-cited training-science reference point.
 </p>
 
 {% if not current_week %}
-<p class="empty">No muscle-group data yet — sets need a bodypart and reps/weight to count.</p>
+<p class="empty">No muscle group trained yet this week.</p>
 {% else %}
 
 <h2 class="section-title">This week</h2>
-<div class="grid" id="muscle-group-cards">
-  {% for bodypart, week in current_week.items() %}
-  {% if week %}
+<div class="grid">
+  {% for week in current_week %}
   <div class="card">
-    <div class="metric-label">{{ bodypart | capitalize }}</div>
-    <div class="metric-value">{{ week.set_count }} sets</div>
-    <div class="metric-delta">
-      <span class="dot {{ week.volume_semaphore }}"></span>volume
-      &nbsp;&middot;&nbsp;
-      <span class="dot {{ week.frequency_semaphore }}"></span>{{ week.session_count }}
-      session{{ "s" if week.session_count != 1 else "" }}/week
+    <div class="metric-label">{{ week.bodypart | capitalize }}</div>
+    <div class="metric-value" style="display: flex; align-items: baseline; gap: 1.25rem; font-size: 1.3rem;">
+      <span><span class="dot {{ week.frequency_color }}"></span>{{ week.session_count }}x/w</span>
+      <span><span class="dot {{ week.volume_color }}"></span>{{ week.set_count }} sets/w</span>
     </div>
   </div>
-  {% endif %}
   {% endfor %}
 </div>
-
-<h2 class="section-title">Volume &amp; frequency trend</h2>
-<p class="section-desc" style="text-align: center;">12-week weekly working-set count per muscle group.</p>
-<div class="chart-grid" id="muscle-group-charts"></div>
 
 {% endif %}
 
 <h2 class="section-title">Progressive overload</h2>
 <p class="section-desc" style="max-width: 70ch; margin-left: auto; margin-right: auto; text-align: center;">
-  Estimated-1RM trend per exercise over the last 12 weeks (first vs. last qualifying
-  session, &plusmn;2% treated as noise, matching the tolerance already used for the cardio
-  trend card). Needs at least 3 qualifying sessions to reach a verdict.
+  Exercises trained this week, judged independently on estimated 1RM (max-strength
+  proxy) and tonnage (reps&times;weight, the volume metric closer to the hypertrophy
+  literature) over their last 12 weeks of sessions. No published threshold exists for
+  "how fast is healthy" week-over-week on a single lift — the rate band below is a
+  rough, heavily level-dependent reference (periodization literature on load
+  progression), not a clinical or exact cutoff. Needs at least 3 qualifying sessions
+  per metric to reach a verdict.
 </p>
 
-<div class="grid">
-  {% for verdict_key, label, empty_msg in [
-    ("UP", "⬆️ Progressing", "No exercises trending up yet."),
-    ("FLAT", "➡️ Flat", "No exercises stalled right now."),
-    ("DOWN", "⬇️ Regressing", "No exercises trending down."),
-  ] %}
-  <div class="card">
-    <h3 style="margin-top: 0;">{{ label }} ({{ overload_by_verdict[verdict_key] | length }})</h3>
-    {% if overload_by_verdict[verdict_key] %}
-    <table>
-      <thead><tr><th>Exercise</th><th>e1RM</th><th>Change</th></tr></thead>
-      <tbody>
-        {% for v in overload_by_verdict[verdict_key] %}
-        <tr>
-          <td><a class="row-link" href="/exercises/{{ v.exercise_id }}">{{ v.exercise_name }}</a></td>
-          <td>{{ "%.1f"|format(v.first_e1rm) }} &rarr; {{ "%.1f"|format(v.last_e1rm) }} kg</td>
-          <td>{{ "%+.1f"|format(v.change_percent) }}%</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-    {% else %}
-    <p class="empty" style="padding: 1rem;">{{ empty_msg }}</p>
-    {% endif %}
-  </div>
-  {% endfor %}
+{% if not overload_rows %}
+<p class="empty">No exercises trained this week yet.</p>
+{% else %}
+<div style="overflow-x: auto;">
+<table>
+  <thead>
+    <tr>
+      <th>Exercise</th>
+      <th>e1RM</th>
+      <th>Tonnage</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for v in overload_rows %}
+    <tr>
+      <td><a class="row-link" href="/exercises/{{ v.exercise_id }}">{{ v.exercise_name }}</a></td>
+      <td>
+        <span class="dot {{ v.e1rm.color }}"></span>{{ v.e1rm.label }}
+        {% if v.e1rm.detail %}<div class="metric-delta">{{ v.e1rm.detail }} kg</div>{% endif %}
+      </td>
+      <td>
+        <span class="dot {{ v.tonnage.color }}"></span>{{ v.tonnage.label }}
+        {% if v.tonnage.detail %}<div class="metric-delta">{{ v.tonnage.detail }}</div>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
 </div>
-
-{% if overload_by_verdict["INSUFFICIENT_DATA"] %}
-<h3>Not enough data yet ({{ overload_by_verdict["INSUFFICIENT_DATA"] | length }})</h3>
-<p class="section-desc">
-  {% for v in overload_by_verdict["INSUFFICIENT_DATA"] %}
-  <a class="back-link" href="/exercises/{{ v.exercise_id }}">{{ v.exercise_name }}</a>{{ ", " if not loop.last else "" }}
-  {% endfor %}
-</p>
 {% endif %}
 
-{% endblock %}
-
-{% block scripts %}
-<script>
-  const MUSCLE_TREND = {{ muscle_trend | tojson }};
-
-  // One deterministic color per bodypart, cycling through the palette
-  // already used elsewhere on the dashboard — bodyparts are open-ended (the
-  // phone can send any string), so this can't be a fixed name->color map
-  // the way CARDIO_META is.
-  const PALETTE = ["#5b9dff", "#3ecf7e", "#e0b23e", "#e05a5a", "#c77dff", "#4dd0e1", "#ff9f6b", "#8b93a7"];
-
-  const chartsWrap = document.getElementById("muscle-group-charts");
-  if (chartsWrap) {
-    Object.keys(MUSCLE_TREND).sort().forEach((bodypart, i) => {
-      const series = MUSCLE_TREND[bodypart];
-      const canvasId = "chart-muscle-" + bodypart.replace(/[^a-zA-Z0-9]/g, "_");
-      const wrapDiv = document.createElement("div");
-      wrapDiv.className = "chart-wrap";
-      wrapDiv.id = "wrap-" + canvasId;
-      wrapDiv.innerHTML =
-        '<div class="chart-canvas-box"><canvas id="' + canvasId + '"></canvas></div>';
-      chartsWrap.appendChild(wrapDiv);
-
-      wrapDiv.insertAdjacentHTML(
-        "afterbegin",
-        '<div class="chart-header"><span>' + bodypart.charAt(0).toUpperCase() + bodypart.slice(1) + ' — sets/week</span></div>'
-      );
-
-      lineChart(
-        canvasId,
-        series.map(w => w.week_start),
-        {
-          label: bodypart,
-          values: series.map(w => w.set_count),
-          color: PALETTE[i % PALETTE.length],
-        },
-        "week",
-        [
-          { value: 20, severity: "warning", label: "Diminishing returns > 20 (Schoenfeld et al.)" },
-          { value: 10, severity: "info", label: "Optimal 10-20 (Schoenfeld et al.)" },
-          { value: 5, severity: "warning", label: "Moderate 5-9 (Schoenfeld et al.)" },
-        ],
-        [{ min: 10, max: 20, color: "#3ecf7e" }]
-      );
-    });
-  }
-</script>
 {% endblock %}

@@ -941,6 +941,31 @@ def list_exercises(conn: sqlite3.Connection) -> list[ExerciseSummary]:
     return [ExerciseSummary(exercise_id=r[0], exercise_name=r[1], set_count=r[2]) for r in rows]
 
 
+def exercise_ids_trained_this_week(
+    conn: sqlite3.Connection, *, today: str | None = None
+) -> set[str]:
+    """Exercise ids with at least one set in the current training week — the
+    calendar Monday..Sunday containing `today`, NOT a rolling trailing-7-days
+    window (per user decision: "week" means the week-so-far, same Monday-keyed
+    convention _monday_of already uses everywhere else in this module, not a
+    sliding lookback). Used to scope the Hypertrophy dashboard's
+    progressive-overload board to exercises actually trained this week,
+    rather than every exercise ever logged."""
+    today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
+    week_start = _monday_of(today_date)
+
+    rows = conn.execute(
+        """
+        SELECT DISTINCT es.exercise_id
+        FROM exercise_sets es
+        JOIN sessions s ON s.id = es.session_id
+        WHERE s.date >= ? AND s.date <= ?
+        """,
+        (week_start.isoformat(), today_date.isoformat()),
+    ).fetchall()
+    return {r[0] for r in rows}
+
+
 @dataclass
 class TonnagePR:
     exercise_id: str
@@ -1034,6 +1059,7 @@ class ExerciseSessionPoint:
     session_id: str
     best_set_weight: float  # heaviest working set that session, 0 if none
     best_e1rm: float | None  # None if no qualifying set (see best_estimated_1rm)
+    tonnage: float  # sum(reps*weight) across this session's sets for this exercise
 
 
 def exercise_history(
@@ -1070,6 +1096,7 @@ def exercise_history(
             session_id=session_id,
             best_set_weight=max((s.weight for s in sets if s.weight > 0), default=0.0),
             best_e1rm=best_estimated_1rm(sets),
+            tonnage=sum(s.reps * s.weight for s in sets),
         )
         for (date_str, session_id), sets in sorted(by_session.items())
     ]
@@ -1771,81 +1798,133 @@ def muscle_group_weekly_trend(
 # ---------------------------------------------------------------------------
 # Progressive-overload verdict per exercise — NOT in ANALYSIS_SPEC.md, added
 # on user request. Builds on exercise_history (already computes the raw
-# e1RM/tonnage points); this adds an explicit UP/FLAT/DOWN judgment so the
+# e1RM/tonnage/session points); this adds an explicit judgment so the
 # dashboard doesn't require eyeballing a chart to answer "is this exercise
-# actually progressing".
+# actually progressing". Computed independently for e1RM (closer to max
+# strength — sensitive to load at low reps, largely insensitive to how much
+# volume was done) and tonnage (reps*weight — closer to the hypertrophy
+# volume literature, sensitive to set/rep count, not just top load); the two
+# can disagree (e.g. more sets at the same weight raises tonnage without
+# moving e1RM at all), which is itself informative rather than a bug to
+# collapse into one number.
 # ---------------------------------------------------------------------------
 
-# Below this many qualifying e1RM points, a trend verdict would be noise —
-# two points is technically a line but not a trend; matches the cardio
-# trend card's own has_enough_data >= 2 threshold for the same reason,
-# tightened to 3 here since e1RM is inherently noisier session-to-session
-# (a single rep-max attempt, not an averaged physiological signal).
+# Below this many qualifying points, a trend verdict would be noise — two
+# points is technically a line but not a trend; matches the cardio trend
+# card's own has_enough_data >= 2 threshold for the same reason, tightened
+# to 3 here since a single session's e1RM/tonnage is noisier than an
+# averaged physiological signal.
 _OVERLOAD_MIN_POINTS = 3
 
-# A session-to-session e1RM change smaller than this fraction of the
-# earliest point is within normal noise (form variation, a slightly
-# different rep at the same weight) rather than a real trend — mirrors the
-# 2% "FLAT" tolerance already used for cardio metrics' direction
-# (compute_cardio_trend_card), reused here rather than inventing a
-# different cutoff for the same kind of judgment.
-_OVERLOAD_FLAT_TOLERANCE = 0.02
+# No published literature gives a precise week-over-week % threshold for
+# "growing too slowly" / "growing too fast" on a single lift's e1RM or
+# tonnage — periodization research (Stronger by Science's load-progression
+# guidance, powerlifting periodization studies) only supports *rough*,
+# heavily level-dependent bands: novices can add load rapidly (sometimes
+# several % per session for a few blocks), intermediates progress on the
+# order of low-single-digit % per week before it tapers off, advanced
+# lifters much less. Rather than invent one arbitrary number, this uses a
+# single deliberately wide "plausible progression" band loosely anchored to
+# the intermediate case (the middle of that spread, and this is a
+# single-user tool with no stored experience-level setting to pick a
+# different one) — RATE_TOO_FAST exists mainly to flag a likely data/warmup
+# artifact (e.g. a warmup set not excluded from tonnage) rather than to
+# claim "you grew unhealthily fast", which strength/tonnage metrics have no
+# real basis to diagnose. Explicitly labeled a rough reference, not a
+# clinical or literature-exact cutoff, same honesty standard as
+# estimated_maintenance_calories' BMR+NEAT+EAT stacking.
+_OVERLOAD_RATE_STALLED_PCT_PER_WEEK = 0.1  # below this: essentially flat
+_OVERLOAD_RATE_TOO_FAST_PCT_PER_WEEK = 3.0  # above this: implausible for an established lift
+
+
+@dataclass
+class OverloadMetricVerdict:
+    verdict: str  # UP_HEALTHY | UP_TOO_FAST | STALLED | DOWN | INSUFFICIENT_DATA
+    first_value: float | None
+    last_value: float | None
+    change_percent: float | None
+    percent_per_week: float | None
 
 
 @dataclass
 class ProgressiveOverloadVerdict:
     exercise_id: str
-    verdict: str  # UP | FLAT | DOWN | INSUFFICIENT_DATA
-    first_e1rm: float | None
-    last_e1rm: float | None
-    change_percent: float | None
     point_count: int
+    e1rm: OverloadMetricVerdict
+    tonnage: OverloadMetricVerdict
+
+
+def _overload_metric_verdict(values: list[float], *, span_weeks: float) -> OverloadMetricVerdict:
+    """Shared first-vs-last verdict logic (average_weekly_delta's "only the
+    endpoints matter" reasoning — a full least-squares slope isn't
+    meaningfully more informative than the endpoint comparison for the
+    noisy, sparse per-session series this reads from), applied identically
+    to e1RM and tonnage series. `span_weeks` is the calendar time between
+    the first and last qualifying point — needed to turn a raw % change
+    into a per-week rate, since sessions for the same exercise aren't
+    evenly spaced."""
+    if len(values) < _OVERLOAD_MIN_POINTS:
+        return OverloadMetricVerdict(
+            verdict="INSUFFICIENT_DATA",
+            first_value=values[0] if values else None,
+            last_value=values[-1] if values else None,
+            change_percent=None,
+            percent_per_week=None,
+        )
+
+    first, last = values[0], values[-1]
+    change_percent = (last - first) / first * 100.0 if first > 0 else None
+    percent_per_week = (
+        change_percent / span_weeks if change_percent is not None and span_weeks > 0 else None
+    )
+
+    if percent_per_week is None:
+        verdict = "STALLED"
+    elif abs(percent_per_week) < _OVERLOAD_RATE_STALLED_PCT_PER_WEEK:
+        verdict = "STALLED"
+    elif percent_per_week < 0:
+        verdict = "DOWN"
+    elif percent_per_week > _OVERLOAD_RATE_TOO_FAST_PCT_PER_WEEK:
+        verdict = "UP_TOO_FAST"
+    else:
+        verdict = "UP_HEALTHY"
+
+    return OverloadMetricVerdict(
+        verdict=verdict,
+        first_value=first,
+        last_value=last,
+        change_percent=change_percent,
+        percent_per_week=percent_per_week,
+    )
 
 
 def progressive_overload_verdict(
     conn: sqlite3.Connection, exercise_id: str, *, weeks: int = 12, today: str | None = None
 ) -> ProgressiveOverloadVerdict:
-    """UP/FLAT/DOWN verdict on e1RM across `exercise_history`'s points for
-    this exercise (same window/data as that function — see its docstring).
-    Only sessions with a qualifying e1RM point count (best_e1rm is not
-    None) — a session where the exercise was logged but nothing met
-    best_estimated_1rm's reps>0/weight>0 filter contributes no point here,
-    same as it contributes nothing to the chart.
-
-    Uses first-vs-last (average_weekly_delta's "only the endpoints matter"
-    reasoning) rather than a full regression — simpler, and a full
-    least-squares slope isn't meaningfully more informative than the
-    endpoint comparison for the noisy, sparse per-session e1RM series this
-    reads from.
-    """
+    """Independent e1RM and tonnage verdicts across `exercise_history`'s
+    points for this exercise (same window/data as that function — see its
+    docstring). e1RM only counts sessions with a qualifying best_e1rm (see
+    best_estimated_1rm); tonnage counts every session point (tonnage is 0,
+    not None, when nothing qualified — a real value, not a gap)."""
     points = exercise_history(conn, exercise_id, weeks=weeks, today=today)
-    e1rms = [p.best_e1rm for p in points if p.best_e1rm is not None]
 
-    if len(e1rms) < _OVERLOAD_MIN_POINTS:
-        return ProgressiveOverloadVerdict(
-            exercise_id=exercise_id,
-            verdict="INSUFFICIENT_DATA",
-            first_e1rm=e1rms[0] if e1rms else None,
-            last_e1rm=e1rms[-1] if e1rms else None,
-            change_percent=None,
-            point_count=len(e1rms),
-        )
+    e1rm_points = [(p.session_date, p.best_e1rm) for p in points if p.best_e1rm is not None]
+    tonnage_points = [(p.session_date, p.tonnage) for p in points]
 
-    first, last = e1rms[0], e1rms[-1]
-    change_percent = (last - first) / first * 100.0 if first > 0 else None
-
-    if change_percent is None or abs(last - first) < first * _OVERLOAD_FLAT_TOLERANCE:
-        verdict = "FLAT"
-    elif last > first:
-        verdict = "UP"
-    else:
-        verdict = "DOWN"
+    def span_weeks(pts: list[tuple[str, float]]) -> float:
+        if len(pts) < 2:
+            return 0.0
+        first_date = datetime.strptime(pts[0][0], "%Y-%m-%d").date()
+        last_date = datetime.strptime(pts[-1][0], "%Y-%m-%d").date()
+        return (last_date - first_date).days / 7.0
 
     return ProgressiveOverloadVerdict(
         exercise_id=exercise_id,
-        verdict=verdict,
-        first_e1rm=first,
-        last_e1rm=last,
-        change_percent=change_percent,
-        point_count=len(e1rms),
+        point_count=len(points),
+        e1rm=_overload_metric_verdict(
+            [v for _, v in e1rm_points], span_weeks=span_weeks(e1rm_points)
+        ),
+        tonnage=_overload_metric_verdict(
+            [v for _, v in tonnage_points], span_weeks=span_weeks(tonnage_points)
+        ),
     )
