@@ -1624,3 +1624,219 @@ def estimated_maintenance_calories(
         steps_avg_per_day=steps_avg_per_day,
         session_calories_per_day=eat,
     )
+
+
+# ---------------------------------------------------------------------------
+# Weekly hypertrophy volume/frequency per muscle group — NOT in
+# ANALYSIS_SPEC.md, added on user request. `exercise_sets.bodypart` is
+# already synced and parsed (see SPEC.md's example payload and
+# app.parsing) but was previously only consumed pre-aggregated as
+# tonnage_by_bodypart; these two functions are the first things to read it
+# directly for a per-set, per-week count. No app change needed.
+#
+# Thresholds are Schoenfeld et al. 2017 (meta-analysis of 15 RCTs) and the
+# broader "sets per muscle per week" literature it anchored: <5 sets/week is
+# sub-optimal, 5-9 is a moderate response, 10-20 is the well-supported
+# "optimal" band across trained-population studies, and >20 is where
+# evidence gets thin and recovery cost starts working against the user
+# rather than for them. Deliberately a single fixed band, not tiered by
+# experience level, per user decision — this repo is single-user, so a
+# configurable "experience level" setting would be state serving no one.
+# ---------------------------------------------------------------------------
+
+
+def _volume_semaphore(set_count: int) -> str:
+    if set_count < 5:
+        return "RED"
+    if set_count < 10:
+        return "YELLOW"
+    if set_count <= 20:
+        return "GREEN"
+    return "YELLOW"  # >20/week: evidence thins out, recovery cost risk
+
+
+def _frequency_semaphore(session_count: int) -> str:
+    """Training a muscle group 2+ times/week outperforms 1x/week at equal
+    weekly volume in the frequency literature (e.g. the studies underlying
+    Weightology's frequency review) — 0 sessions means it wasn't trained at
+    all that week, which is a real gap, not neutral."""
+    if session_count <= 0:
+        return "RED"
+    if session_count == 1:
+        return "YELLOW"
+    return "GREEN"
+
+
+@dataclass
+class MuscleGroupWeek:
+    week_start: str  # ISO date of the Monday keying this bucket
+    bodypart: str
+    set_count: int  # sets with reps>0 (or is_bodyweight), counted on their primary bodypart only
+    session_count: int  # distinct sessions that week touching this bodypart
+    volume_semaphore: str  # GRAY | RED | YELLOW | GREEN
+    frequency_semaphore: str  # RED | YELLOW | GREEN
+
+
+# Same 12-week convention as the other trend charts (ANALYSIS_SPEC.md
+# §1.6), so this sits alongside them on a dashboard spanning a consistent
+# period.
+_MUSCLE_GROUP_SERIES_WEEKS = 12
+
+
+def muscle_group_weekly_trend(
+    conn: sqlite3.Connection, *, today: str | None = None
+) -> dict[str, list[MuscleGroupWeek]]:
+    """Weekly working-set count and session frequency per bodypart, keyed by
+    bodypart then Monday-keyed week — the missing "is this actually enough
+    volume for hypertrophy" view that total_tonnage/tonnage_by_bodypart
+    alone don't answer (a heavy single set and ten light ones can produce
+    the same tonnage but very different set-count-driven hypertrophy
+    stimulus per the volume literature — see _volume_semaphore).
+
+    Only counts a set on its primary bodypart, as synced from the phone —
+    no secondary/synergist-muscle weighting, per user decision (the primary
+    bodypart is already clean, unambiguous data; a synergist-weighting
+    table would need to be maintained by hand and would encode arbitrary
+    judgment calls about fractional credit).
+
+    A "working set" here is exclude_from_tonnage=0 and either
+    (reps>0 and weight>0) or (reps>0 and is_bodyweight) — same completed-set
+    definition as _is_untouched_or_empty elsewhere in this module, so this
+    doesn't count warmups/untouched/bodyweight-mistaken-for-empty sets as
+    volume. STRETCH-type exercises are excluded (bodypart-set volume is a
+    hypertrophy/strength concept; stretching isn't working sets toward it).
+    """
+    today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
+    window_start = today_date - timedelta(weeks=_MUSCLE_GROUP_SERIES_WEEKS)
+
+    rows = conn.execute(
+        """
+        SELECT s.date, s.id, es.bodypart, es.reps, es.weight, es.is_bodyweight
+        FROM exercise_sets es
+        JOIN sessions s ON s.id = es.session_id
+        WHERE s.date >= ? AND s.date <= ? AND s.schema_version > 0
+          AND es.exclude_from_tonnage = 0
+          AND es.exercise_type = 'FORZA'
+          AND es.bodypart IS NOT NULL AND es.bodypart != ''
+          AND es.reps > 0 AND (es.weight > 0 OR es.is_bodyweight = 1)
+        ORDER BY s.date
+        """,
+        (window_start.isoformat(), today_date.isoformat()),
+    ).fetchall()
+
+    week_cursor = _monday_of(window_start)
+    week_starts: list[str] = []
+    while week_cursor <= today_date:
+        week_starts.append(week_cursor.isoformat())
+        week_cursor += timedelta(days=7)
+
+    # bodypart -> week_start -> {"sets": int, "sessions": set of session_id}
+    by_bodypart: dict[str, dict[str, dict]] = {}
+    for date_str, session_id, bodypart, _reps, _weight, _is_bw in rows:
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        week_key = _monday_of(d).isoformat()
+        if week_key not in week_starts:
+            continue
+        bucket = by_bodypart.setdefault(
+            bodypart, {w: {"sets": 0, "sessions": set()} for w in week_starts}
+        )
+        bucket[week_key]["sets"] += 1
+        bucket[week_key]["sessions"].add(session_id)
+
+    result: dict[str, list[MuscleGroupWeek]] = {}
+    for bodypart, weeks in sorted(by_bodypart.items()):
+        result[bodypart] = [
+            MuscleGroupWeek(
+                week_start=week,
+                bodypart=bodypart,
+                set_count=weeks[week]["sets"],
+                session_count=len(weeks[week]["sessions"]),
+                volume_semaphore=_volume_semaphore(weeks[week]["sets"]),
+                frequency_semaphore=_frequency_semaphore(len(weeks[week]["sessions"])),
+            )
+            for week in week_starts
+        ]
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Progressive-overload verdict per exercise — NOT in ANALYSIS_SPEC.md, added
+# on user request. Builds on exercise_history (already computes the raw
+# e1RM/tonnage points); this adds an explicit UP/FLAT/DOWN judgment so the
+# dashboard doesn't require eyeballing a chart to answer "is this exercise
+# actually progressing".
+# ---------------------------------------------------------------------------
+
+# Below this many qualifying e1RM points, a trend verdict would be noise —
+# two points is technically a line but not a trend; matches the cardio
+# trend card's own has_enough_data >= 2 threshold for the same reason,
+# tightened to 3 here since e1RM is inherently noisier session-to-session
+# (a single rep-max attempt, not an averaged physiological signal).
+_OVERLOAD_MIN_POINTS = 3
+
+# A session-to-session e1RM change smaller than this fraction of the
+# earliest point is within normal noise (form variation, a slightly
+# different rep at the same weight) rather than a real trend — mirrors the
+# 2% "FLAT" tolerance already used for cardio metrics' direction
+# (compute_cardio_trend_card), reused here rather than inventing a
+# different cutoff for the same kind of judgment.
+_OVERLOAD_FLAT_TOLERANCE = 0.02
+
+
+@dataclass
+class ProgressiveOverloadVerdict:
+    exercise_id: str
+    verdict: str  # UP | FLAT | DOWN | INSUFFICIENT_DATA
+    first_e1rm: float | None
+    last_e1rm: float | None
+    change_percent: float | None
+    point_count: int
+
+
+def progressive_overload_verdict(
+    conn: sqlite3.Connection, exercise_id: str, *, weeks: int = 12, today: str | None = None
+) -> ProgressiveOverloadVerdict:
+    """UP/FLAT/DOWN verdict on e1RM across `exercise_history`'s points for
+    this exercise (same window/data as that function — see its docstring).
+    Only sessions with a qualifying e1RM point count (best_e1rm is not
+    None) — a session where the exercise was logged but nothing met
+    best_estimated_1rm's reps>0/weight>0 filter contributes no point here,
+    same as it contributes nothing to the chart.
+
+    Uses first-vs-last (average_weekly_delta's "only the endpoints matter"
+    reasoning) rather than a full regression — simpler, and a full
+    least-squares slope isn't meaningfully more informative than the
+    endpoint comparison for the noisy, sparse per-session e1RM series this
+    reads from.
+    """
+    points = exercise_history(conn, exercise_id, weeks=weeks, today=today)
+    e1rms = [p.best_e1rm for p in points if p.best_e1rm is not None]
+
+    if len(e1rms) < _OVERLOAD_MIN_POINTS:
+        return ProgressiveOverloadVerdict(
+            exercise_id=exercise_id,
+            verdict="INSUFFICIENT_DATA",
+            first_e1rm=e1rms[0] if e1rms else None,
+            last_e1rm=e1rms[-1] if e1rms else None,
+            change_percent=None,
+            point_count=len(e1rms),
+        )
+
+    first, last = e1rms[0], e1rms[-1]
+    change_percent = (last - first) / first * 100.0 if first > 0 else None
+
+    if change_percent is None or abs(last - first) < first * _OVERLOAD_FLAT_TOLERANCE:
+        verdict = "FLAT"
+    elif last > first:
+        verdict = "UP"
+    else:
+        verdict = "DOWN"
+
+    return ProgressiveOverloadVerdict(
+        exercise_id=exercise_id,
+        verdict=verdict,
+        first_e1rm=first,
+        last_e1rm=last,
+        change_percent=change_percent,
+        point_count=len(e1rms),
+    )
