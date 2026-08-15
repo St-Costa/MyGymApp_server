@@ -1705,6 +1705,15 @@ def muscle_group_weekly_trend(
     doesn't count warmups/untouched/bodyweight-mistaken-for-empty sets as
     volume. STRETCH-type exercises are excluded (bodypart-set volume is a
     hypertrophy/strength concept; stretching isn't working sets toward it).
+
+    Matches `exercise_type` case-insensitively: SPEC.md's documented values
+    are `FORZA`/`STRETCH`, but real synced data observed in this DB has
+    lowercase `forza`/`stretch` — same discrepancy already latent in
+    app.parsing's `is_cardio = exercise_type == "CARDIO"` check. Rather than
+    silently drift into the same trap (a filter that never matches), this
+    query is written to work regardless of which casing the sender actually
+    uses; see the CLAUDE.md-flagged conversation this was found in for the
+    wider fix that may still be needed in app.parsing.
     """
     today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
     window_start = today_date - timedelta(weeks=_MUSCLE_GROUP_SERIES_WEEKS)
@@ -1716,7 +1725,7 @@ def muscle_group_weekly_trend(
         JOIN sessions s ON s.id = es.session_id
         WHERE s.date >= ? AND s.date <= ? AND s.schema_version > 0
           AND es.exclude_from_tonnage = 0
-          AND es.exercise_type = 'FORZA'
+          AND UPPER(es.exercise_type) = 'FORZA'
           AND es.bodypart IS NOT NULL AND es.bodypart != ''
           AND es.reps > 0 AND (es.weight > 0 OR es.is_bodyweight = 1)
         ORDER BY s.date
