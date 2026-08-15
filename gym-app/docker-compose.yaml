@@ -1,0 +1,13 @@
+services:
+  gym-app:
+    build: .
+    container_name: gym-app
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8420:8420"
+    environment:
+      - DATA_ROOT=/data
+      - PORT=8420
+      - SYNC_SHARED_SECRET=${SYNC_SHARED_SECRET}
+    volumes:
+      - /home/stefano/docker/gym-app/data:/data
