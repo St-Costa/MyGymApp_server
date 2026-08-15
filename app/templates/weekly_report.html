@@ -23,12 +23,45 @@
 <p class="section-desc">
   Full-page screenshot of <a href="/">the trends dashboard</a> — an alternative
   to the text above: send this image as the whole ntfy notification instead.
-  Needs the dev-only playwright dependency; if it's not installed, the image
-  below won't load.
+  Needs the dev-only playwright dependency; rendering takes a few seconds
+  (headless Chromium starts up fresh per request).
 </p>
 <div class="card">
-  <img src="/weekly-report/screenshot.png{% if report.week_end %}?today={{ report.week_end }}{% endif %}"
-       alt="Full-page screenshot of the trends dashboard"
-       style="max-width: 100%; border: 1px solid var(--border-color, #ccc);">
+  <button type="button" id="screenshot-btn" onclick="generateScreenshot()">Generate screenshot</button>
+  <p id="screenshot-status" class="section-desc" style="margin-top: 0.75rem; display: none;"></p>
+  <img id="screenshot-img" alt="Full-page screenshot of the trends dashboard"
+       style="max-width: 100%; border: 1px solid var(--border-color, #ccc); margin-top: 1rem; display: none;">
 </div>
+
+<script>
+async function generateScreenshot() {
+  const btn = document.getElementById("screenshot-btn");
+  const status = document.getElementById("screenshot-status");
+  const img = document.getElementById("screenshot-img");
+
+  btn.disabled = true;
+  img.style.display = "none";
+  status.style.display = "block";
+  status.textContent = "Rendering… (a few seconds)";
+
+  const today = {{ report.week_end | tojson }};
+  const url = "/weekly-report/screenshot.png" + (today ? "?today=" + encodeURIComponent(today) : "");
+
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => null);
+      throw new Error((body && body.error) || `HTTP ${resp.status}`);
+    }
+    const blob = await resp.blob();
+    img.src = URL.createObjectURL(blob);
+    img.style.display = "block";
+    status.style.display = "none";
+  } catch (err) {
+    status.textContent = "Failed: " + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+</script>
 {% endblock %}
