@@ -23,6 +23,18 @@ from app.config import PORT, REPORTS_DIR
 # grows the viewport to the page's actual content height before capturing.
 _VIEWPORT = {"width": 1280, "height": 1024}
 
+# Without an explicit device_scale_factor, Playwright defaults to 1 — one
+# CSS pixel per physical pixel, the density of a non-Retina desktop monitor.
+# The PNG itself renders crisp at that size, but viewed on a phone screen
+# (typically 2.5-3x actual pixel density) it reads as pixelated/blurry, since
+# the file simply doesn't carry enough pixels for that density. 2 doubles
+# the linear resolution (~4x the pixel count) for a real sharpness jump on
+# phone screens. Not 3: the dashboard's full-page height already exceeds
+# 12000px at 1x — at 3x the resulting PNG risks landing above a typical ntfy
+# `attachment-file-size-limit` (5MB default); 2x stays comfortably under that
+# while still being a clear improvement over the 1x default.
+_DEVICE_SCALE_FACTOR = 2
+
 
 def screenshot_dashboard_png(*, today: str | None = None) -> bytes:
     """Renders app.gui's `/` in headless Chromium and returns a full-page
@@ -35,7 +47,7 @@ def screenshot_dashboard_png(*, today: str | None = None) -> bytes:
     with sync_playwright() as p:
         browser = p.chromium.launch()
         try:
-            page = browser.new_page(viewport=_VIEWPORT)
+            page = browser.new_page(viewport=_VIEWPORT, device_scale_factor=_DEVICE_SCALE_FACTOR)
             page.goto(url, wait_until="networkidle")
             return page.screenshot(full_page=True)
         finally:
