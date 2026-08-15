@@ -5,15 +5,8 @@ WORKDIR /app
 COPY pyproject.toml ./
 COPY app ./app
 COPY reparse.py ./
-COPY generate_report.py ./
 
 RUN pip install --no-cache-dir .
-
-# playwright's own system-dependency installer (fonts, libnss, libatk, etc.
-# a headless Chromium needs on Debian slim) — generate_report.py runs this
-# unattended from an external cron job, so the browser has to actually work
-# in the image, not just import cleanly.
-RUN playwright install --with-deps chromium
 
 # Data root is expected to be bind-mounted at runtime, e.g.:
 #   docker run -v ~/mygymapp-server-data:/data -e DATA_ROOT=/data ...

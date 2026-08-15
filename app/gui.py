@@ -15,11 +15,10 @@ from dataclasses import asdict
 from datetime import date as date_cls
 from pathlib import Path
 
-from fastapi import APIRouter, Form, HTTPException, Query, Request, Response
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Query, Request
+from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from app import scheduler
 from app.analysis import (
     acwr_daily_trend,
     all_cardio_metrics_weekly_trend,
@@ -117,59 +116,7 @@ def weekly_report_preview(request: Request, week_end: str | None = Query(default
     with connect(DB_PATH) as conn:
         report = build_weekly_report(conn, week_end=parsed_week_end)
 
-    schedule_day, schedule_hour = scheduler.get_schedule()
-
-    return templates.TemplateResponse(
-        request,
-        "weekly_report.html",
-        {
-            "report": report,
-            "schedule_day": schedule_day,
-            "schedule_hour": schedule_hour,
-            "weekday_options": [(d, scheduler.WEEKDAY_LABELS[d]) for d in scheduler.WEEKDAYS],
-        },
-    )
-
-
-@router.post("/weekly-report/schedule")
-def weekly_report_schedule_save(day: str = Form(...), hour: int = Form(...)):
-    """Saves the day-of-week/hour for the automatic weekly report screenshot
-    (app.scheduler) and reschedules the running job to match, then redirects
-    back to the preview page — a plain HTML form POST (see
-    weekly_report.html), not a JSON API, since this is GUI-only config with
-    no other caller."""
-    try:
-        scheduler.set_schedule(day, hour)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail={"error": str(exc)}) from exc
-    return RedirectResponse(url="/weekly-report", status_code=303)
-
-
-@router.get("/weekly-report/screenshot.png")
-def weekly_report_screenshot(today: str | None = Query(default=None)):
-    """Full-page PNG of `/` (app.gui's dashboard) — experiment for sending
-    an image instead of text as the weekly ntfy notification (see
-    app.screenshot). Renders on demand, does not save to disk — see
-    POST /weekly-report/generate for the saved version."""
-    from app.screenshot import screenshot_dashboard_png
-
-    png_bytes = screenshot_dashboard_png(today=today)
-    return Response(content=png_bytes, media_type="image/png")
-
-
-@router.post("/weekly-report/generate")
-def weekly_report_generate(today: str | None = Query(default=None)):
-    """Forces an out-of-schedule report generation: screenshots the
-    dashboard and saves it under REPORTS_DIR (see app.screenshot), same as
-    generate_report.py's CLI entry point — this is that same save reachable
-    over HTTP, for manual testing without shelling into the container.
-    No scheduler calls this yet; it exists for (a) this manual trigger and
-    (b) the future external cron job hitting it instead of shelling in to
-    run the CLI script directly."""
-    from app.screenshot import save_weekly_report_screenshot
-
-    saved_path = save_weekly_report_screenshot(today=today)
-    return {"saved": str(saved_path)}
+    return templates.TemplateResponse(request, "weekly_report.html", {"report": report})
 
 
 # Display semaphore for muscle_group_weekly_trend's session_count — mirrors
