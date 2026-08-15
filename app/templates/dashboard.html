@@ -197,6 +197,23 @@
   <div class="chart-canvas-box"><canvas id="chart-calories"></canvas></div>
 </div>
 
+<div class="chart-wrap" id="wrap-chart-monotony">
+  <p class="chart-desc">
+    How similar this week's daily training loads were to each other — a
+    string of same-intensity days with no easier day mixed in, not the
+    amount of load itself.
+  </p>
+  <div class="chart-canvas-box"><canvas id="chart-monotony"></canvas></div>
+</div>
+
+<div class="chart-wrap" id="wrap-chart-strain">
+  <p class="chart-desc">
+    Weekly load &times; monotony — read against your own past weeks, not a
+    fixed number.
+  </p>
+  <div class="chart-canvas-box"><canvas id="chart-strain"></canvas></div>
+</div>
+
 <h2 class="section-title">Exercise analysis</h2>
 
 {% if not current_week %}
@@ -875,6 +892,38 @@
       { value: 0.4, severity: "danger", label: "Undertraining < 0.4 (rough heuristic, not clinical)" },
     ],
     [{ min: 0.7, max: 1.4, color: "#3ecf7e" }]
+  );
+
+  // §14 Foster monotony/strain. monotony > 2.0 traces back to a single
+  // observational study (Foster et al. 1998, collegiate swimmers), not an
+  // independently validated clinical cutoff — shown as one labeled
+  // reference line, not a RED/YELLOW/GREEN band like ACWR above (see
+  // app.analysis's training_monotony docstring for the full caveat).
+  // Strain has no recurring absolute reference in the literature at all
+  // (the guidance is "compare against your own recent weeks") — plotted
+  // with no threshold line, same posture already used for e.g. the
+  // afibEpisodes/pauses/premature/uneven charts.
+  document.getElementById("wrap-chart-monotony").insertAdjacentHTML(
+    "afterbegin",
+    chartHeader({ name: "Training monotony", unit: "", good: null })
+  );
+  lineChart(
+    "chart-monotony",
+    {{ monotony_trend | map(attribute="week_end") | list | tojson }},
+    { label: "Monotony", values: {{ monotony_trend | map(attribute="monotony") | list | tojson }}, color: "#ff9f6b" },
+    "week",
+    [{ value: 2.0, severity: "warning", label: "Attention zone > 2.0 (Foster et al. 1998, swimmers — not a validated clinical cutoff)" }]
+  );
+
+  document.getElementById("wrap-chart-strain").insertAdjacentHTML(
+    "afterbegin",
+    chartHeader({ name: "Training strain", unit: "RPE×min", good: null })
+  );
+  lineChart(
+    "chart-strain",
+    {{ monotony_trend | map(attribute="week_end") | list | tojson }},
+    { label: "Strain", values: {{ monotony_trend | map(attribute="strain") | list | tojson }}, color: "#e05a5a" },
+    "week"
   );
 
   // Sparse series: only sessions where the RPE prompt was actually answered

@@ -601,6 +601,54 @@ before touching these numbers again:
 
 ---
 
+## 14. Training monotony & strain (Foster et al. 1998) — subjective training-load pattern
+
+New addition (2026-08), alongside §13's session-RPE work — same `sessions.session_load`
+input (RPE × duration), a different lens on it: instead of comparing this week's average
+to last month's (ACWR), monotony asks "how *similar* were this week's daily loads to each
+other" and strain multiplies that by the week's total load.
+
+```
+monotony = mean(daily_load over trailing 7 days) / stdev(daily_load over trailing 7 days)
+strain   = sum(daily_load over trailing 7 days) * monotony
+```
+
+Population stdev (not sample stdev), same convention as §5.3's HRV baseline z-score.
+`None`/`null` for both when stdev is 0 (a flat week — either no training at all, or every
+day carrying identical load) — the ratio is undefined, not zero.
+
+**Rest days are zero-filled, not skipped.** A day with no session contributes `0.0` to both
+the mean and the stdev — monotony is specifically about how *varied* the week was (hard
+days mixed with easy/rest days vs. a string of same-intensity days), so omitting rest days
+would turn this into "smoothness among only the training days," a different and less useful
+quantity than what Foster's metric is meant to catch.
+
+**Window**: trailing 7 days (inclusive of today) for the single current-value evaluation,
+same as ACWR's acute window. The 12-week chart series samples one point per week (Monday
+start, evaluated through that week's Sunday, clipped to today for the current week) — same
+weekly-sampling cadence as the other weekly trend charts, not a daily-resolution series, for
+the same "coarser cadence reads less noisy" reasoning already applied to ACWR's chart
+sampling.
+
+**Threshold honesty — checked against the literature before implementing, not invented**:
+monotony `> 2.0` is the one value that recurs across secondary literature (e.g. Gabbett
+2016's training-load review) as an "attention" zone, but it traces back to a single
+observational study on a specific population (Foster's collegiate swimmers), not an
+independently validated clinical cutoff — shown on the chart as one labeled reference line,
+explicitly captioned as such, not a RED/YELLOW/GREEN semaphore like ACWR's bands. **Strain
+has no recurring absolute reference in the literature at all** — the guidance in the source
+material is "compare against your own recent weeks," not a population number — so the strain
+chart carries no threshold line whatsoever, same "don't invent a threshold" posture already
+applied to the dashboard's afibEpisodes/pauses/premature/uneven charts.
+
+**Why this and not a semaphore**: unlike §12/§13's ACWR (which does have a commonly-cited
+"safe" literature range to build a semaphore from, even if a conservative one), monotony's
+single reference point is too thin an evidence base to encode as automated red/yellow/green
+judgments about a single user's training. A visible reference line the user can read for
+themselves is the more honest posture here.
+
+---
+
 ## Server-side data availability gaps to resolve before implementing
 
 1. **7-day resting-HR baseline for VO2max** (§4.2) and **14-day LnRMSSD baseline for
