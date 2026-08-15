@@ -18,4 +18,17 @@
   priority: <strong>{{ report.priority }}</strong> ·
   tags: <strong>{{ report.tags | join(", ") }}</strong>
 </p>
+
+<h3>Image experiment</h3>
+<p class="section-desc">
+  Full-page screenshot of <a href="/">the trends dashboard</a> — an alternative
+  to the text above: send this image as the whole ntfy notification instead.
+  Needs the dev-only playwright dependency; if it's not installed, the image
+  below won't load.
+</p>
+<div class="card">
+  <img src="/weekly-report/screenshot.png{% if report.week_end %}?today={{ report.week_end }}{% endif %}"
+       alt="Full-page screenshot of the trends dashboard"
+       style="max-width: 100%; border: 1px solid var(--border-color, #ccc);">
+</div>
 {% endblock %}

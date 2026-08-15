@@ -15,7 +15,7 @@ from dataclasses import asdict
 from datetime import date as date_cls
 from pathlib import Path
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
@@ -117,6 +117,27 @@ def weekly_report_preview(request: Request, week_end: str | None = Query(default
         report = build_weekly_report(conn, week_end=parsed_week_end)
 
     return templates.TemplateResponse(request, "weekly_report.html", {"report": report})
+
+
+@router.get("/weekly-report/screenshot.png")
+def weekly_report_screenshot(today: str | None = Query(default=None)):
+    """Full-page PNG of `/` (app.gui's dashboard) — experiment for sending
+    an image instead of text as the weekly ntfy notification (see
+    app.screenshot). Playwright is a dev-only dependency (pyproject.toml),
+    so this 503s with a clear message rather than the app failing to import
+    when it isn't installed — this route is a preview tool, not a
+    production send path yet."""
+    try:
+        from app.screenshot import screenshot_dashboard_png
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Screenshot preview needs the dev-only playwright dependency "
+            "(pip install -e '.[dev]' && playwright install chromium).",
+        ) from exc
+
+    png_bytes = screenshot_dashboard_png(today=today)
+    return Response(content=png_bytes, media_type="image/png")
 
 
 # Display semaphore for muscle_group_weekly_trend's session_count — mirrors
