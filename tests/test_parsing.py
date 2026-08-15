@@ -194,6 +194,32 @@ def test_non_cardio_exercise_leaves_cardio_fields_none() -> None:
     assert forza_set.max_hr is None
 
 
+def test_cardio_exercise_matches_type_case_insensitively() -> None:
+    # Regression: real synced data has been observed sending lowercase
+    # `type: cardio`, not SPEC.md's documented `CARDIO` — a case-sensitive
+    # match would silently misparse this as a FORZA exercise (reps/weight
+    # forced to 0, startedAt/endedAt/avgHr/maxHr dropped) instead of erroring.
+    md = (
+        b"---\n"
+        b"id: ffffffff\n"
+        b"exercises:\n"
+        b"  - exerciseId: ex-c9d8e7f6\n"
+        b"    type: cardio\n"
+        b"    sets:\n"
+        b'      - startedAt: "2026-08-12T10:15:03"\n'
+        b'        endedAt: "2026-08-12T10:45:10"\n'
+        b"        avgHr: 138\n"
+        b"        maxHr: 156\n"
+        b"---\n"
+    )
+    parsed = parse_session_file(md)
+    cardio_set = parsed.exercise_sets[0]
+    assert cardio_set.started_at == "2026-08-12T10:15:03"
+    assert cardio_set.avg_hr == 138
+    assert cardio_set.reps is None
+    assert cardio_set.weight is None
+
+
 def test_unknown_top_level_keys_are_ignored() -> None:
     md = b"---\nid: cccccccc\ntotalTonnage: 1.0\nsomeFutureField: whatever\n---\n"
     parsed = parse_session_file(md)
