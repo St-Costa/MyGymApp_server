@@ -181,6 +181,22 @@ def test_muscle_group_weekly_trend_excludes_stretch_type(conn):
     assert "back" not in trend or all(w.set_count == 0 for w in trend["back"])
 
 
+def test_muscle_group_weekly_trend_matches_exercise_type_case_insensitively(conn):
+    # Regression: real synced data observed lowercase 'forza'/'stretch', not
+    # SPEC.md's documented 'FORZA'/'STRETCH' — a case-sensitive filter here
+    # would silently count zero sets for every real session.
+    _insert_session(conn, "s1", "2026-08-03")
+    for i in range(6):
+        _insert_set(
+            conn, "s1", "ex-a", i, reps=8, weight=80, bodypart="chest", exercise_type="forza"
+        )
+    conn.commit()
+
+    trend = muscle_group_weekly_trend(conn, today="2026-08-09")
+    week = next(w for w in trend["chest"] if w.week_start == "2026-08-03")
+    assert week.set_count == 6
+
+
 def test_muscle_group_weekly_trend_separates_bodyparts(conn):
     _insert_session(conn, "s1", "2026-08-03")
     _insert_set(conn, "s1", "ex-a", 0, reps=8, weight=80, bodypart="chest")

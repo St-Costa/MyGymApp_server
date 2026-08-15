@@ -29,6 +29,8 @@ from app.analysis import (
     exercise_history,
     hr_zones_weekly_trend,
     list_exercises,
+    muscle_group_weekly_trend,
+    progressive_overload_verdict,
     readiness_daily_trend,
     recent_heaviest_set_pr,
     resting_hr_weekly_trend,
@@ -108,6 +110,47 @@ def weekly_report_preview(request: Request, week_end: str | None = Query(default
         report = build_weekly_report(conn, week_end=parsed_week_end)
 
     return templates.TemplateResponse(request, "weekly_report.html", {"report": report})
+
+
+@router.get("/hypertrophy", response_class=HTMLResponse)
+def hypertrophy(request: Request, today: str | None = Query(default=None)):
+    """Weekly muscle-group volume/frequency (Schoenfeld-et-al.-derived
+    semaphores) and per-exercise progressive-overload verdicts — built on
+    top of exercise_sets.bodypart. See app.analysis's module comments above
+    muscle_group_weekly_trend and progressive_overload_verdict for the full
+    reasoning/thresholds."""
+    with connect(DB_PATH) as conn:
+        muscle_trend = muscle_group_weekly_trend(conn, today=today)
+        exercises = list_exercises(conn)
+        overload = [
+            progressive_overload_verdict(conn, e.exercise_id, today=today) for e in exercises
+        ]
+
+    # Only the most recent week per bodypart for the summary cards — the
+    # full series still goes to the chart below.
+    current_week = {
+        bodypart: weeks[-1] if weeks else None for bodypart, weeks in muscle_trend.items()
+    }
+
+    exercise_names = {e.exercise_id: e.exercise_name or e.exercise_id for e in exercises}
+    overload_by_verdict = {"UP": [], "FLAT": [], "DOWN": [], "INSUFFICIENT_DATA": []}
+    for v in overload:
+        overload_by_verdict[v.verdict].append(
+            {**asdict(v), "exercise_name": exercise_names.get(v.exercise_id, v.exercise_id)}
+        )
+    # Most-changed first within UP/DOWN, so the biggest movers surface first.
+    overload_by_verdict["UP"].sort(key=lambda v: v["change_percent"] or 0, reverse=True)
+    overload_by_verdict["DOWN"].sort(key=lambda v: v["change_percent"] or 0)
+
+    return templates.TemplateResponse(
+        request,
+        "hypertrophy.html",
+        {
+            "current_week": current_week,
+            "muscle_trend": {k: [asdict(b) for b in v] for k, v in muscle_trend.items()},
+            "overload_by_verdict": overload_by_verdict,
+        },
+    )
 
 
 @router.get("/exercises", response_class=HTMLResponse)
