@@ -164,7 +164,6 @@ def app_client(tmp_path, monkeypatch):
     import app.ingestion
     import app.main
     import app.routes
-    import app.scheduler
     import app.security
     import app.storage
 
@@ -173,11 +172,6 @@ def app_client(tmp_path, monkeypatch):
     importlib.reload(app.storage)
     importlib.reload(app.ingestion)
     importlib.reload(app.routes)
-    # app.scheduler caches DB_PATH's value via app.storage's default arg and
-    # keeps a module-level _scheduler singleton — reload so each test starts
-    # with a fresh (unstarted) scheduler bound to this test's own DATA_ROOT,
-    # not a previous test's already-torn-down tmp_path.
-    importlib.reload(app.scheduler)
     importlib.reload(app.gui)
     importlib.reload(app.main)
 

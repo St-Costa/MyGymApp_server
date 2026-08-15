@@ -18,7 +18,6 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import scheduler
 from app.config import LOGS_DIR
 from app.gui import router as gui_router
 from app.routes import router
@@ -31,11 +30,7 @@ logging.basicConfig(level=logging.INFO)
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     init_db()
-    scheduler.start()
-    try:
-        yield
-    finally:
-        scheduler.shutdown()
+    yield
 
 
 app = FastAPI(title="MyGymApp Sync Server", lifespan=lifespan)
