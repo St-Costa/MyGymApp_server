@@ -12,14 +12,9 @@
 {% else %}
 
 <h2 class="section-title">This week</h2>
-<p class="legend">
-  <span><span class="dot RED"></span>0/week</span>
-  <span><span class="dot YELLOW"></span>1/week</span>
-  <span><span class="dot GREEN"></span>2+/week (frequency)</span>
-  &nbsp;&middot;&nbsp;
-  <span><span class="dot RED"></span>&lt;5 sets</span>
-  <span><span class="dot YELLOW"></span>5-9 or &gt;20 sets</span>
-  <span><span class="dot GREEN"></span>10-20 sets (volume, Schoenfeld et al. 2017)</span>
+<p class="legend" style="flex-direction: column; align-items: center; gap: 0.35rem;">
+  <span>Frequency: <span class="dot RED"></span>0/w <span class="dot YELLOW"></span>1/w <span class="dot GREEN"></span>2+/w</span>
+  <span>Volume: <span class="dot RED"></span>&lt;5 <span class="dot YELLOW"></span>5-9 <span class="dot GREEN"></span>10-20 <span class="dot YELLOW"></span>&gt;20</span>
 </p>
 <div class="grid-4">
   {% for week in current_week %}
@@ -37,23 +32,7 @@
 
 <h2 class="section-title">Progressive overload</h2>
 <p class="section-desc" style="max-width: 70ch; margin-left: auto; margin-right: auto; text-align: center;">
-  Exercises trained this week, judged independently on estimated 1RM (max-strength
-  proxy) and tonnage (reps&times;weight, the volume metric closer to the hypertrophy
-  literature): this week's average vs. the average of the last week this exercise was
-  also trained (skipping empty weeks in between, not necessarily last calendar week).
-</p>
-<p class="legend">
-  <span><span class="dot GREEN"></span>growing 0.1-5%/week</span>
-  <span><span class="dot YELLOW"></span>stalled &lt;0.1%/week</span>
-  <span><span class="dot YELLOW"></span>fast &gt;5%/week &mdash; likely a data/warmup artifact, not necessarily unhealthy</span>
-  <span><span class="dot RED"></span>dropping</span>
-  <span><span class="dot GRAY"></span>no prior week to compare</span>
-</p>
-<p class="section-desc" style="text-align: center;">
-  No published threshold exists for "how fast is healthy" week-over-week on a single
-  lift — this rate band is a rough, heavily level-dependent reference (periodization
-  literature's own "2-5%/week" load-progression guidance for intermediates), not a
-  clinical or exact cutoff.
+  This week's average vs. the average of the last week this exercise was also trained.
 </p>
 
 {% if not overload_rows %}
@@ -73,12 +52,10 @@
     <tr>
       <td><a class="row-link" href="/exercises/{{ v.exercise_id }}">{{ v.exercise_name }}</a></td>
       <td>
-        <span class="dot {{ v.e1rm.color }}"></span>{{ v.e1rm.label }}
-        {% if v.e1rm.detail %}<div class="metric-delta">{{ v.e1rm.detail }} kg</div>{% endif %}
+        {% if v.e1rm %}<span class="dot {{ v.e1rm.color }}"></span>{{ v.e1rm.percent }}{% else %}(Not enough data){% endif %}
       </td>
       <td>
-        <span class="dot {{ v.tonnage.color }}"></span>{{ v.tonnage.label }}
-        {% if v.tonnage.detail %}<div class="metric-delta">{{ v.tonnage.detail }}</div>{% endif %}
+        {% if v.tonnage %}<span class="dot {{ v.tonnage.color }}"></span>{{ v.tonnage.percent }}{% else %}(Not enough data){% endif %}
       </td>
     </tr>
     {% endfor %}
