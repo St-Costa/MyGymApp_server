@@ -23,29 +23,36 @@
 <p class="section-desc">
   Full-page screenshot of <a href="/">the trends dashboard</a> — an alternative
   to the text above: send this image as the whole ntfy notification instead.
-  Needs the dev-only playwright dependency; rendering takes a few seconds
-  (headless Chromium starts up fresh per request).
+  Rendering takes a few seconds (headless Chromium starts up fresh per request).
 </p>
 <div class="card">
   <button type="button" id="screenshot-btn" onclick="generateScreenshot()">Generate screenshot</button>
+  <button type="button" id="save-btn" onclick="saveScreenshot()">Save to disk (report_YYYYMMDD.png)</button>
   <p id="screenshot-status" class="section-desc" style="margin-top: 0.75rem; display: none;"></p>
   <img id="screenshot-img" alt="Full-page screenshot of the trends dashboard"
        style="max-width: 100%; border: 1px solid var(--border-color, #ccc); margin-top: 1rem; display: none;">
 </div>
 
 <script>
+const weekEnd = {{ report.week_end | tojson }};
+
+function statusEls() {
+  return {
+    status: document.getElementById("screenshot-status"),
+    img: document.getElementById("screenshot-img"),
+  };
+}
+
 async function generateScreenshot() {
   const btn = document.getElementById("screenshot-btn");
-  const status = document.getElementById("screenshot-status");
-  const img = document.getElementById("screenshot-img");
+  const { status, img } = statusEls();
 
   btn.disabled = true;
   img.style.display = "none";
   status.style.display = "block";
   status.textContent = "Rendering… (a few seconds)";
 
-  const today = {{ report.week_end | tojson }};
-  const url = "/weekly-report/screenshot.png" + (today ? "?today=" + encodeURIComponent(today) : "");
+  const url = "/weekly-report/screenshot.png" + (weekEnd ? "?today=" + encodeURIComponent(weekEnd) : "");
 
   try {
     const resp = await fetch(url);
@@ -57,6 +64,30 @@ async function generateScreenshot() {
     img.src = URL.createObjectURL(blob);
     img.style.display = "block";
     status.style.display = "none";
+  } catch (err) {
+    status.textContent = "Failed: " + err.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function saveScreenshot() {
+  const btn = document.getElementById("save-btn");
+  const { status } = statusEls();
+
+  btn.disabled = true;
+  status.style.display = "block";
+  status.textContent = "Rendering and saving… (a few seconds)";
+
+  const url = "/weekly-report/generate" + (weekEnd ? "?today=" + encodeURIComponent(weekEnd) : "");
+
+  try {
+    const resp = await fetch(url, { method: "POST" });
+    const body = await resp.json().catch(() => null);
+    if (!resp.ok) {
+      throw new Error((body && body.error) || `HTTP ${resp.status}`);
+    }
+    status.textContent = "Saved: " + body.saved;
   } catch (err) {
     status.textContent = "Failed: " + err.message;
   } finally {

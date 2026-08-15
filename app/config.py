@@ -22,6 +22,12 @@ RAW_DIR = DATA_ROOT / "raw"
 DB_PATH = DATA_ROOT / "db.sqlite3"
 LOGS_DIR = DATA_ROOT / "logs"
 
+# Saved weekly report screenshots (app.screenshot.save_weekly_report_screenshot)
+# — under DATA_ROOT rather than a hardcoded path so it persists through the
+# same bind-mount as raw/ and db.sqlite3 (see Dockerfile), and accumulates
+# across container restarts/redeploys.
+REPORTS_DIR = DATA_ROOT / "reports"
+
 # This app has no real stored birth date/profile field — used wherever an
 # age-relative calculation is needed (RMSSD reference thresholds in
 # dashboard.html, HR-zone max-HR estimation in app.ecg_analysis) as a
