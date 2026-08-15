@@ -19,6 +19,34 @@
   tags: <strong>{{ report.tags | join(", ") }}</strong>
 </p>
 
+<h3>Generazione automatica</h3>
+<p class="section-desc">
+  Giorno e ora (Europe/Rome) in cui lo screenshot del report settimanale
+  viene generato e salvato in automatico su disco (stessa azione di "Save
+  to disk" qui sotto). Nessun invio ntfy — solo il salvataggio del file.
+</p>
+<div class="card">
+  <form method="post" action="/weekly-report/schedule" style="display: flex; gap: 1rem; align-items: center; flex-wrap: wrap;">
+    <label>
+      Giorno
+      <select name="day">
+        {% for value, label in weekday_options %}
+        <option value="{{ value }}" {% if value == schedule_day %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>
+      Ora
+      <select name="hour">
+        {% for h in range(24) %}
+        <option value="{{ h }}" {% if h == schedule_hour %}selected{% endif %}>{{ "%02d"|format(h) }}:00</option>
+        {% endfor %}
+      </select>
+    </label>
+    <button type="submit">Salva orario</button>
+  </form>
+</div>
+
 <h3>Image experiment</h3>
 <p class="section-desc">
   Full-page screenshot of <a href="/">the trends dashboard</a> — an alternative
