@@ -4,13 +4,7 @@
 <h1>Hypertrophy &amp; muscle groups</h1>
 <p class="section-desc" style="max-width: 70ch; margin-left: auto; margin-right: auto; text-align: center;">
   This week's (Monday–today) working-set volume and frequency per muscle group, and
-  whether exercises trained this week are actually progressing. Volume bands are
-  Schoenfeld et al. 2017's dose-response findings (&lt;5 sets/week suboptimal, 5-9
-  moderate, 10-20 the well-supported "optimal" range, &gt;20 where evidence thins and
-  recovery cost starts working against you) — a single fixed band, not tiered by
-  experience level. Frequency reflects the finding that training a muscle group 2+
-  times/week outperforms 1x/week at equal volume. Neither is medical guidance, just a
-  well-cited training-science reference point.
+  whether exercises trained this week are actually progressing.
 </p>
 
 {% if not current_week %}
@@ -18,12 +12,21 @@
 {% else %}
 
 <h2 class="section-title">This week</h2>
-<div class="grid">
+<p class="legend">
+  <span><span class="dot RED"></span>0/week</span>
+  <span><span class="dot YELLOW"></span>1/week</span>
+  <span><span class="dot GREEN"></span>2+/week (frequency)</span>
+  &nbsp;&middot;&nbsp;
+  <span><span class="dot RED"></span>&lt;5 sets</span>
+  <span><span class="dot YELLOW"></span>5-9 or &gt;20 sets</span>
+  <span><span class="dot GREEN"></span>10-20 sets (volume, Schoenfeld et al. 2017)</span>
+</p>
+<div class="grid-4">
   {% for week in current_week %}
   <div class="card">
     <div class="metric-label">{{ week.bodypart | capitalize }}</div>
     <div class="metric-value" style="display: flex; align-items: baseline; gap: 1.25rem; font-size: 1.3rem;">
-      <span><span class="dot {{ week.frequency_color }}"></span>{{ week.session_count }}x/w</span>
+      <span><span class="dot {{ week.frequency_color }}"></span>{{ week.session_count }}xW</span>
       <span><span class="dot {{ week.volume_color }}"></span>{{ week.set_count }} sets/w</span>
     </div>
   </div>
@@ -36,11 +39,21 @@
 <p class="section-desc" style="max-width: 70ch; margin-left: auto; margin-right: auto; text-align: center;">
   Exercises trained this week, judged independently on estimated 1RM (max-strength
   proxy) and tonnage (reps&times;weight, the volume metric closer to the hypertrophy
-  literature) over their last 12 weeks of sessions. No published threshold exists for
-  "how fast is healthy" week-over-week on a single lift — the rate band below is a
-  rough, heavily level-dependent reference (periodization literature on load
-  progression), not a clinical or exact cutoff. Needs at least 3 qualifying sessions
-  per metric to reach a verdict.
+  literature): this week's average vs. the average of the last week this exercise was
+  also trained (skipping empty weeks in between, not necessarily last calendar week).
+</p>
+<p class="legend">
+  <span><span class="dot GREEN"></span>growing 0.1-5%/week</span>
+  <span><span class="dot YELLOW"></span>stalled &lt;0.1%/week</span>
+  <span><span class="dot YELLOW"></span>fast &gt;5%/week &mdash; likely a data/warmup artifact, not necessarily unhealthy</span>
+  <span><span class="dot RED"></span>dropping</span>
+  <span><span class="dot GRAY"></span>no prior week to compare</span>
+</p>
+<p class="section-desc" style="text-align: center;">
+  No published threshold exists for "how fast is healthy" week-over-week on a single
+  lift — this rate band is a rough, heavily level-dependent reference (periodization
+  literature's own "2-5%/week" load-progression guidance for intermediates), not a
+  clinical or exact cutoff.
 </p>
 
 {% if not overload_rows %}
