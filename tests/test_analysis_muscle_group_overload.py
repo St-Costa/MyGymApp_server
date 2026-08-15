@@ -216,93 +216,140 @@ def test_muscle_group_weekly_trend_separates_bodyparts(conn):
 # ---------------------------------------------------------------------------
 
 
-def test_progressive_overload_verdict_up_healthy_when_e1rm_rises_moderately(conn):
-    # ~1.7%/week average over 2 weeks -> within the plausible band, not stalled/too-fast.
-    for i, (date, weight) in enumerate(
-        [("2026-07-01", 80), ("2026-07-08", 81.5), ("2026-07-15", 83)]
-    ):
-        _insert_session(conn, f"s{i}", date)
-        _insert_set(conn, f"s{i}", "ex-a", 0, reps=5, weight=weight)
+# today="2026-08-01" (Saturday) -> current week Mon 2026-07-27..Sun
+# 2026-08-02, prior week Mon 2026-07-20..Sun 2026-07-26, week before that
+# Mon 2026-07-13..Sun 2026-07-19.
+_TODAY = "2026-08-01"
+
+
+def test_progressive_overload_verdict_up_healthy_moderate_weekly_rise(conn):
+    # Prior week (2026-07-20) avg 80, current week (2026-07-27) avg 82 -> +2.5%/week.
+    _insert_session(conn, "s1", "2026-07-20")
+    _insert_set(conn, "s1", "ex-a", 0, reps=5, weight=80)
+    _insert_session(conn, "s2", "2026-07-27")
+    _insert_set(conn, "s2", "ex-a", 0, reps=5, weight=82)
     conn.commit()
 
-    verdict = progressive_overload_verdict(conn, "ex-a", today="2026-08-01")
+    verdict = progressive_overload_verdict(conn, "ex-a", today=_TODAY)
     assert verdict.e1rm.verdict == "UP_HEALTHY"
-    assert verdict.point_count == 3
+    assert verdict.e1rm.weeks_ago == 1
 
 
 def test_progressive_overload_verdict_up_too_fast_flags_implausible_jump(conn):
-    # +15% over 2 weeks (~7.5%/week) -> well above the plausible band, likely
-    # a data/warmup artifact rather than genuine sustained progression.
-    for i, (date, weight) in enumerate(
-        [("2026-07-01", 80), ("2026-07-08", 88), ("2026-07-15", 92)]
-    ):
-        _insert_session(conn, f"s{i}", date)
-        _insert_set(conn, f"s{i}", "ex-a", 0, reps=5, weight=weight)
+    # Prior week avg 80, current week avg 92 -> +15%/week, well above the band.
+    _insert_session(conn, "s1", "2026-07-20")
+    _insert_set(conn, "s1", "ex-a", 0, reps=5, weight=80)
+    _insert_session(conn, "s2", "2026-07-27")
+    _insert_set(conn, "s2", "ex-a", 0, reps=5, weight=92)
     conn.commit()
 
-    verdict = progressive_overload_verdict(conn, "ex-a", today="2026-08-01")
+    verdict = progressive_overload_verdict(conn, "ex-a", today=_TODAY)
     assert verdict.e1rm.verdict == "UP_TOO_FAST"
 
 
 def test_progressive_overload_verdict_down_when_e1rm_falls(conn):
-    for i, (date, weight) in enumerate(
-        [("2026-07-01", 100), ("2026-07-08", 95), ("2026-07-15", 88)]
-    ):
-        _insert_session(conn, f"s{i}", date)
-        _insert_set(conn, f"s{i}", "ex-a", 0, reps=5, weight=weight)
+    _insert_session(conn, "s1", "2026-07-20")
+    _insert_set(conn, "s1", "ex-a", 0, reps=5, weight=100)
+    _insert_session(conn, "s2", "2026-07-27")
+    _insert_set(conn, "s2", "ex-a", 0, reps=5, weight=90)
     conn.commit()
 
-    verdict = progressive_overload_verdict(conn, "ex-a", today="2026-08-01")
+    verdict = progressive_overload_verdict(conn, "ex-a", today=_TODAY)
     assert verdict.e1rm.verdict == "DOWN"
 
 
 def test_progressive_overload_verdict_stalled_within_tolerance(conn):
-    for i, (date, weight) in enumerate(
-        [("2026-07-01", 100), ("2026-07-08", 100.05), ("2026-07-15", 100.08)]
-    ):
-        _insert_session(conn, f"s{i}", date)
-        _insert_set(conn, f"s{i}", "ex-a", 0, reps=5, weight=weight)
+    _insert_session(conn, "s1", "2026-07-20")
+    _insert_set(conn, "s1", "ex-a", 0, reps=5, weight=100)
+    _insert_session(conn, "s2", "2026-07-27")
+    _insert_set(conn, "s2", "ex-a", 0, reps=5, weight=100.02)
     conn.commit()
 
-    verdict = progressive_overload_verdict(conn, "ex-a", today="2026-08-01")
+    verdict = progressive_overload_verdict(conn, "ex-a", today=_TODAY)
     assert verdict.e1rm.verdict == "STALLED"
 
 
-def test_progressive_overload_verdict_insufficient_data_below_three_points(conn):
-    _insert_session(conn, "s1", "2026-07-01")
+def test_progressive_overload_verdict_skips_empty_weeks_to_find_prior_data(conn):
+    # No session in the week immediately before current (2026-07-20) — the
+    # last week with data is 2 weeks back (2026-07-13). weeks_ago must be 2,
+    # and the rate must be normalized by 2 weeks, not 1.
+    _insert_session(conn, "s1", "2026-07-13")
+    _insert_set(conn, "s1", "ex-a", 0, reps=5, weight=80)
+    _insert_session(conn, "s2", "2026-07-27")
+    _insert_set(conn, "s2", "ex-a", 0, reps=5, weight=84)
+    conn.commit()
+
+    verdict = progressive_overload_verdict(conn, "ex-a", today=_TODAY)
+    assert verdict.e1rm.weeks_ago == 2
+    assert verdict.e1rm.prior_week_start == "2026-07-13"
+    # +5% over 2 weeks = +2.5%/week, not +5%/week.
+    assert verdict.e1rm.percent_per_week == pytest.approx(2.5, abs=0.01)
+
+
+def test_progressive_overload_verdict_averages_multiple_sessions_within_a_week(conn):
+    # Two sessions in the current week (e.g. one heavy/primary, one
+    # lighter/secondary) must be averaged, not just the last one used.
+    # e1RM (Epley, reps=5): weight=90 -> 105.0, weight=70 -> 81.67; average 93.33.
+    _insert_session(conn, "s1", "2026-07-20")
+    _insert_set(conn, "s1", "ex-a", 0, reps=5, weight=80)
+    _insert_session(conn, "s2", "2026-07-27")
+    _insert_set(conn, "s2", "ex-a", 0, reps=5, weight=90)  # heavy/primary
+    _insert_session(conn, "s3", "2026-07-28")
+    _insert_set(conn, "s3", "ex-a", 0, reps=5, weight=70)  # light/secondary
+    conn.commit()
+
+    verdict = progressive_overload_verdict(conn, "ex-a", today=_TODAY)
+    # Average of the two e1RMs, not just 81.67 (the last session's alone).
+    assert verdict.e1rm.current_week_avg == pytest.approx(93.33, abs=0.01)
+
+
+def test_progressive_overload_verdict_no_data_this_week(conn):
+    # Exercise has history but nothing in the current calendar week.
+    _insert_session(conn, "s1", "2026-07-20")
     _insert_set(conn, "s1", "ex-a", 0, reps=5, weight=80)
     conn.commit()
 
-    verdict = progressive_overload_verdict(conn, "ex-a", today="2026-08-01")
+    verdict = progressive_overload_verdict(conn, "ex-a", today=_TODAY)
     assert verdict.e1rm.verdict == "INSUFFICIENT_DATA"
-    assert verdict.point_count == 1
+    assert verdict.e1rm.current_week_avg is None
+
+
+def test_progressive_overload_verdict_no_prior_week_to_compare(conn):
+    # Only the current week has data — nothing in the trailing 12 weeks before it.
+    _insert_session(conn, "s1", "2026-07-27")
+    _insert_set(conn, "s1", "ex-a", 0, reps=5, weight=80)
+    conn.commit()
+
+    verdict = progressive_overload_verdict(conn, "ex-a", today=_TODAY)
+    assert verdict.e1rm.verdict == "INSUFFICIENT_DATA"
+    assert verdict.e1rm.current_week_avg is not None
+    assert verdict.e1rm.prior_week_avg is None
 
 
 def test_progressive_overload_verdict_no_data_at_all(conn):
-    verdict = progressive_overload_verdict(conn, "ex-nonexistent", today="2026-08-01")
+    verdict = progressive_overload_verdict(conn, "ex-nonexistent", today=_TODAY)
     assert verdict.e1rm.verdict == "INSUFFICIENT_DATA"
     assert verdict.tonnage.verdict == "INSUFFICIENT_DATA"
     assert verdict.point_count == 0
-    assert verdict.e1rm.first_value is None
-    assert verdict.e1rm.last_value is None
+    assert verdict.e1rm.current_week_avg is None
 
 
 def test_progressive_overload_verdict_tonnage_independent_of_e1rm(conn):
-    # Same top weight every session (e1RM flat) but rising set count -> tonnage
-    # should trend UP while e1RM stays STALLED, demonstrating the two verdicts
-    # can genuinely disagree rather than being redundant.
-    for i, (date, set_count) in enumerate(
-        [("2026-07-01", 3), ("2026-07-08", 4), ("2026-07-15", 6)]
-    ):
-        _insert_session(conn, f"s{i}", date)
-        for j in range(set_count):
-            _insert_set(conn, f"s{i}", "ex-a", j, reps=8, weight=80)
+    # Same top weight both weeks (e1RM flat) but rising set count -> tonnage
+    # should trend UP while e1RM stays STALLED, demonstrating the two
+    # verdicts can genuinely disagree rather than being redundant.
+    _insert_session(conn, "s1", "2026-07-20")
+    for j in range(3):
+        _insert_set(conn, "s1", "ex-a", j, reps=8, weight=80)
+    _insert_session(conn, "s2", "2026-07-27")
+    for j in range(6):
+        _insert_set(conn, "s2", "ex-a", j, reps=8, weight=80)
     conn.commit()
 
-    verdict = progressive_overload_verdict(conn, "ex-a", today="2026-08-01")
+    verdict = progressive_overload_verdict(conn, "ex-a", today=_TODAY)
     assert verdict.e1rm.verdict == "STALLED"
     assert verdict.tonnage.verdict in ("UP_HEALTHY", "UP_TOO_FAST")
-    assert verdict.tonnage.last_value > verdict.tonnage.first_value
+    assert verdict.tonnage.current_week_avg > verdict.tonnage.prior_week_avg
 
 
 # ---------------------------------------------------------------------------

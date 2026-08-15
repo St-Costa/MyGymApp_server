@@ -69,6 +69,27 @@
     @media (max-width: 460px) {
       .grid { grid-template-columns: 1fr; }
     }
+    .grid-4 {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 1rem;
+    }
+    @media (max-width: 900px) {
+      .grid-4 { grid-template-columns: repeat(2, 1fr); }
+    }
+    @media (max-width: 460px) {
+      .grid-4 { grid-template-columns: 1fr; }
+    }
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.25rem 1.5rem;
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin: 0 0 1.5rem;
+      justify-content: center;
+    }
+    .legend .dot { margin-right: 0.35rem; }
     .card {
       background: var(--panel);
       border: 1px solid var(--border);

@@ -130,10 +130,12 @@ def _frequency_dot(session_count: int) -> str:
 # Display metadata per OverloadMetricVerdict.verdict value — label + dot
 # color for the progressive-overload table cells. UP_TOO_FAST is YELLOW, not
 # GREEN, since it's flagged as a likely data/warmup artifact rather than
-# genuine healthy progression (see progressive_overload_verdict's docstring).
+# genuine healthy progression (see progressive_overload_verdict's docstring)
+# — the caveat lives in the legend below the table, not repeated in every
+# cell, per user decision (dropped the inline "(check data)" text).
 _OVERLOAD_VERDICT_DISPLAY = {
     "UP_HEALTHY": ("GREEN", "▲ growing"),
-    "UP_TOO_FAST": ("YELLOW", "▲▲ fast (check data)"),
+    "UP_TOO_FAST": ("YELLOW", "▲▲ fast"),
     "STALLED": ("YELLOW", "→ stalled"),
     "DOWN": ("RED", "▼ dropping"),
     "INSUFFICIENT_DATA": ("GRAY", "not enough data"),
@@ -142,17 +144,16 @@ _OVERLOAD_VERDICT_DISPLAY = {
 
 def _overload_cell(v) -> dict:
     """Formats one OverloadMetricVerdict for template display: dot color,
-    label, and the first->last numbers/rate when available."""
+    label, and the this-week-vs-prior-week numbers/rate when available."""
     color, label = _OVERLOAD_VERDICT_DISPLAY[v.verdict]
-    return {
-        "color": color,
-        "label": label,
-        "detail": (
-            f"{v.first_value:.1f} → {v.last_value:.1f} ({v.percent_per_week:+.1f}%/w)"
-            if v.percent_per_week is not None
-            else None
-        ),
-    }
+    detail = None
+    if v.percent_per_week is not None:
+        week_note = "last week" if v.weeks_ago == 1 else f"{v.weeks_ago} weeks ago"
+        detail = (
+            f"{v.prior_week_avg:.1f} → {v.current_week_avg:.1f} "
+            f"({v.percent_per_week:+.1f}%/w vs {week_note})"
+        )
+    return {"color": color, "label": label, "detail": detail}
 
 
 @router.get("/hypertrophy", response_class=HTMLResponse)
