@@ -220,6 +220,22 @@
     a.row-link { color: var(--text); text-decoration: none; display: block; }
     .empty { color: var(--muted); font-style: italic; padding: 2rem; text-align: center; }
     .back-link { color: var(--accent); text-decoration: none; font-size: 0.9rem; }
+    .page-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-bottom: 1rem;
+    }
+    button {
+      background: var(--panel);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.5rem 0.9rem;
+      font-size: 0.9rem;
+      cursor: pointer;
+    }
+    button:hover { border-color: var(--accent); }
+    button:disabled { opacity: 0.6; cursor: default; }
   </style>
 </head>
 <body>

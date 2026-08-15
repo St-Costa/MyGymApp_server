@@ -1,6 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Trends — MyGymApp{% endblock %}
 {% block content %}
+<div class="page-actions">
+  <button type="button" id="export-md-btn" onclick="exportTrendsMarkdown()">⬇ Export data (.md)</button>
+</div>
 {% if cardio.alerts %}
 <h1>Alerts</h1>
 <ul class="alerts">
@@ -1055,6 +1058,205 @@
       null,
       { min: 0, max: 40 }
     );
+  }
+
+  // ---- Markdown export -----------------------------------------------
+  //
+  // Reuses the same Jinja-rendered series data already inlined above for
+  // charting (CARDIO_SERIES, ECG_ADVANCED_SERIES, etc.) rather than
+  // re-fetching anything — this is a client-side reformat of data the page
+  // already has, built for pasting into Claude web for analysis, so plain
+  // Markdown tables (one per chart) beat a machine format like CSV/JSON
+  // here: readable as-is and easy for an LLM to reason over directly.
+  function seriesToTable(dates, values, valueHeader) {
+    if (!dates.length) return "_No data._\n";
+    let out = `| Date | ${valueHeader} |\n|---|---|\n`;
+    dates.forEach((d, i) => {
+      const v = values[i];
+      out += `| ${d} | ${v === null || v === undefined ? "" : v} |\n`;
+    });
+    return out;
+  }
+
+  function exportTrendsMarkdown() {
+    const lines = [];
+    const today = new Date().toISOString().slice(0, 10);
+    lines.push(`# MyGymApp trends export (${today})`, "");
+
+    // Readiness (category, not a plain metric — export the raw state per day).
+    lines.push("## Readiness", "");
+    {
+      const dates = {{ readiness_trend | map(attribute="date") | list | tojson }};
+      const states = {{ readiness_trend | map(attribute="readiness") | list | tojson }};
+      const restingHr = {{ readiness_trend | map(attribute="resting_hr") | list | tojson }};
+      const vo2max = {{ readiness_trend | map(attribute="vo2max") | list | tojson }};
+      if (dates.length) {
+        lines.push("| Date | Readiness | Resting HR | VO2max |", "|---|---|---|---|");
+        dates.forEach((d, i) => {
+          lines.push(`| ${d} | ${states[i] ?? ""} | ${restingHr[i] ?? ""} | ${vo2max[i] ?? ""} |`);
+        });
+      } else {
+        lines.push("_No data._");
+      }
+      lines.push("");
+    }
+
+    lines.push("## Steps (weekly)", "");
+    {
+      const dates = {{ steps_avg_per_day_trend | map(attribute="week_start") | list | tojson }};
+      const values = {{ steps_avg_per_day_trend | map(attribute="value") | list | tojson }}
+        .map(v => v === null ? null : v * 7);
+      lines.push(seriesToTable(dates, values, "Steps/week"));
+    }
+
+    // Cardio (weekly) metrics — one table per key in CARDIO_META, in the
+    // same order the charts render in.
+    lines.push("## Rhythm, cardiac & recovery trends (weekly)", "");
+    for (const [key, meta] of Object.entries(CARDIO_META)) {
+      const series = CARDIO_SERIES[key] || [];
+      lines.push(`### ${meta.name}${meta.unit ? " (" + meta.unit + ")" : ""}`, "");
+      lines.push(seriesToTable(series.map(b => b.week_start), series.map(b => b.value), meta.name));
+    }
+
+    lines.push("## Advanced ECG metrics (weekly)", "");
+    for (const [key, meta] of Object.entries(ECG_ADVANCED_META)) {
+      const series = ECG_ADVANCED_SERIES[key] || [];
+      lines.push(`### ${meta.name}${meta.unit ? " (" + meta.unit + ")" : ""}`, "");
+      lines.push(seriesToTable(series.map(b => b.week_start), series.map(b => b.value), meta.name));
+    }
+
+    lines.push("## Time in HR zone (weekly minutes)", "");
+    {
+      const hrZonesSeries = {{ hr_zones_series | tojson }};
+      const zoneKeys = ["belowZone1", "zone1", "zone2", "zone3", "zone4", "zone5"];
+      const zoneNames = { belowZone1: "Below Z1", zone1: "Z1", zone2: "Z2", zone3: "Z3", zone4: "Z4", zone5: "Z5" };
+      const dates = (hrZonesSeries.zone1 || []).map(b => b.week_start);
+      if (dates.length) {
+        lines.push(`| Week | ${zoneKeys.map(k => zoneNames[k]).join(" | ")} |`);
+        lines.push(`|---|${zoneKeys.map(() => "---").join("|")}|`);
+        dates.forEach((d, i) => {
+          const row = zoneKeys.map(k => (hrZonesSeries[k] || [])[i]?.value ?? "");
+          lines.push(`| ${d} | ${row.join(" | ")} |`);
+        });
+      } else {
+        lines.push("_No data._");
+      }
+      lines.push("");
+    }
+
+    lines.push("## VO2max (4-week)", "");
+    lines.push(seriesToTable(
+      {{ vo2max_trend | map(attribute="week_start") | list | tojson }},
+      {{ vo2max_trend | map(attribute="value") | list | tojson }},
+      "VO2max"
+    ));
+
+    lines.push("## Training load", "");
+    lines.push("### ACWR (tonnage)", "");
+    lines.push(seriesToTable(
+      {{ acwr_trend | map(attribute="date") | list | tojson }},
+      {{ acwr_trend | map(attribute="acwr") | list | tojson }},
+      "ACWR"
+    ));
+    lines.push("### RPE-based ACWR", "");
+    lines.push(seriesToTable(
+      {{ rpe_acwr_trend | map(attribute="date") | list | tojson }},
+      {{ rpe_acwr_trend | map(attribute="acwr") | list | tojson }},
+      "RPE ACWR"
+    ));
+    lines.push("### Session load (RPE×min)", "");
+    lines.push(seriesToTable(
+      {{ session_load_trend | map(attribute="date") | list | tojson }},
+      {{ session_load_trend | map(attribute="session_load") | list | tojson }},
+      "Session load"
+    ));
+    lines.push("### Calories", "");
+    lines.push(seriesToTable(
+      {{ session_calories_trend | map(attribute="date") | list | tojson }},
+      {{ session_calories_trend | map(attribute="value") | list | tojson }},
+      "Calories"
+    ));
+    lines.push("### TRIMP", "");
+    lines.push(seriesToTable(
+      {{ session_trimp_trend | map(attribute="date") | list | tojson }},
+      {{ session_trimp_trend | map(attribute="value") | list | tojson }},
+      "TRIMP"
+    ));
+    lines.push("### Training monotony / strain (weekly)", "");
+    {
+      const weeks = {{ monotony_trend | map(attribute="week_end") | list | tojson }};
+      const monotony = {{ monotony_trend | map(attribute="monotony") | list | tojson }};
+      const strain = {{ monotony_trend | map(attribute="strain") | list | tojson }};
+      if (weeks.length) {
+        lines.push("| Week end | Monotony | Strain |", "|---|---|---|");
+        weeks.forEach((d, i) => {
+          lines.push(`| ${d} | ${monotony[i] ?? ""} | ${strain[i] ?? ""} |`);
+        });
+      } else {
+        lines.push("_No data._");
+      }
+      lines.push("");
+    }
+
+    lines.push("## Exercise analysis", "");
+    lines.push("### This week's volume + frequency by muscle group", "");
+    {
+      const currentWeek = {{ current_week | tojson }};
+      if (currentWeek.length) {
+        lines.push("| Bodypart | Sessions/week | Sets/week |", "|---|---|---|");
+        currentWeek.forEach(w => {
+          lines.push(`| ${w.bodypart} | ${w.session_count} | ${w.set_count} |`);
+        });
+      } else {
+        lines.push("_No muscle group trained yet this week._");
+      }
+      lines.push("");
+    }
+    lines.push("### Progressive overload (this week vs. last time trained)", "");
+    {
+      const overloadRows = {{ overload_rows | tojson }};
+      if (overloadRows.length) {
+        lines.push("| Exercise | e1RM change | Tonnage change |", "|---|---|---|");
+        overloadRows.forEach(v => {
+          const e1rm = v.e1rm ? v.e1rm.percent : "(not enough data)";
+          const tonnage = v.tonnage ? v.tonnage.percent : "(not enough data)";
+          lines.push(`| ${v.exercise_name} | ${e1rm} | ${tonnage} |`);
+        });
+      } else {
+        lines.push("_No exercises trained this week yet._");
+      }
+      lines.push("");
+    }
+
+    lines.push("## Body composition (weekly)", "");
+    lines.push("### Weight (kg)", "");
+    lines.push(seriesToTable(
+      {{ scale_trend["weightKg"] | map(attribute="week_start") | list | tojson }},
+      {{ scale_trend["weightKg"] | map(attribute="value") | list | tojson }},
+      "Weight (kg)"
+    ));
+    lines.push("### BMI", "");
+    lines.push(seriesToTable(
+      {{ scale_trend["bmi"] | map(attribute="week_start") | list | tojson }},
+      {{ scale_trend["bmi"] | map(attribute="value") | list | tojson }},
+      "BMI"
+    ));
+    lines.push("### Body fat %", "");
+    lines.push(seriesToTable(
+      {{ scale_trend["bodyFatPercent"] | map(attribute="week_start") | list | tojson }},
+      {{ scale_trend["bodyFatPercent"] | map(attribute="value") | list | tojson }},
+      "Body fat %"
+    ));
+
+    const blob = new Blob([lines.join("\n")], { type: "text/markdown" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `mygymapp-trends_${today}.md`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   }
 </script>
 {% endblock %}
