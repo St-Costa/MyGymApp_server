@@ -38,6 +38,14 @@ the source of truth):
   `None` on non-CARDIO rows. Unlike the "missing means 0/''" convention
   above, blank/missing here means "not applicable" or "block still running/
   abandoned," so it maps to `None`, not `0`/`""`.
+- `exercises[].type` is matched case-insensitively against `CARDIO` — real
+  synced data has been observed sending lowercase (`cardio`/`forza`/
+  `stretch`), not SPEC.md's documented uppercase. A case-sensitive match
+  here would silently misparse every real CARDIO block as FORZA (reps/
+  weight populated as 0, HR/timing fields lost) rather than erroring, which
+  is exactly the kind of silent data loss the raw-first design exists to
+  avoid at the *storage* layer — this fixes the same failure mode in the
+  *parse* layer, where nothing forces it to be caught otherwise.
 """
 
 import struct
@@ -321,7 +329,7 @@ def _parse_exercises(raw_exercises: list) -> list[ExerciseSet]:
         exclude_from_tonnage = bool(exercise.get("excludeFromTonnage", False))
         is_daily = bool(exercise.get("isDaily", False))
 
-        is_cardio = exercise_type == "CARDIO"
+        is_cardio = (exercise_type or "").upper() == "CARDIO"
 
         for set_index, raw_set in enumerate(exercise.get("sets") or []):
             if is_cardio:

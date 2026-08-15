@@ -255,7 +255,16 @@ CREATE TABLE IF NOT EXISTS parse_failures (
 # (SYNC.md "Daily step average") — readiness events synced before this have
 # both columns NULL, indistinguishable from "no step data available" until
 # reparse.py --stale re-extracts them from the frontmatter fallback.
-PARSER_SCHEMA_VERSION = 5
+# Bumped to 6: app.parsing._parse_exercises now matches `exercises[].type`
+# case-insensitively against CARDIO. Real synced data sends lowercase
+# (`cardio`), not SPEC.md's documented uppercase — every CARDIO block
+# synced before this fix was silently misparsed as a FORZA exercise (reps/
+# weight forced to 0, startedAt/endedAt/avgHr/maxHr dropped entirely), the
+# exact failure mode #1 in PENDING_IMPROVEMENTS.md was blocked on.
+# reparse.py --stale re-extracts the real cardio fields from the raw files
+# once picked up — nothing was lost, since raw-first storage kept the
+# original bytes regardless of how the parser misread them.
+PARSER_SCHEMA_VERSION = 6
 
 # schema_version stamped on a row written from step 6's "on failure" path —
 # the raw file is safely stored but nothing has been successfully parsed yet.
