@@ -17,6 +17,13 @@ dependencies = [
     # it collides with numpy 1.x/2.x across the rest of the tree).
     "neurokit2>=0.2.13",
     "py-ecg-detectors>=1.3.5",
+    # Full-page screenshot of the dashboard (app/screenshot.py), used both by
+    # the /weekly-report preview page and by generate_report.py's on-disk
+    # weekly report save — a production dependency since the latter is meant
+    # to run unattended from an external cron job. Needs `playwright install
+    # --with-deps chromium` too (see Dockerfile); pulls in a real Chromium at
+    # image-build time, not just this package.
+    "playwright>=1.47",
 ]
 
 [project.optional-dependencies]
@@ -24,13 +31,6 @@ dev = [
     "pytest>=8.0",
     "httpx>=0.27",
     "ruff>=0.6",
-    # Full-page screenshot of the dashboard for the weekly-report preview
-    # (app/screenshot.py) — validating the "send an image instead of text"
-    # idea before it's wired into any real ntfy send path. Dev-only for now:
-    # needs `playwright install chromium` too, and the ~300MB Chromium
-    # download doesn't belong in the production image until this is a real
-    # feature, not a preview experiment.
-    "playwright>=1.47",
 ]
 
 [build-system]

@@ -70,10 +70,38 @@ knowing about, not indistinguishable from "everything's fine").
   present, and `red_circle`/`yellow_circle` reflecting the worst included
   section's semaphore.
 
+## Image variant (screenshot instead of text)
+
+`app/screenshot.py` renders the dashboard (`app.gui`'s `/`) in headless
+Chromium (Playwright) and saves a full-page PNG under `DATA_ROOT/reports/`
+as `report_YYYYMMDD.png`, named for the day it was generated — an
+alternative to the deterministic text body above, sending "what the
+dashboard looks like right now" as a single image instead. Reports
+accumulate; nothing here ever deletes an older one.
+
+Three ways to trigger a generation, all calling the same
+`save_weekly_report_screenshot`:
+
+- `python generate_report.py` — standalone CLI (needs the app server
+  already running and reachable at `http://127.0.0.1:PORT`, since this
+  drives a real browser against the live route rather than rendering
+  in-process).
+- `POST /weekly-report/generate` — the same thing over HTTP, for the future
+  external cron job or manual testing without shelling into the container.
+- The "Save to disk" button on `/weekly-report` itself, for eyeballing a
+  save without touching a terminal.
+
+`GET /weekly-report/screenshot.png` (also on that page, as "Generate
+screenshot") renders the same PNG on demand but does **not** save it —
+that one is purely for previewing what the image would look like.
+
 ## What's deliberately out of scope here
 
-- Sending the report (ntfy HTTP POST) — no client exists yet.
-- Scheduling (cron/weekly trigger) — no scheduler exists yet.
+- Sending the report (ntfy HTTP POST, image or text) — no client exists yet;
+  `generate_report.py` only saves to disk.
+- Scheduling (cron/weekly trigger) — no scheduler exists yet; the external
+  cron job that will eventually call `generate_report.py` (or
+  `POST /weekly-report/generate`) weekly isn't set up.
 - `readiness_events` (HRV readiness state) — not one of the four areas the
   user asked to report on; VO2max/resting HR here come from `sessions`, not
   from readiness events.

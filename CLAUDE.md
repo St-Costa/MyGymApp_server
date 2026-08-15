@@ -40,6 +40,7 @@ loses or corrupts data), idempotency on `sessionId` + content hash still holds, 
 | Build (Docker image) | `docker build -t mygymapp-sync-server .` |
 | Reparse stored sessions | `python reparse.py --all` (or `--stale`, or specific IDs) |
 | Re-run ECG analysis | `python analyze_ecg.py --all` (or `--stale`, or specific session IDs) |
+| Generate & save weekly report screenshot | `python generate_report.py` (needs the app server already running — see script docstring) |
 
 ## Conventions
 

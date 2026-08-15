@@ -15,7 +15,7 @@ from dataclasses import asdict
 from datetime import date as date_cls
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Query, Request, Response
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
@@ -123,21 +123,27 @@ def weekly_report_preview(request: Request, week_end: str | None = Query(default
 def weekly_report_screenshot(today: str | None = Query(default=None)):
     """Full-page PNG of `/` (app.gui's dashboard) — experiment for sending
     an image instead of text as the weekly ntfy notification (see
-    app.screenshot). Playwright is a dev-only dependency (pyproject.toml),
-    so this 503s with a clear message rather than the app failing to import
-    when it isn't installed — this route is a preview tool, not a
-    production send path yet."""
-    try:
-        from app.screenshot import screenshot_dashboard_png
-    except ImportError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail="Screenshot preview needs the dev-only playwright dependency "
-            "(pip install -e '.[dev]' && playwright install chromium).",
-        ) from exc
+    app.screenshot). Renders on demand, does not save to disk — see
+    POST /weekly-report/generate for the saved version."""
+    from app.screenshot import screenshot_dashboard_png
 
     png_bytes = screenshot_dashboard_png(today=today)
     return Response(content=png_bytes, media_type="image/png")
+
+
+@router.post("/weekly-report/generate")
+def weekly_report_generate(today: str | None = Query(default=None)):
+    """Forces an out-of-schedule report generation: screenshots the
+    dashboard and saves it under REPORTS_DIR (see app.screenshot), same as
+    generate_report.py's CLI entry point — this is that same save reachable
+    over HTTP, for manual testing without shelling into the container.
+    No scheduler calls this yet; it exists for (a) this manual trigger and
+    (b) the future external cron job hitting it instead of shelling in to
+    run the CLI script directly."""
+    from app.screenshot import save_weekly_report_screenshot
+
+    saved_path = save_weekly_report_screenshot(today=today)
+    return {"saved": str(saved_path)}
 
 
 # Display semaphore for muscle_group_weekly_trend's session_count — mirrors
