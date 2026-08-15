@@ -198,16 +198,12 @@
 </div>
 
 <h2 class="section-title">Exercise analysis</h2>
-<p class="section-desc" style="max-width: 70ch; margin-left: auto; margin-right: auto; text-align: center;">
-  This week's (Monday–today) working-set volume and frequency per muscle group, and
-  whether exercises trained this week are actually progressing.
-</p>
 
 {% if not current_week %}
 <p class="empty">No muscle group trained yet this week.</p>
 {% else %}
 
-<h3 style="text-align: center;">This week</h3>
+<h3 style="text-align: center;">Volume + Frequency analysis</h3>
 <p class="legend" style="flex-direction: column; align-items: center; gap: 0.35rem;">
   <span>Frequency: <span class="dot RED"></span>0/w <span class="dot YELLOW"></span>1/w <span class="dot GREEN"></span>2+/w</span>
   <span>Volume: <span class="dot RED"></span>&lt;5 <span class="dot YELLOW"></span>5-9 <span class="dot GREEN"></span>10-20 <span class="dot YELLOW"></span>&gt;20</span>
