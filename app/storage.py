@@ -240,6 +240,16 @@ CREATE TABLE IF NOT EXISTS parse_failures (
   failed_at    TEXT NOT NULL,
   PRIMARY KEY (record_type, record_id)
 );
+
+-- Generic single-row-per-key app settings (app.scheduler's weekly-report
+-- day/hour config, GET/POST via app.gui) — a plain key/value table rather
+-- than a dedicated schedule table, since this is the one setting the app
+-- has today and more may follow; not re-derivable from raw files like
+-- everything else, so it's real user configuration, not an index.
+CREATE TABLE IF NOT EXISTS app_settings (
+  key    TEXT PRIMARY KEY,
+  value  TEXT NOT NULL
+);
 """
 
 # Bumped by hand whenever the set of fields the parser extracts changes.
@@ -1196,3 +1206,22 @@ def get_all_records(conn: sqlite3.Connection, table: str = "sessions") -> list[t
     id_column = _id_column(table)
     rows = conn.execute(f"SELECT {id_column}, raw_path FROM {table}").fetchall()  # noqa: S608
     return [(r[0], r[1]) for r in rows]
+
+
+def get_setting(conn: sqlite3.Connection, key: str) -> str | None:
+    """Reads one app_settings value, or None if the key was never set."""
+    row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else None
+
+
+def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
+    """Upserts one app_settings value. Caller commits (same convention as
+    every other write helper here — connect()'s context manager commits on
+    clean exit)."""
+    conn.execute(
+        """
+        INSERT INTO app_settings (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value
+        """,
+        (key, value),
+    )

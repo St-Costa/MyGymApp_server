@@ -24,6 +24,11 @@ dependencies = [
     # --with-deps chromium` too (see Dockerfile); pulls in a real Chromium at
     # image-build time, not just this package.
     "playwright>=1.47",
+    # In-process cron for the weekly report screenshot (app/scheduler.py) —
+    # runs inside the same long-lived server process (restart: unless-stopped
+    # in docker-compose.yaml) rather than depending on an external cron job
+    # ever being set up, which generate_report.py alone was blocked on.
+    "apscheduler>=3.10,<4",
 ]
 
 [project.optional-dependencies]
