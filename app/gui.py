@@ -129,11 +129,13 @@ def _frequency_dot(session_count: int) -> str:
 
 # Dot color per OverloadMetricVerdict.verdict value, for the
 # progressive-overload table cells — per user decision: growing green,
-# stalled gray, fast yellow, dropping red, no dot at all when there's
-# nothing to show (INSUFFICIENT_DATA, handled separately in _overload_cell).
+# stalled gray, fast RED (same severity as dropping — an implausible jump
+# is flagged as hard a problem as losing strength, not a lesser caution),
+# no dot at all when there's nothing to show (INSUFFICIENT_DATA, handled
+# separately in _overload_cell).
 _OVERLOAD_VERDICT_COLOR = {
     "UP_HEALTHY": "GREEN",
-    "UP_TOO_FAST": "YELLOW",
+    "UP_TOO_FAST": "RED",
     "STALLED": "GRAY",
     "DOWN": "RED",
 }
