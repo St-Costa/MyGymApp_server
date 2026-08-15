@@ -70,6 +70,7 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
         session_calories = session_calories_trend(conn, today=today)
         session_trimp = session_trimp_trend(conn, today=today)
         maintenance = estimated_maintenance_calories(conn, today=today)
+        exercise_analysis = _exercise_analysis_context(conn, today)
 
     return templates.TemplateResponse(
         request,
@@ -95,6 +96,8 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
             "session_calories_trend": [asdict(p) for p in session_calories],
             "session_trimp_trend": [asdict(p) for p in session_trimp],
             "maintenance": asdict(maintenance) if maintenance else None,
+            "current_week": exercise_analysis["current_week"],
+            "overload_rows": exercise_analysis["overload_rows"],
         },
     )
 
@@ -153,8 +156,7 @@ def _overload_cell(v) -> dict | None:
     }
 
 
-@router.get("/hypertrophy", response_class=HTMLResponse)
-def hypertrophy(request: Request, today: str | None = Query(default=None)):
+def _exercise_analysis_context(conn, today: str | None) -> dict:
     """Current-week muscle-group volume/frequency (Schoenfeld-et-al.-derived
     semaphores) and progressive-overload verdicts for exercises trained this
     week — built on top of exercise_sets.bodypart. See app.analysis's module
@@ -162,16 +164,16 @@ def hypertrophy(request: Request, today: str | None = Query(default=None)):
     for the full reasoning/thresholds. "This week" is the calendar Monday..
     Sunday containing `today`, not a rolling 7-day window — same convention
     as exercise_ids_trained_this_week/muscle_group_weekly_trend's own
-    Monday-keyed buckets."""
-    with connect(DB_PATH) as conn:
-        muscle_trend = muscle_group_weekly_trend(conn, today=today)
-        trained_this_week = exercise_ids_trained_this_week(conn, today=today)
-        exercises = list_exercises(conn)
-        exercises_this_week = [e for e in exercises if e.exercise_id in trained_this_week]
-        overload = [
-            progressive_overload_verdict(conn, e.exercise_id, today=today)
-            for e in exercises_this_week
-        ]
+    Monday-keyed buckets. Shared by the dashboard's "Exercise analysis"
+    section — this used to be its own /hypertrophy page, folded into Trends
+    per user request."""
+    muscle_trend = muscle_group_weekly_trend(conn, today=today)
+    trained_this_week = exercise_ids_trained_this_week(conn, today=today)
+    exercises = list_exercises(conn)
+    exercises_this_week = [e for e in exercises if e.exercise_id in trained_this_week]
+    overload = [
+        progressive_overload_verdict(conn, e.exercise_id, today=today) for e in exercises_this_week
+    ]
 
     # Only the most recent week per bodypart, and only bodyparts actually
     # trained this week (set_count > 0) — per user decision, an empty card
@@ -206,14 +208,7 @@ def hypertrophy(request: Request, today: str | None = Query(default=None)):
     # per metric; e1RM and tonnage verdicts can still disagree within a row.
     overload_rows.sort(key=lambda r: r["_sort_key"], reverse=True)
 
-    return templates.TemplateResponse(
-        request,
-        "hypertrophy.html",
-        {
-            "current_week": current_week,
-            "overload_rows": overload_rows,
-        },
-    )
+    return {"current_week": current_week, "overload_rows": overload_rows}
 
 
 @router.get("/exercises", response_class=HTMLResponse)
