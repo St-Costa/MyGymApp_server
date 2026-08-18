@@ -124,6 +124,36 @@ readings, not just enough to clear the minimum once) — as of 2026-08-12: **6**
 
 ---
 
+## 5. `sessions.hrr60s` monotonicity filter (phone-side) — not blocked on data, blocked on an app change
+
+**Not the same kind of entry as 1-4 above**: this isn't waiting on more synced data: it's a
+server-side finding that needs a *phone-side* code change to fix, which is out of scope for
+this repo. Listed here anyway so it isn't lost, per this doc's stated purpose.
+
+**Finding** (investigated 2026-08-18, prompted by the user noticing `hrr60s`/`hrr_1min`/
+`hrr_2min` running suspiciously low): `hrr_1min`/`hrr_2min` (this server's ECG-based
+approximation) now discard a value when HR rebounds instead of monotonically recovering —
+see `ECG_ADVANCED_ANALYSIS.md` §5 "Discarded when HR rebounds instead of resting"
+(schema_version 9). `sessions.hrr60s` is a different, phone-side-computed value
+(`ANALYSIS_SPEC.md` §7: `peak_hr - hr_sample_taken_at_or_after(peak_time + 60s)`, per-set,
+averaged over the session) — this server only ever receives the final averaged number, not
+the per-set HR series with timestamps the phone computed it from, so the same monotonicity
+check can't be applied here. The likely same root cause (activity resuming inside the 60s
+window instead of a real rest, especially warm-up/daily-exercise sets) is very plausibly
+depressing `hrr60s` too — `hrr60s` sessions here run 5-36bpm, mostly hugging or just above
+the clinical "abnormal" ≤12bpm cutoff, low for a trained subject.
+
+**Blocked on**: a phone-side change to `peak_qualifies`/the `hrr60s` computation (Android
+app, not this repo) — applying an equivalent "was HR actually falling monotonically in the
+60s after this peak, not just lower at the one sampled endpoint" check before including a
+per-set delta in the `hrr60s` mean. Not a sync-format change; `hrr60s` stays a single float
+either way.
+
+**Whose responsibility**: the Android app codebase — out of scope for an agent working in
+this repo.
+
+---
+
 ## How to use this doc
 
 - When touching any of the metrics above, or when the user asks about further server-side

@@ -624,6 +624,8 @@ def test_heart_rate_recovery_drops_after_synthetic_peak() -> None:
     assert result.hrr_2min is not None
     assert result.hrr_1min > 0
     assert result.hrr_2min > result.hrr_1min
+    assert result.hrr_1min_discarded is False
+    assert result.hrr_2min_discarded is False
 
 
 def test_heart_rate_recovery_ignores_a_single_noisy_beat_as_the_peak() -> None:
@@ -673,6 +675,52 @@ def test_heart_rate_recovery_none_for_too_few_peaks() -> None:
     from app.ecg_analysis import compute_heart_rate_recovery
 
     assert compute_heart_rate_recovery([0, 100], 130) == compute_heart_rate_recovery([], 130)
+
+
+def test_heart_rate_recovery_discarded_when_hr_rebounds_before_offset() -> None:
+    """Regression test for the "didn't actually rest" case: HR falls for 15s
+    after the peak, then climbs back up (short of a new peak) for another
+    15s before settling low for the rest of the recording — as happens when
+    activity resumes (another exercise, walking, talking) well inside the
+    60s/120s windows instead of a real rest. Real recovery is monotonic (on
+    the smoothed series), so this rebound must discard both hrr_1min and
+    hrr_2min (None, discarded=True) rather than report a number that looks
+    like genuine recovery but isn't. The delta itself is still returned here
+    (compute_heart_rate_recovery keeps it available for debugging) — it's
+    analyze_ecg_recording that nulls it out for storage based on the
+    discarded flags, so this test asserts on the flags, not on None."""
+    from app.ecg_analysis import compute_heart_rate_recovery
+
+    sample_rate = 130
+    peaks = [0]
+    t_ms = 0.0
+    n_up = 80
+    for i in range(n_up):
+        hr = 90 + (160 - 90) * (i / n_up)
+        t_ms += 60000.0 / hr
+        peaks.append(round(t_ms / 1000 * sample_rate))
+    # Falls for 15s (160 -> 110bpm)...
+    n_down = 45
+    for i in range(n_down):
+        hr = 160 - (160 - 110) * (i / n_down)
+        t_ms += 60000.0 / hr
+        peaks.append(round(t_ms / 1000 * sample_rate))
+    # ...then rebounds for 15s (110 -> 150bpm, still short of the original
+    # peak so the peak search doesn't just relocate here)...
+    n_rebound = 45
+    for i in range(n_rebound):
+        hr = 110 + (150 - 110) * (i / n_rebound)
+        t_ms += 60000.0 / hr
+        peaks.append(round(t_ms / 1000 * sample_rate))
+    # ...then settles low for the rest of a >2min recording.
+    n_tail = 450
+    for _ in range(n_tail):
+        t_ms += 60000.0 / 105
+        peaks.append(round(t_ms / 1000 * sample_rate))
+
+    result = compute_heart_rate_recovery(peaks, sample_rate)
+    assert result.hrr_1min_discarded is True
+    assert result.hrr_2min_discarded is True
 
 
 # ---------------------------------------------------------------------------

@@ -148,6 +148,27 @@ beat gets averaged away. Real HRR is always measured against a sustained rate in
 clinical literature too, never a single instant, so this isn't just noise reduction — it
 matches how the metric is actually defined.
 
+**Discarded when HR rebounds instead of resting (schema_version 8 → 9)**: real recovery is
+monotonically decreasing on the smoothed series — investigated against this project's real
+data (August 2026) after noticing `hrr60s`/`hrr_1min`/`hrr_2min` running suspiciously low
+for a trained subject, several near the clinical "abnormal" ≤12bpm cutoff, and `hrr_2min <
+hrr_1min` (HR *worse* at 2min than at 1min — physiologically shouldn't happen in a real
+passive recovery) in 16 of 32 sessions with both values present. Root cause: activity often
+resumes well inside the 60s/120s window (next set/exercise starts, walking, talking) rather
+than a genuine seated rest, especially during warm-up/daily-exercise blocks — so the
+"recovery" delta is actually measuring against HR from renewed effort, not rest.
+`_hr_recovery_at` now walks the smoothed-HR path from peak to the target offset and tracks
+the running minimum; if HR climbs back more than `_HRR_REBOUND_TOLERANCE_BPM` (5bpm) off
+that minimum before the target, the value is discarded (stored as NULL) rather than
+reported — a rebound past 5bpm on an already-12s-smoothed series is a real change in
+direction, not residual noise. `hrr_1min_discarded`/`hrr_2min_discarded` record *why* a
+value is NULL (discarded vs. recording too short to measure at all), so this is auditable
+over time rather than just quietly reducing coverage. This only touches `hrr_1min`/
+`hrr_2min` (this pipeline's ECG-based approximation) — `sessions.hrr60s` is computed
+phone-side from data this server never receives (per-set HR series with timestamps), so the
+same check can't be applied there without a phone-side change; see
+`PENDING_IMPROVEMENTS.md`.
+
 **Not coalesced with `sessions.hrr60s` in the dashboard trend, despite both being "HRR" —
 investigated and rejected**: `hrr60s` (ANALYSIS_SPEC.md §7) is the phone's own *mean of
 multiple per-set recovery deltas* within a session (`peak_qualifies` gate + 90s debounce

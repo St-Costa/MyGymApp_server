@@ -203,6 +203,12 @@ CREATE TABLE IF NOT EXISTS ecg_analysis (
   cvi                       REAL,  -- nonlinear HRV: Cardiac Vagal Index
   hrr_1min                 REAL,   -- heart rate recovery, 1min after the recording's peak HR
   hrr_2min                 REAL,   -- heart rate recovery, 2min after the recording's peak HR
+  -- 0/1: HRR above was computed but discarded for failing the monotonicity
+  -- check (HR rebounded during the peak->offset window instead of resting)
+  -- — see app.ecg_analysis._HRR_REBOUND_TOLERANCE_BPM. hrr_*min is NULL
+  -- whenever its flag is 1; distinguishes that from "recording too short".
+  hrr_1min_discarded       INTEGER,
+  hrr_2min_discarded       INTEGER,
   -- Minutes in each heart-rate training zone (%HRR/Karvonen when a resting
   -- HR was available, %HRmax fallback otherwise — see hr_zones_used_hrr
   -- and app.ecg_analysis.compute_hr_zone_minutes). below_zone1_min is time
@@ -279,6 +285,7 @@ def init_db(db_path: Path = DB_PATH) -> None:
         _migrate_exercise_sets_is_bodyweight_column(conn)
         _migrate_sessions_rpe_columns(conn)
         _migrate_ecg_analysis_advanced_columns(conn)
+        _migrate_ecg_analysis_hrr_discarded_columns(conn)
         _migrate_ecg_analysis_hr_zone_columns(conn)
         _migrate_ecg_analysis_calorie_columns(conn)
         _migrate_exercise_sets_cardio_columns(conn)
@@ -378,6 +385,19 @@ def _migrate_ecg_analysis_advanced_columns(conn: sqlite3.Connection) -> None:
     for column in new_columns:
         if column not in columns:
             conn.execute(f"ALTER TABLE ecg_analysis ADD COLUMN {column} REAL")  # noqa: S608
+
+
+def _migrate_ecg_analysis_hrr_discarded_columns(conn: sqlite3.Connection) -> None:
+    """One-time migration: hrr_1min_discarded/hrr_2min_discarded (the HRR
+    monotonicity check — app.ecg_analysis._HRR_REBOUND_TOLERANCE_BPM) were
+    added after ecg_analysis already existed in deployed databases — same
+    pattern as _migrate_ecg_analysis_advanced_columns above. NULL for
+    existing rows (indistinguishable from 0/false until re-analyzed;
+    analyze_ecg.py --stale backfills a real value)."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(ecg_analysis)")}
+    for column in ("hrr_1min_discarded", "hrr_2min_discarded"):
+        if column not in columns:
+            conn.execute(f"ALTER TABLE ecg_analysis ADD COLUMN {column} INTEGER")  # noqa: S608
 
 
 def _migrate_ecg_analysis_hr_zone_columns(conn: sqlite3.Connection) -> None:
@@ -614,6 +634,15 @@ class EcgAnalysisResult:
     cvi: float | None = None
     hrr_1min: float | None = None
     hrr_2min: float | None = None
+    # True when app.ecg_analysis.compute_heart_rate_recovery computed a
+    # value but discarded it for failing the monotonicity check (HR
+    # rebounded during the peak->offset window — see
+    # _HRR_REBOUND_TOLERANCE_BPM) — hrr_1min/hrr_2min above are already
+    # None in that case; this distinguishes "not actually resting" from
+    # "recording too short to measure at all" for anyone auditing why HRR
+    # is missing on a given session.
+    hrr_1min_discarded: bool = False
+    hrr_2min_discarded: bool = False
     # Minutes in each heart-rate training zone (app.ecg_analysis.
     # compute_hr_zone_minutes) — hr_below_zone1_min is time under even Z1's
     # floor (rest between sets), not itself a zone. hr_zones_used_hrr
@@ -1005,7 +1034,15 @@ def upsert_parsed_ecg(
 # weigh-in, instead of the phone's optical-sensor HR and static profile
 # weight. Rows analyzed under schema_version < 8 have NULL in both columns
 # until re-analyzed.
-ECG_ANALYSIS_SCHEMA_VERSION = 8
+# Bumped to 9: compute_heart_rate_recovery now discards hrr_1min/hrr_2min
+# when HR rebounds by more than _HRR_REBOUND_TOLERANCE_BPM inside the
+# peak->offset window instead of monotonically falling — a rebound means
+# the subject resumed activity rather than actually resting, so the delta
+# no longer measures recovery (see ECG_ADVANCED_ANALYSIS.md's "Heart Rate
+# Recovery" section). Rows analyzed under schema_version < 9 may have a
+# hrr_1min/hrr_2min value that would now be discarded; hrr_*min_discarded
+# is NULL for all of them until re-analyzed.
+ECG_ANALYSIS_SCHEMA_VERSION = 9
 
 
 def upsert_ecg_analysis(
@@ -1024,7 +1061,7 @@ def upsert_ecg_analysis(
             pac_count, pause_count, irregular_beats, afib_suspicion_episodes,
             peak_count, kurtosis_sqi, b_sqi, dfa_alpha1,
             hrv_lf, hrv_hf, hrv_lf_hf, sample_entropy, csi, cvi,
-            hrr_1min, hrr_2min,
+            hrr_1min, hrr_2min, hrr_1min_discarded, hrr_2min_discarded,
             hr_zone1_min, hr_zone2_min, hr_zone3_min, hr_zone4_min, hr_zone5_min,
             hr_below_zone1_min, hr_zones_used_hrr,
             session_calories_ecg, session_trimp_ecg, analyzed_at, schema_version
@@ -1034,7 +1071,7 @@ def upsert_ecg_analysis(
             :pac_count, :pause_count, :irregular_beats, :afib_suspicion_episodes,
             :peak_count, :kurtosis_sqi, :b_sqi, :dfa_alpha1,
             :hrv_lf, :hrv_hf, :hrv_lf_hf, :sample_entropy, :csi, :cvi,
-            :hrr_1min, :hrr_2min,
+            :hrr_1min, :hrr_2min, :hrr_1min_discarded, :hrr_2min_discarded,
             :hr_zone1_min, :hr_zone2_min, :hr_zone3_min, :hr_zone4_min, :hr_zone5_min,
             :hr_below_zone1_min, :hr_zones_used_hrr,
             :session_calories_ecg, :session_trimp_ecg, :analyzed_at, :schema_version
@@ -1052,6 +1089,8 @@ def upsert_ecg_analysis(
             hrv_hf=excluded.hrv_hf, hrv_lf_hf=excluded.hrv_lf_hf,
             sample_entropy=excluded.sample_entropy, csi=excluded.csi, cvi=excluded.cvi,
             hrr_1min=excluded.hrr_1min, hrr_2min=excluded.hrr_2min,
+            hrr_1min_discarded=excluded.hrr_1min_discarded,
+            hrr_2min_discarded=excluded.hrr_2min_discarded,
             hr_zone1_min=excluded.hr_zone1_min, hr_zone2_min=excluded.hr_zone2_min,
             hr_zone3_min=excluded.hr_zone3_min, hr_zone4_min=excluded.hr_zone4_min,
             hr_zone5_min=excluded.hr_zone5_min,
@@ -1087,6 +1126,8 @@ def upsert_ecg_analysis(
             "cvi": result.cvi,
             "hrr_1min": result.hrr_1min,
             "hrr_2min": result.hrr_2min,
+            "hrr_1min_discarded": int(result.hrr_1min_discarded),
+            "hrr_2min_discarded": int(result.hrr_2min_discarded),
             "hr_zone1_min": result.hr_zone1_min,
             "hr_zone2_min": result.hr_zone2_min,
             "hr_zone3_min": result.hr_zone3_min,
