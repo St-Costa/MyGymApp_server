@@ -22,6 +22,20 @@ def test_dashboard_reflects_ingested_session(app_client) -> None:
     assert "Only 1 session(s) in last 4 weeks" in response.text
 
 
+def test_dashboard_progressive_overload_omits_rows_with_no_data_on_either_metric(
+    app_client,
+) -> None:
+    """A single ingested session has nothing to compare against (no prior
+    week trained) — progressive_overload_verdict returns INSUFFICIENT_DATA
+    on both e1RM and tonnage, so the row would render as "(Not enough
+    data)" in every column. Such a row is noise, not signal, and must be
+    omitted from the table entirely rather than shown."""
+    post_session(app_client)  # SESSION_MD: dated 2025-04-15, only session for ex-a1b2c3d4
+    response = app_client.get("/", params={"today": "2025-04-20"})
+    assert response.status_code == 200
+    assert "Not enough data" not in response.text
+
+
 def test_dashboard_readiness_chart_renders_with_no_data(app_client) -> None:
     response = app_client.get("/")
     assert response.status_code == 200
