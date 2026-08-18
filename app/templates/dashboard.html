@@ -245,6 +245,7 @@
 <h3 style="text-align: center;">Progressive overload</h3>
 <p class="section-desc" style="max-width: 70ch; margin-left: auto; margin-right: auto; text-align: center;">
   This week's average vs. the average of the last week this exercise was also trained.
+  Exercises with not enough data on both e1RM and tonnage are omitted.
 </p>
 
 {% if not overload_rows %}
@@ -1212,7 +1213,12 @@
       }
       lines.push("");
     }
-    lines.push("### Progressive overload (this week vs. last time trained)", "");
+    lines.push(
+      "### Progressive overload (this week vs. last time trained)",
+      "",
+      "_Exercises with not enough data on both e1RM and tonnage are omitted._",
+      ""
+    );
     {
       const overloadRows = {{ overload_rows | tojson }};
       if (overloadRows.length) {

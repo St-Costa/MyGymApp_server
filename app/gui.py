@@ -196,16 +196,24 @@ def _exercise_analysis_context(conn, today: str | None) -> dict:
     ]
 
     exercise_names = {e.exercise_id: e.exercise_name or e.exercise_id for e in exercises}
-    overload_rows = [
-        {
-            "exercise_id": v.exercise_id,
-            "exercise_name": exercise_names.get(v.exercise_id, v.exercise_id),
-            "e1rm": _overload_cell(v.e1rm),
-            "tonnage": _overload_cell(v.tonnage),
-            "_sort_key": v.e1rm.percent_per_week or v.tonnage.percent_per_week or 0,
-        }
-        for v in overload
-    ]
+    overload_rows = []
+    for v in overload:
+        e1rm_cell = _overload_cell(v.e1rm)
+        tonnage_cell = _overload_cell(v.tonnage)
+        # Skip exercises with no verdict on either metric — a row that's
+        # "(Not enough data)" in both columns tells the user nothing
+        # actionable, just adds noise to a table meant to highlight movers.
+        if e1rm_cell is None and tonnage_cell is None:
+            continue
+        overload_rows.append(
+            {
+                "exercise_id": v.exercise_id,
+                "exercise_name": exercise_names.get(v.exercise_id, v.exercise_id),
+                "e1rm": e1rm_cell,
+                "tonnage": tonnage_cell,
+                "_sort_key": v.e1rm.percent_per_week or v.tonnage.percent_per_week or 0,
+            }
+        )
     # Biggest movers (by e1RM rate, falling back to tonnage) surface first —
     # a single sort key since the table shows one row per exercise, not one
     # per metric; e1RM and tonnage verdicts can still disagree within a row.
