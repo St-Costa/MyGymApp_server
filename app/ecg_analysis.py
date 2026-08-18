@@ -690,7 +690,26 @@ def _finite_or_none(value: float) -> float | None:
 class HeartRateRecoveryResult:
     hrr_1min: float | None
     hrr_2min: float | None
+    # True when a value above was computed but then discarded for failing
+    # the monotonicity check (see _hr_recovery_at) — distinguishes "recovery
+    # wasn't actually resting" from "recording too short to measure at all"
+    # (the latter is a plain None with the flag False). None when the
+    # corresponding *_min value is itself None for an unrelated reason
+    # (recording too short, <3 peaks) — there's nothing to have discarded.
+    hrr_1min_discarded: bool = False
+    hrr_2min_discarded: bool = False
 
+
+# bpm of net rebound (rise back up from the lowest point reached partway
+# through the peak->offset window) tolerated before an HRR value is treated
+# as unreliable and discarded. True recovery is monotonically decreasing (on
+# the already-12s-smoothed series, essentially noise-free); a rebound past
+# this margin means HR climbed again inside the window instead of
+# continuing to fall — the subject resumed activity (another exercise,
+# walking, talking) rather than actually resting, so the delta to the
+# target-time sample no longer measures recovery at all. See
+# ECG_ADVANCED_ANALYSIS.md's "Heart Rate Recovery" section.
+_HRR_REBOUND_TOLERANCE_BPM = 5.0
 
 # Window (seconds) for smoothing instantaneous HR before searching for the
 # recording's "peak" — found necessary against real gym-session recordings
@@ -767,13 +786,18 @@ def compute_heart_rate_recovery(peaks: list[int], sample_rate: int) -> HeartRate
     peak_time_s = inst_hr_times_s[peak_idx]
     recording_end_s = inst_hr_times_s[-1]
 
-    hrr_1min = _hr_recovery_at(
+    hrr_1min, hrr_1min_discarded = _hr_recovery_at(
         smoothed_hr, inst_hr_times_s, peak_hr, peak_time_s, 60.0, recording_end_s
     )
-    hrr_2min = _hr_recovery_at(
+    hrr_2min, hrr_2min_discarded = _hr_recovery_at(
         smoothed_hr, inst_hr_times_s, peak_hr, peak_time_s, 120.0, recording_end_s
     )
-    return HeartRateRecoveryResult(hrr_1min=hrr_1min, hrr_2min=hrr_2min)
+    return HeartRateRecoveryResult(
+        hrr_1min=hrr_1min,
+        hrr_2min=hrr_2min,
+        hrr_1min_discarded=hrr_1min_discarded,
+        hrr_2min_discarded=hrr_2min_discarded,
+    )
 
 
 def _hr_recovery_at(
@@ -783,20 +807,45 @@ def _hr_recovery_at(
     peak_time_s: float,
     offset_s: float,
     recording_end_s: float,
-) -> float | None:
+) -> tuple[float | None, bool]:
     """HR drop from `peak_hr` to the *smoothed* HR nearest `offset_s`
     seconds after the peak (see compute_heart_rate_recovery's docstring for
-    why smoothed, not instantaneous). None if the recording doesn't extend
-    far enough past the peak to measure that offset at all — a short/no-
-    cooldown recording shouldn't report a fabricated recovery number."""
+    why smoothed, not instantaneous). Returns (None, False) if the recording
+    doesn't extend far enough past the peak to measure that offset at all —
+    a short/no-cooldown recording shouldn't report a fabricated recovery
+    number.
+
+    Also checks the *path* from peak to target, not just its endpoints: real
+    recovery is monotonically decreasing (on this already-smoothed series),
+    so if HR rebounds more than _HRR_REBOUND_TOLERANCE_BPM off its lowest
+    point partway through the window, the subject most likely resumed
+    activity instead of resting — see that constant's docstring. In that
+    case the delta is still returned (a caller may still want it, e.g. for
+    debugging) but flagged discarded=True; `compute_heart_rate_recovery`
+    only stores the value when this is False."""
     target_time = peak_time_s + offset_s
     if target_time > recording_end_s:
-        return None
+        return None, False
     # Nearest sample to the target time, by absolute distance.
     closest_idx = min(
         range(len(inst_hr_times_s)), key=lambda i: abs(inst_hr_times_s[i] - target_time)
     )
-    return peak_hr - smoothed_hr[closest_idx]
+    delta = peak_hr - smoothed_hr[closest_idx]
+
+    window_indices = [
+        i
+        for i in range(len(inst_hr_times_s))
+        if peak_time_s <= inst_hr_times_s[i] <= target_time
+    ]
+    running_min = peak_hr
+    discarded = False
+    for i in window_indices:
+        running_min = min(running_min, smoothed_hr[i])
+        if smoothed_hr[i] - running_min > _HRR_REBOUND_TOLERANCE_BPM:
+            discarded = True
+            break
+
+    return delta, discarded
 
 
 @dataclass
@@ -1132,8 +1181,14 @@ def analyze_ecg_recording(
         sample_entropy=neurokit_metrics.sample_entropy,
         csi=neurokit_metrics.csi,
         cvi=neurokit_metrics.cvi,
-        hrr_1min=hrr.hrr_1min,
-        hrr_2min=hrr.hrr_2min,
+        # Stored as None (not the computed-but-unreliable delta) when
+        # discarded — see HeartRateRecoveryResult's docstring; a discarded
+        # value would otherwise silently pollute trends/dashboards the same
+        # way as a genuine recovery measurement.
+        hrr_1min=None if hrr.hrr_1min_discarded else hrr.hrr_1min,
+        hrr_2min=None if hrr.hrr_2min_discarded else hrr.hrr_2min,
+        hrr_1min_discarded=hrr.hrr_1min_discarded,
+        hrr_2min_discarded=hrr.hrr_2min_discarded,
         hr_zone1_min=hr_zones.zone1 if hr_zones else None,
         hr_zone2_min=hr_zones.zone2 if hr_zones else None,
         hr_zone3_min=hr_zones.zone3 if hr_zones else None,
