@@ -83,7 +83,12 @@ CREATE TABLE IF NOT EXISTS exercise_sets (
   started_at            TEXT,
   ended_at              TEXT,
   avg_hr                INTEGER,
-  max_hr                INTEGER
+  max_hr                INTEGER,
+  -- STRETCH-only: held duration in seconds for one stretch set
+  -- ({timeSeconds, done} on the phone). NULL for FORZA/CARDIO rows, and for
+  -- a stretch set that was left untouched/abandoned (no timeSeconds sent) —
+  -- consumed by app.analysis.stretch_weekly_trend.
+  time_seconds          INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_exercise_sets_session ON exercise_sets(session_id);
 -- app.analysis filters on exercise_id in PR lookups (all_time_tonnage_pr,
@@ -286,7 +291,13 @@ CREATE TABLE IF NOT EXISTS parse_failures (
 # `weight` is no longer 0 for touched bodyweight work). Audit only, no math
 # depends on them; reparse.py --stale backfills them for any bodyweight
 # session synced between the phone shipping the field and this bump.
-PARSER_SCHEMA_VERSION = 7
+# Bumped to 8: exercise_sets gained time_seconds — the held duration of a
+# STRETCH set ({timeSeconds, done}), which the parser previously dropped
+# entirely (STRETCH ran through the FORZA path, forcing reps/weight to 0 and
+# never reading timeSeconds). Feeds app.analysis.stretch_weekly_trend. Every
+# STRETCH set synced before this bump has time_seconds NULL until
+# reparse.py --stale re-extracts it from the raw file.
+PARSER_SCHEMA_VERSION = 8
 
 # schema_version stamped on a row written from step 6's "on failure" path —
 # the raw file is safely stored but nothing has been successfully parsed yet.
@@ -306,6 +317,7 @@ def init_db(db_path: Path = DB_PATH) -> None:
         _migrate_ecg_analysis_calorie_columns(conn)
         _migrate_exercise_sets_cardio_columns(conn)
         _migrate_exercise_sets_bodyweight_load_columns(conn)
+        _migrate_exercise_sets_stretch_time_column(conn)
         _migrate_readiness_events_steps_columns(conn)
 
 
@@ -373,6 +385,20 @@ def _migrate_exercise_sets_bodyweight_load_columns(conn: sqlite3.Connection) -> 
         conn.execute("ALTER TABLE exercise_sets ADD COLUMN bw_load_percent INTEGER")
     if "bw_base_weight_kg" not in columns:
         conn.execute("ALTER TABLE exercise_sets ADD COLUMN bw_base_weight_kg REAL")
+
+
+def _migrate_exercise_sets_stretch_time_column(conn: sqlite3.Connection) -> None:
+    """One-time migration: `exercise_sets.time_seconds` (STRETCH held
+    duration) was added after `exercise_sets` already existed in deployed
+    databases — same pattern as _migrate_exercise_sets_cardio_columns above.
+    Left NULL for existing rows: correct for every FORZA/CARDIO row, and for
+    any STRETCH row synced before this too (those went through the old FORZA
+    path with reps/weight forced to 0 and timeSeconds never read).
+    reparse.py --stale re-extracts the real held seconds from the raw file
+    once PARSER_SCHEMA_VERSION is bumped."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(exercise_sets)")}
+    if "time_seconds" not in columns:
+        conn.execute("ALTER TABLE exercise_sets ADD COLUMN time_seconds INTEGER")
 
 
 def _migrate_exercise_sets_cardio_columns(conn: sqlite3.Connection) -> None:
@@ -549,6 +575,9 @@ class ExerciseSet:
     ended_at: str | None = None
     avg_hr: int | None = None
     max_hr: int | None = None
+    # STRETCH-only: held duration in seconds. None for FORZA/CARDIO rows and
+    # for an untouched stretch set; reps/weight stay None on STRETCH rows.
+    time_seconds: int | None = None
 
 
 @dataclass
@@ -849,8 +878,8 @@ def upsert_parsed_session(
             session_id, exercise_id, exercise_name, exercise_type, bodypart,
             set_index, reps, weight, exclude_from_tonnage, is_daily, is_bodyweight,
             bw_load_percent, bw_base_weight_kg,
-            started_at, ended_at, avg_hr, max_hr
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            started_at, ended_at, avg_hr, max_hr, time_seconds
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -871,6 +900,7 @@ def upsert_parsed_session(
                 s.ended_at,
                 s.avg_hr,
                 s.max_hr,
+                s.time_seconds,
             )
             for s in parsed.exercise_sets
         ],
