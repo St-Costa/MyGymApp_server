@@ -67,6 +67,50 @@ def test_dashboard_progressive_overload_omits_rows_missing_either_metric(
     assert "Bench Press" not in response.text
 
 
+_STRETCH_SESSION_MD = """---
+id: 7a7a7a7a
+date: 2025-04-16
+completedAt: 2025-04-16T10:00:00
+exercises:
+  - exerciseId: ex-stretch01
+    exerciseName: Hamstring Stretch
+    type: STRETCH
+    bodypart: hamstrings
+    sets:
+      - timeSeconds: 210
+        done: true
+      - timeSeconds: 210
+        done: true
+---
+"""
+
+
+def test_dashboard_stretch_analysis_shows_minutes_and_semaphore(app_client) -> None:
+    # 210 + 210 = 420 s = 7 min this week for hamstrings -> GREEN (5-10 min band).
+    post_session(
+        app_client,
+        md_bytes=_STRETCH_SESSION_MD.encode(),
+        session_id="7a7a7a7a",
+    )
+    response = app_client.get("/", params={"today": "2025-04-20"})
+    assert response.status_code == 200
+    assert "Stretch analysis" in response.text
+    section = response.text.split("Stretch analysis")[1].split("Progressive overload")[0]
+    assert "Hamstrings" in section
+    assert "7.0 min/w" in section  # minutes, not seconds
+    # 7 min falls in the 5-10 min GREEN band.
+    hamstrings_card = section.split("Hamstrings")[1].split("</div>\n  </div>")[0]
+    assert "dot GREEN" in hamstrings_card
+    assert "dot RED" not in hamstrings_card
+
+
+def test_dashboard_stretch_analysis_empty_when_no_stretching_this_week(app_client) -> None:
+    post_session(app_client)  # SESSION_MD is FORZA-only
+    response = app_client.get("/", params={"today": "2025-04-20"})
+    assert response.status_code == 200
+    assert "No muscle group stretched yet this week." in response.text
+
+
 def test_dashboard_readiness_chart_renders_with_no_data(app_client) -> None:
     response = app_client.get("/")
     assert response.status_code == 200

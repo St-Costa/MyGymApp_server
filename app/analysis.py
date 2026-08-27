@@ -1154,7 +1154,14 @@ def exercise_history(
     default, matching ANALYSIS_SPEC.md §1.6's session tonnage/e1RM trend
     window). Not itself in the spec — this is the per-exercise chart the
     dashboard needs, built from the same best_estimated_1rm/set data the
-    spec's PR functions already use."""
+    spec's PR functions already use.
+
+    Weight-bearing rows only: STRETCH sets carry reps/weight NULL (their load
+    is a held duration, not a mass — see app.parsing) and CARDIO rows carry
+    them NULL too, so both are excluded here rather than crashing the
+    reps*weight/`weight > 0` arithmetic below. This mirrors
+    muscle_group_weekly_trend, which excludes STRETCH for the same reason —
+    an e1RM/tonnage trend is a strength concept."""
     today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
     window_start = today_date - timedelta(weeks=weeks)
 
@@ -1164,6 +1171,7 @@ def exercise_history(
         FROM exercise_sets es
         JOIN sessions s ON s.id = es.session_id
         WHERE es.exercise_id = ? AND es.exclude_from_tonnage = 0
+          AND es.reps IS NOT NULL AND es.weight IS NOT NULL
           AND s.date >= ? AND s.date <= ?
         ORDER BY s.date
         """,
@@ -2012,6 +2020,123 @@ def muscle_group_weekly_trend(
                 session_count=len(weeks[week]["sessions"]),
                 volume_semaphore=_volume_semaphore(weeks[week]["sets"]),
                 frequency_semaphore=_frequency_semaphore(len(weeks[week]["sessions"])),
+            )
+            for week in week_starts
+        ]
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Weekly stretching volume per muscle group — the STRETCH-type counterpart to
+# muscle_group_weekly_trend above, added on user request. Not in
+# ANALYSIS_SPEC.md.
+#
+# Threshold is Ingram et al. 2025 (Sports Medicine 55(3):597-617), a
+# meta-analysis + multivariate meta-regression of 189 studies / 6,654 adults
+# — "improvements in flexibility were maximised by a cumulative stretching
+# volume of ... 10 min per week (chronic)", with "no notable increases in
+# flexibility beyond 10 min of static stretching per week" and no lower
+# plateau (more is better up to 10 min). Supporting: Palma et al. (via the
+# Huberman Lab newsletter) put the effective minimum at ~5 min/muscle/week;
+# Medeiros & Martini found >5 min/week beats <5 min/week for ROM.
+#
+# The band here (RED <5 min, GREEN 5-10 min, RED >10 min) is per user
+# decision. The >10-min RED is NOT from the literature — Ingram found no harm
+# from over-stretching, only a plateau — it's a deliberate "time better spent
+# on an under-stretched muscle" signal in this single-user tool.
+#
+# Ingram also found weekly *frequency* had no independent effect on
+# flexibility (g = -0.001, p = 0.95: "5 min in one session was as good as
+# spread over 5 days"), so unlike muscle_group_weekly_trend there is
+# deliberately no frequency semaphore here — total weekly held-seconds is the
+# only lever the evidence supports.
+# ---------------------------------------------------------------------------
+
+_STRETCH_WEEKLY_RED_BELOW_SEC = 5 * 60  # < 5 min/week: below the effective dose
+_STRETCH_WEEKLY_RED_ABOVE_SEC = 10 * 60  # > 10 min/week: plateau, time better spent elsewhere
+
+
+def _stretch_volume_semaphore(total_seconds: int) -> str:
+    if total_seconds < _STRETCH_WEEKLY_RED_BELOW_SEC:
+        return "RED"
+    if total_seconds <= _STRETCH_WEEKLY_RED_ABOVE_SEC:
+        return "GREEN"
+    return "RED"
+
+
+@dataclass
+class StretchMuscleGroupWeek:
+    week_start: str  # ISO date of the Monday keying this bucket
+    bodypart: str
+    total_seconds: int  # summed timeSeconds of stretch sets on this bodypart that week
+    session_count: int  # distinct sessions that week that stretched this bodypart
+    volume_semaphore: str  # RED | GREEN (see _stretch_volume_semaphore)
+
+
+def stretch_weekly_trend(
+    conn: sqlite3.Connection, *, today: str | None = None
+) -> dict[str, list[StretchMuscleGroupWeek]]:
+    """Weekly held-seconds of STRETCH-type work per bodypart, keyed by
+    bodypart then Monday-keyed week — the flexibility-dose counterpart to
+    muscle_group_weekly_trend (which deliberately excludes STRETCH as it's a
+    hypertrophy/strength view). See this section's module comment for the
+    Ingram et al. 2025 threshold.
+
+    A stretch set counts only if it carries a positive `time_seconds` (a
+    real held duration synced from the phone's `{timeSeconds, done}`);
+    untouched/abandoned sets with NULL time_seconds are skipped, same
+    completed-set spirit as muscle_group_weekly_trend's reps>0 filter.
+    `exclude_from_tonnage` is not applied here — it's a tonnage-accounting
+    flag with no meaning for stretch volume.
+
+    Same case-insensitive `exercise_type` match and 12-week window as
+    muscle_group_weekly_trend, for the same reasons (real synced data sends
+    lowercase `stretch`; a consistent dashboard period)."""
+    today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
+    window_start = today_date - timedelta(weeks=_MUSCLE_GROUP_SERIES_WEEKS)
+
+    rows = conn.execute(
+        """
+        SELECT s.date, s.id, es.bodypart, es.time_seconds
+        FROM exercise_sets es
+        JOIN sessions s ON s.id = es.session_id
+        WHERE s.date >= ? AND s.date <= ? AND s.schema_version > 0
+          AND UPPER(es.exercise_type) = 'STRETCH'
+          AND es.bodypart IS NOT NULL AND es.bodypart != ''
+          AND es.time_seconds IS NOT NULL AND es.time_seconds > 0
+        ORDER BY s.date
+        """,
+        (window_start.isoformat(), today_date.isoformat()),
+    ).fetchall()
+
+    week_cursor = _monday_of(window_start)
+    week_starts: list[str] = []
+    while week_cursor <= today_date:
+        week_starts.append(week_cursor.isoformat())
+        week_cursor += timedelta(days=7)
+
+    # bodypart -> week_start -> {"seconds": int, "sessions": set of session_id}
+    by_bodypart: dict[str, dict[str, dict]] = {}
+    for date_str, session_id, bodypart, time_seconds in rows:
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        week_key = _monday_of(d).isoformat()
+        if week_key not in week_starts:
+            continue
+        bucket = by_bodypart.setdefault(
+            bodypart, {w: {"seconds": 0, "sessions": set()} for w in week_starts}
+        )
+        bucket[week_key]["seconds"] += time_seconds
+        bucket[week_key]["sessions"].add(session_id)
+
+    result: dict[str, list[StretchMuscleGroupWeek]] = {}
+    for bodypart, weeks in sorted(by_bodypart.items()):
+        result[bodypart] = [
+            StretchMuscleGroupWeek(
+                week_start=week,
+                bodypart=bodypart,
+                total_seconds=weeks[week]["seconds"],
+                session_count=len(weeks[week]["sessions"]),
+                volume_semaphore=_stretch_volume_semaphore(weeks[week]["seconds"]),
             )
             for week in week_starts
         ]

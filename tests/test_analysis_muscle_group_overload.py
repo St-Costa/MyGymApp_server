@@ -12,6 +12,7 @@ from app.analysis import (
     exercise_ids_trained_this_week,
     muscle_group_weekly_trend,
     progressive_overload_verdict,
+    stretch_weekly_trend,
 )
 from app.storage import init_db
 
@@ -53,12 +54,13 @@ def _insert_set(
     exercise_type="FORZA",
     exclude=False,
     is_bodyweight=False,
+    time_seconds=None,
 ):
     conn.execute(
         """INSERT INTO exercise_sets
            (session_id, exercise_id, exercise_name, exercise_type, bodypart, set_index,
-            reps, weight, exclude_from_tonnage, is_daily, is_bodyweight)
-           VALUES (?, ?, 'Some Exercise', ?, ?, ?, ?, ?, ?, 0, ?)""",
+            reps, weight, exclude_from_tonnage, is_daily, is_bodyweight, time_seconds)
+           VALUES (?, ?, 'Some Exercise', ?, ?, ?, ?, ?, ?, 0, ?, ?)""",
         (
             session_id,
             exercise_id,
@@ -69,6 +71,7 @@ def _insert_set(
             weight,
             int(exclude),
             int(is_bodyweight),
+            time_seconds,
         ),
     )
 
@@ -209,6 +212,107 @@ def test_muscle_group_weekly_trend_separates_bodyparts(conn):
 
     trend = muscle_group_weekly_trend(conn, today="2026-08-09")
     assert set(trend.keys()) == {"chest", "shoulders"}
+
+
+# ---------------------------------------------------------------------------
+# stretch_weekly_trend
+# ---------------------------------------------------------------------------
+
+
+def _insert_stretch_set(
+    conn, session_id, exercise_id, set_index, seconds, *, bodypart="hamstrings"
+):
+    _insert_set(
+        conn,
+        session_id,
+        exercise_id,
+        set_index,
+        reps=None,
+        weight=None,
+        bodypart=bodypart,
+        exercise_type="STRETCH",
+        time_seconds=seconds,
+    )
+
+
+def test_stretch_weekly_trend_sums_held_seconds_per_bodypart(conn):
+    _insert_session(conn, "s1", "2026-08-03")
+    _insert_stretch_set(conn, "s1", "ex-s", 0, 120)
+    _insert_stretch_set(conn, "s1", "ex-s", 1, 90)
+    conn.commit()
+
+    trend = stretch_weekly_trend(conn, today="2026-08-09")
+    week = next(w for w in trend["hamstrings"] if w.week_start == "2026-08-03")
+    assert week.total_seconds == 210
+    assert week.session_count == 1
+
+
+def test_stretch_weekly_trend_semaphore_red_below_5_min(conn):
+    _insert_session(conn, "s1", "2026-08-03")
+    _insert_stretch_set(conn, "s1", "ex-s", 0, 4 * 60)  # 4 min
+    conn.commit()
+
+    trend = stretch_weekly_trend(conn, today="2026-08-09")
+    week = next(w for w in trend["hamstrings"] if w.week_start == "2026-08-03")
+    assert week.volume_semaphore == "RED"
+
+
+def test_stretch_weekly_trend_semaphore_green_at_5_and_10_min_bounds(conn):
+    # 5 min in s1 + 5 min in s2 (same Mon-Sun week) = 10 min total: both the
+    # lower (5) and upper (10) GREEN bounds are inclusive.
+    _insert_session(conn, "s1", "2026-08-03")
+    _insert_stretch_set(conn, "s1", "ex-s", 0, 5 * 60)
+    _insert_session(conn, "s2", "2026-08-04")
+    _insert_stretch_set(conn, "s2", "ex-s", 0, 5 * 60)
+    conn.commit()
+
+    trend = stretch_weekly_trend(conn, today="2026-08-09")
+    week = next(w for w in trend["hamstrings"] if w.week_start == "2026-08-03")
+    assert week.total_seconds == 10 * 60
+    assert week.session_count == 2
+    assert week.volume_semaphore == "GREEN"
+
+
+def test_stretch_weekly_trend_semaphore_red_above_10_min(conn):
+    # Per user decision: >10 min/week is RED (time better spent elsewhere),
+    # even though Ingram et al. 2025 found no harm from over-stretching.
+    _insert_session(conn, "s1", "2026-08-03")
+    _insert_stretch_set(conn, "s1", "ex-s", 0, 11 * 60)
+    conn.commit()
+
+    trend = stretch_weekly_trend(conn, today="2026-08-09")
+    week = next(w for w in trend["hamstrings"] if w.week_start == "2026-08-03")
+    assert week.volume_semaphore == "RED"
+
+
+def test_stretch_weekly_trend_ignores_forza_and_untouched_sets(conn):
+    _insert_session(conn, "s1", "2026-08-03")
+    _insert_set(conn, "s1", "ex-f", 0, reps=8, weight=80, bodypart="hamstrings")  # FORZA
+    _insert_stretch_set(conn, "s1", "ex-s", 0, None)  # stretch set never held
+    conn.commit()
+
+    trend = stretch_weekly_trend(conn, today="2026-08-09")
+    assert "hamstrings" not in trend or all(w.total_seconds == 0 for w in trend["hamstrings"])
+
+
+def test_stretch_weekly_trend_matches_type_case_insensitively(conn):
+    _insert_session(conn, "s1", "2026-08-03")
+    _insert_set(
+        conn,
+        "s1",
+        "ex-s",
+        0,
+        reps=None,
+        weight=None,
+        bodypart="calves",
+        exercise_type="stretch",
+        time_seconds=300,
+    )
+    conn.commit()
+
+    trend = stretch_weekly_trend(conn, today="2026-08-09")
+    week = next(w for w in trend["calves"] if w.week_start == "2026-08-03")
+    assert week.total_seconds == 300
 
 
 # ---------------------------------------------------------------------------

@@ -43,6 +43,7 @@ from app.analysis import (
     session_load_trend,
     session_trimp_trend,
     steps_avg_per_day_weekly_trend,
+    stretch_weekly_trend,
     training_monotony_weekly_trend,
     vo2max_4week_trend,
 )
@@ -104,6 +105,7 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
             "monotony_trend": [asdict(p) for p in monotony_trend],
             "maintenance": asdict(maintenance) if maintenance else None,
             "current_week": exercise_analysis["current_week"],
+            "stretch_current_week": exercise_analysis["stretch_current_week"],
             "overload_rows": exercise_analysis["overload_rows"],
         },
     )
@@ -175,6 +177,7 @@ def _exercise_analysis_context(conn, today: str | None) -> dict:
     section — this used to be its own /hypertrophy page, folded into Trends
     per user request."""
     muscle_trend = muscle_group_weekly_trend(conn, today=today)
+    stretch_trend = stretch_weekly_trend(conn, today=today)
     trained_this_week = exercise_ids_trained_this_week(conn, today=today)
     exercises = list_exercises(conn)
     exercises_this_week = [e for e in exercises if e.exercise_id in trained_this_week]
@@ -197,6 +200,20 @@ def _exercise_analysis_context(conn, today: str | None) -> dict:
         }
         for bodypart, weeks in sorted(muscle_trend.items())
         if weeks and weeks[-1].set_count > 0
+    ]
+
+    # Same "most recent week, only bodyparts actually stretched this week"
+    # shape as current_week above. Minutes, not seconds, per user request —
+    # rounded to one decimal so a 90 s hold reads as 1.5, not 2.
+    stretch_current_week = [
+        {
+            "bodypart": bodypart,
+            "minutes": round(weeks[-1].total_seconds / 60, 1),
+            "volume_color": weeks[-1].volume_semaphore,
+            "session_count": weeks[-1].session_count,
+        }
+        for bodypart, weeks in sorted(stretch_trend.items())
+        if weeks and weeks[-1].total_seconds > 0
     ]
 
     exercise_names = {e.exercise_id: e.exercise_name or e.exercise_id for e in exercises}
@@ -223,7 +240,11 @@ def _exercise_analysis_context(conn, today: str | None) -> dict:
     # per metric; e1RM and tonnage verdicts can still disagree within a row.
     overload_rows.sort(key=lambda r: r["_sort_key"], reverse=True)
 
-    return {"current_week": current_week, "overload_rows": overload_rows}
+    return {
+        "current_week": current_week,
+        "stretch_current_week": stretch_current_week,
+        "overload_rows": overload_rows,
+    }
 
 
 @router.get("/exercises", response_class=HTMLResponse)

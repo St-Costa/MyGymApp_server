@@ -219,11 +219,10 @@
 
 <h2 class="section-title">Exercise analysis</h2>
 
+<h3 style="text-align: center;">Volume + Frequency analysis</h3>
 {% if not current_week %}
 <p class="empty">No muscle group trained yet this week.</p>
 {% else %}
-
-<h3 style="text-align: center;">Volume + Frequency analysis</h3>
 <p class="legend" style="flex-direction: column; align-items: center; gap: 0.35rem;">
   <span>Frequency: <span class="dot RED"></span>0/w <span class="dot YELLOW"></span>1/w <span class="dot GREEN"></span>2+/w</span>
   <span>Volume: <span class="dot RED"></span>&lt;5 <span class="dot YELLOW"></span>5-9 <span class="dot GREEN"></span>10-20 <span class="dot YELLOW"></span>&gt;20</span>
@@ -239,7 +238,26 @@
   </div>
   {% endfor %}
 </div>
+{% endif %}
 
+<h3 style="text-align: center;">Stretch analysis</h3>
+{% if not stretch_current_week %}
+<p class="empty">No muscle group stretched yet this week.</p>
+{% else %}
+<p class="legend" style="flex-direction: column; align-items: center; gap: 0.35rem;">
+  <span>Weekly stretch time: <span class="dot RED"></span>&lt;5 min <span class="dot GREEN"></span>5-10 min <span class="dot RED"></span>&gt;10 min</span>
+</p>
+<div class="grid-4">
+  {% for week in stretch_current_week %}
+  <div class="card">
+    <div class="metric-label">{{ week.bodypart | capitalize }}</div>
+    <div class="metric-value" style="display: flex; align-items: baseline; gap: 1.25rem; font-size: 1.3rem;">
+      <span>{{ week.session_count }}xW</span>
+      <span><span class="dot {{ week.volume_color }}"></span>{{ week.minutes }} min/w</span>
+    </div>
+  </div>
+  {% endfor %}
+</div>
 {% endif %}
 
 <h3 style="text-align: center;">Progressive overload</h3>
@@ -1211,6 +1229,19 @@
         });
       } else {
         lines.push("_No muscle group trained yet this week._");
+      }
+      lines.push("");
+    }
+    lines.push("### This week's stretch time by muscle group", "");
+    {
+      const stretchWeek = {{ stretch_current_week | tojson }};
+      if (stretchWeek.length) {
+        lines.push("| Bodypart | Sessions/week | Minutes/week |", "|---|---|---|");
+        stretchWeek.forEach(w => {
+          lines.push(`| ${w.bodypart} | ${w.session_count} | ${w.minutes} |`);
+        });
+      } else {
+        lines.push("_No muscle group stretched yet this week._");
       }
       lines.push("");
     }
