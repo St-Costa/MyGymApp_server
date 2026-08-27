@@ -348,6 +348,47 @@ def test_exercise_detail_includes_history_chart_when_data_present(app_client) ->
     assert 'id="historyChart"' in response.text
 
 
+def test_exercise_detail_shows_bodyweight_load_card_with_audit_fields(app_client) -> None:
+    from tests.conftest import content_hash_of, post_session
+
+    md = (
+        b"---\n"
+        b"id: bbbbbbb1\n"
+        b"date: 2026-08-20\n"
+        b"exercises:\n"
+        b"  - exerciseId: ex-squat01\n"
+        b"    exerciseName: Squat\n"
+        b"    type: FORZA\n"
+        b"    sets:\n"
+        b"      - reps: 10\n"
+        b"        weight: 82.0\n"
+        b"        isBodyweight: true\n"
+        b"        bwLoadPercent: 100\n"
+        b"        bwBaseWeightKg: 82.0\n"
+        b"---\n"
+    )
+    post_session(
+        app_client,
+        md,
+        session_id="bbbbbbb1",
+        rel_path="2026/08/bbbbbbb1.md",
+        content_hash=content_hash_of(md),
+    )
+
+    response = app_client.get("/exercises/ex-squat01")
+    assert response.status_code == 200
+    assert "Bodyweight load" in response.text
+    assert "100% &times; 82.0 kg" in response.text
+    assert "2026-08-20" in response.text
+
+
+def test_exercise_detail_hides_bodyweight_load_card_for_plain_weighted_exercise(app_client) -> None:
+    post_session(app_client)
+    response = app_client.get("/exercises/ex-a1b2c3d4")
+    assert response.status_code == 200
+    assert "Bodyweight load" not in response.text
+
+
 def test_exercise_detail_shows_empty_state_when_no_history(app_client) -> None:
     response = app_client.get("/exercises/ex-nonexistent")
     assert response.status_code == 200

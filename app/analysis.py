@@ -1054,6 +1054,45 @@ def recent_heaviest_set_pr(
 
 
 @dataclass
+class BodyweightLoad:
+    """The audit trail behind a bodyweight exercise's materialized `weight`,
+    from the most recent session that logged it as bodyweight. Purely
+    explanatory — nothing else in analysis consumes this (see app.parsing's
+    isBodyweight note). `base_weight_kg` is None for a set materialized with
+    no scale weigh-in available (its `weight` stayed 0)."""
+
+    load_percent: int | None
+    base_weight_kg: float | None
+    weight: float
+    session_date: str
+
+
+def latest_bodyweight_load(conn: sqlite3.Connection, exercise_id: str) -> BodyweightLoad | None:
+    """Most recent `is_bodyweight=1` set for this exercise, with the
+    bw_load_percent / bw_base_weight_kg the phone froze `weight` against.
+    Returns None if the exercise has never been logged as bodyweight, or was
+    only logged before the phone sent the audit fields (both columns NULL —
+    nothing to explain)."""
+    row = conn.execute(
+        """
+        SELECT es.bw_load_percent, es.bw_base_weight_kg, es.weight, s.date
+        FROM exercise_sets es
+        JOIN sessions s ON s.id = es.session_id
+        WHERE es.exercise_id = ? AND es.is_bodyweight = 1
+          AND (es.bw_load_percent IS NOT NULL OR es.bw_base_weight_kg IS NOT NULL)
+        ORDER BY s.date DESC, es.set_index DESC
+        LIMIT 1
+        """,
+        (exercise_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return BodyweightLoad(
+        load_percent=row[0], base_weight_kg=row[1], weight=row[2], session_date=row[3]
+    )
+
+
+@dataclass
 class ExerciseSessionPoint:
     session_date: str
     session_id: str

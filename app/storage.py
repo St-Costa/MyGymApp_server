@@ -66,6 +66,16 @@ CREATE TABLE IF NOT EXISTS exercise_sets (
   exclude_from_tonnage  INTEGER NOT NULL DEFAULT 0,
   is_daily              INTEGER NOT NULL DEFAULT 0,
   is_bodyweight         INTEGER NOT NULL DEFAULT 0,
+  -- Bodyweight-load audit (docs/sync-ingestion/ANALYSIS_SPEC.md's isBodyweight
+  -- note). Only present when is_bodyweight=1: bw_load_percent is the movement's
+  -- bodyweight fraction (25/50/75/100), bw_base_weight_kg the body weight the
+  -- phone froze `weight` against at completion time. Audit only — `weight` is
+  -- already materialized, no server-side math reads these. NULL for every
+  -- non-bodyweight row and for bodyweight rows synced before the phone sent
+  -- them (weight already stands on its own; reparse can't recover a value the
+  -- raw file never had).
+  bw_load_percent       INTEGER,
+  bw_base_weight_kg     REAL,
   -- CARDIO-only (docs/sync-ingestion/CARDIO_BLOCKS_SPEC.md). NULL (not 0/'')
   -- for FORZA/STRETCH rows, and for CARDIO rows too when the underlying
   -- value is itself absent/blank — 0/'' are valid values for a real
@@ -270,7 +280,13 @@ CREATE TABLE IF NOT EXISTS parse_failures (
 # reparse.py --stale re-extracts the real cardio fields from the raw files
 # once picked up — nothing was lost, since raw-first storage kept the
 # original bytes regardless of how the parser misread them.
-PARSER_SCHEMA_VERSION = 6
+# Bumped to 7: exercise_sets gained bw_load_percent/bw_base_weight_kg, the
+# audit pair the phone now sends alongside a materialized `weight` on every
+# bodyweight set (docs/sync-ingestion/ANALYSIS_SPEC.md's isBodyweight note —
+# `weight` is no longer 0 for touched bodyweight work). Audit only, no math
+# depends on them; reparse.py --stale backfills them for any bodyweight
+# session synced between the phone shipping the field and this bump.
+PARSER_SCHEMA_VERSION = 7
 
 # schema_version stamped on a row written from step 6's "on failure" path —
 # the raw file is safely stored but nothing has been successfully parsed yet.
@@ -289,6 +305,7 @@ def init_db(db_path: Path = DB_PATH) -> None:
         _migrate_ecg_analysis_hr_zone_columns(conn)
         _migrate_ecg_analysis_calorie_columns(conn)
         _migrate_exercise_sets_cardio_columns(conn)
+        _migrate_exercise_sets_bodyweight_load_columns(conn)
         _migrate_readiness_events_steps_columns(conn)
 
 
@@ -338,6 +355,24 @@ def _migrate_exercise_sets_is_bodyweight_column(conn: sqlite3.Connection) -> Non
         conn.execute(
             "ALTER TABLE exercise_sets ADD COLUMN is_bodyweight INTEGER NOT NULL DEFAULT 0"
         )
+
+
+def _migrate_exercise_sets_bodyweight_load_columns(conn: sqlite3.Connection) -> None:
+    """One-time migration: `exercise_sets.bw_load_percent`/`bw_base_weight_kg`
+    (the bodyweight-load audit pair — see the SCHEMA comment and
+    ANALYSIS_SPEC.md's isBodyweight note) were added after `exercise_sets`
+    already existed in deployed databases — same pattern as
+    _migrate_exercise_sets_cardio_columns above. Left NULL for existing rows:
+    correct for every non-bodyweight row, and harmless for any bodyweight row
+    synced before the phone sent them, since `weight` is already materialized
+    and nothing computes from these. reparse.py --stale backfills them from
+    the raw frontmatter for sessions whose files do carry them, once
+    PARSER_SCHEMA_VERSION is bumped."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(exercise_sets)")}
+    if "bw_load_percent" not in columns:
+        conn.execute("ALTER TABLE exercise_sets ADD COLUMN bw_load_percent INTEGER")
+    if "bw_base_weight_kg" not in columns:
+        conn.execute("ALTER TABLE exercise_sets ADD COLUMN bw_base_weight_kg REAL")
 
 
 def _migrate_exercise_sets_cardio_columns(conn: sqlite3.Connection) -> None:
@@ -500,6 +535,12 @@ class ExerciseSet:
     exclude_from_tonnage: bool
     is_daily: bool
     is_bodyweight: bool = False
+    # Bodyweight-load audit — only set when is_bodyweight is True (see the
+    # exercise_sets SCHEMA comment). bw_load_percent is 25/50/75/100;
+    # bw_base_weight_kg is the body weight the phone materialized `weight`
+    # against. None everywhere else. Nothing in app.analysis reads these.
+    bw_load_percent: int | None = None
+    bw_base_weight_kg: float | None = None
     # CARDIO-only (docs/sync-ingestion/CARDIO_BLOCKS_SPEC.md) — None for
     # FORZA/STRETCH rows, and reps/weight stay None for CARDIO rows, same
     # "NULL means n/a, not a valid degenerate value" reasoning as the SQL
@@ -807,8 +848,9 @@ def upsert_parsed_session(
         INSERT INTO exercise_sets (
             session_id, exercise_id, exercise_name, exercise_type, bodypart,
             set_index, reps, weight, exclude_from_tonnage, is_daily, is_bodyweight,
+            bw_load_percent, bw_base_weight_kg,
             started_at, ended_at, avg_hr, max_hr
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
@@ -823,6 +865,8 @@ def upsert_parsed_session(
                 int(s.exclude_from_tonnage),
                 int(s.is_daily),
                 int(s.is_bodyweight),
+                s.bw_load_percent,
+                s.bw_base_weight_kg,
                 s.started_at,
                 s.ended_at,
                 s.avg_hr,
