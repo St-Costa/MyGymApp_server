@@ -707,8 +707,11 @@
       "afterbegin",
       chartHeader({ name: "Readiness", unit: "", good: "up" })
     );
-    const dates = {{ readiness_trend | map(attribute="date") | list | tojson }};
-    const states = {{ readiness_trend | map(attribute="readiness") | list | tojson }};
+    // Current calendar week only (Mon..Sun) — the server sends exactly 7
+    // points in day order, one per weekday (readiness_current_week), so the
+    // x-axis is a fixed M/T/W/T/F/S/S, not a scrolling date range.
+    const states = {{ readiness_week | map(attribute="readiness") | list | tojson }};
+    const WEEK_LABELS = ["M", "T", "W", "T", "F", "S", "S"];
     const el = document.getElementById("readinessChart");
     const known = states.some(s => READINESS_LEVELS.includes(s));
     if (!el) {
@@ -737,7 +740,7 @@
       new Chart(el, {
         type: "line",
         data: {
-          labels: formatLabels(dates, "date"),
+          labels: WEEK_LABELS,
           datasets: [{
             data: levelIndex,
             borderColor: "#8b93a7",
@@ -747,7 +750,9 @@
             pointRadius: POINT_RADIUS,
             pointHoverRadius: POINT_HOVER_RADIUS,
             segment: { borderColor: ctx => pointColors[ctx.p1DataIndex] || "#8b93a7" },
-            spanGaps: true,
+            // A day with no reading stays a visible break, not a line drawn
+            // straight through it — this is a 7-slot week, gaps read clearly.
+            spanGaps: false,
             tension: 0,
           }],
         },

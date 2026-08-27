@@ -15,6 +15,7 @@ from app.analysis import (
     hr_zones_weekly_trend,
     latest_readiness,
     nearest_scale_weight_kg,
+    readiness_current_week,
     readiness_daily_trend,
     resting_hr_7day_average,
     resting_hr_7day_min,
@@ -269,6 +270,69 @@ def test_readiness_daily_trend_zero_numbers_are_unmeasured_not_real_readings(con
     assert trend[0].ln_rmssd is None
     assert trend[0].resting_hr is None
     assert trend[0].vo2max is None
+
+
+def test_readiness_current_week_returns_seven_points_monday_to_sunday(conn):
+    # 2026-08-27 is a Thursday; its ISO week is Mon 2026-08-24 .. Sun 2026-08-30.
+    _insert_readiness(conn, "r1", "2026-08-24T07:00:00", readiness="NORMAL")
+    _insert_readiness(conn, "r2", "2026-08-27T07:00:00", readiness="GOOD")
+
+    week = readiness_current_week(conn, today="2026-08-27")
+    assert [p.date for p in week] == [
+        "2026-08-24",
+        "2026-08-25",
+        "2026-08-26",
+        "2026-08-27",
+        "2026-08-28",
+        "2026-08-29",
+        "2026-08-30",
+    ]
+    assert [p.readiness for p in week] == [
+        "NORMAL",
+        None,
+        None,
+        "GOOD",
+        None,
+        None,
+        None,
+    ]
+
+
+def test_readiness_current_week_keeps_only_the_last_reading_per_day(conn):
+    _insert_readiness(conn, "r1", "2026-08-27T06:00:00", readiness="LIGHT_DAY", resting_hr=61)
+    _insert_readiness(conn, "r2", "2026-08-27T21:00:00", readiness="GOOD", resting_hr=55)
+
+    week = readiness_current_week(conn, today="2026-08-27")
+    thursday = week[3]
+    assert thursday.readiness == "GOOD"
+    assert thursday.resting_hr == 55
+
+
+def test_readiness_current_week_excludes_readings_outside_the_week(conn):
+    # Sunday before the week, and Monday after it.
+    _insert_readiness(conn, "r1", "2026-08-23T07:00:00", readiness="PEAK")
+    _insert_readiness(conn, "r2", "2026-08-31T07:00:00", readiness="PEAK")
+
+    week = readiness_current_week(conn, today="2026-08-27")
+    assert all(p.readiness is None for p in week)
+
+
+def test_readiness_current_week_zero_numbers_are_unmeasured(conn):
+    _insert_readiness(
+        conn,
+        "r1",
+        "2026-08-27T07:00:00",
+        readiness="NORMAL",
+        ln_rmssd=0.0,
+        resting_hr=0,
+        vo2max=0.0,
+    )
+
+    thursday = readiness_current_week(conn, today="2026-08-27")[3]
+    assert thursday.readiness == "NORMAL"
+    assert thursday.ln_rmssd is None
+    assert thursday.resting_hr is None
+    assert thursday.vo2max is None
 
 
 def _insert_ecg_analysis(conn, session_id, **fields):
