@@ -46,6 +46,13 @@ the source of truth):
   `None` on non-CARDIO rows. Unlike the "missing means 0/''" convention
   above, blank/missing here means "not applicable" or "block still running/
   abandoned," so it maps to `None`, not `0`/`""`.
+- `exercises[].type == "STRETCH"`: a set is `{timeSeconds, done}` — the held
+  duration in seconds. `time_seconds` stays `None` on FORZA/CARDIO rows and
+  `reps`/`weight` stay `None` on STRETCH rows. Consumed by
+  app.analysis.stretch_weekly_trend (weekly held-seconds per muscle group).
+  A missing/blank `timeSeconds` on a stretch set means the set was
+  untouched/abandoned, so it maps to `None`, not `0` — same reasoning as the
+  CARDIO fields above.
 - `exercises[].type` is matched case-insensitively against `CARDIO` — real
   synced data has been observed sending lowercase (`cardio`/`forza`/
   `stretch`), not SPEC.md's documented uppercase. A case-sensitive match
@@ -338,6 +345,7 @@ def _parse_exercises(raw_exercises: list) -> list[ExerciseSet]:
         is_daily = bool(exercise.get("isDaily", False))
 
         is_cardio = (exercise_type or "").upper() == "CARDIO"
+        is_stretch = (exercise_type or "").upper() == "STRETCH"
 
         for set_index, raw_set in enumerate(exercise.get("sets") or []):
             if is_cardio:
@@ -357,6 +365,24 @@ def _parse_exercises(raw_exercises: list) -> list[ExerciseSet]:
                         ended_at=raw_set.get("endedAt") or None,
                         avg_hr=_optional_int(raw_set, "avgHr"),
                         max_hr=_optional_int(raw_set, "maxHr"),
+                    )
+                )
+                continue
+
+            if is_stretch:
+                exercise_sets.append(
+                    ExerciseSet(
+                        exercise_id=exercise_id,
+                        exercise_name=exercise_name,
+                        exercise_type=exercise_type,
+                        bodypart=bodypart,
+                        set_index=set_index,
+                        reps=None,
+                        weight=None,
+                        exclude_from_tonnage=exclude_from_tonnage,
+                        is_daily=is_daily,
+                        is_bodyweight=False,
+                        time_seconds=_optional_int(raw_set, "timeSeconds"),
                     )
                 )
                 continue

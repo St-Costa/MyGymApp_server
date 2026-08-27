@@ -238,6 +238,56 @@ def test_non_cardio_exercise_leaves_cardio_fields_none() -> None:
     assert forza_set.max_hr is None
 
 
+def test_stretch_exercise_populates_time_seconds_and_nulls_reps_weight() -> None:
+    # A STRETCH set is {timeSeconds, done} — regression for the bug where
+    # STRETCH ran through the FORZA path, forcing reps/weight to 0 and
+    # dropping timeSeconds entirely.
+    md = (
+        b"---\n"
+        b"id: 11111114\n"
+        b"exercises:\n"
+        b"  - exerciseId: ex-aabbccdd\n"
+        b"    type: STRETCH\n"
+        b"    bodypart: hamstrings\n"
+        b"    sets:\n"
+        b"      - timeSeconds: 45\n"
+        b"        done: true\n"
+        b"      - timeSeconds: 60\n"
+        b"        done: true\n"
+        b"---\n"
+    )
+    parsed = parse_session_file(md)
+    assert len(parsed.exercise_sets) == 2
+    first = parsed.exercise_sets[0]
+    assert first.exercise_type == "STRETCH"
+    assert first.time_seconds == 45
+    assert first.reps is None
+    assert first.weight is None
+    assert parsed.exercise_sets[1].time_seconds == 60
+
+
+def test_stretch_set_without_time_seconds_stays_none() -> None:
+    # An untouched/abandoned stretch set (no timeSeconds) must stay None, not
+    # collapse to 0 — same _optional_int convention as the CARDIO HR fields.
+    md = (
+        b"---\n"
+        b"id: 11111115\n"
+        b"exercises:\n"
+        b"  - exerciseId: ex-eeff0011\n"
+        b"    type: STRETCH\n"
+        b"    sets:\n"
+        b"      - done: false\n"
+        b"---\n"
+    )
+    parsed = parse_session_file(md)
+    assert parsed.exercise_sets[0].time_seconds is None
+
+
+def test_non_stretch_exercise_leaves_time_seconds_none() -> None:
+    parsed = parse_session_file(SESSION_MD.encode())
+    assert parsed.exercise_sets[0].time_seconds is None
+
+
 def test_cardio_exercise_matches_type_case_insensitively() -> None:
     # Regression: real synced data has been observed sending lowercase
     # `type: cardio`, not SPEC.md's documented `CARDIO` — a case-sensitive
