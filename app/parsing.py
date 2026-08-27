@@ -137,7 +137,7 @@ def parse_session_file(raw_bytes: bytes) -> ParsedSession:
         raise SessionParseError("frontmatter missing required 'id' field")
 
     tonnage_by_bodypart = {
-        str(bodypart): float(tonnage)
+        str(bodypart): round(float(tonnage), 2)
         for bodypart, tonnage in (data.get("tonnageByBodypart") or {}).items()
     }
 
@@ -395,7 +395,7 @@ def _parse_exercises(raw_exercises: list) -> list[ExerciseSet]:
                     bodypart=bodypart,
                     set_index=set_index,
                     reps=int(raw_set.get("reps") or 0),
-                    weight=float(raw_set.get("weight") or 0.0),
+                    weight=round(float(raw_set.get("weight") or 0.0), 2),
                     exclude_from_tonnage=exclude_from_tonnage,
                     is_daily=is_daily,
                     # Distinguishes a completed bodyweight set from an
@@ -415,8 +415,13 @@ def _parse_exercises(raw_exercises: list) -> list[ExerciseSet]:
 
 
 def _num(data: dict, key: str) -> float:
-    """Missing numeric field -> 0.0, per the sender's space-saving convention."""
-    return float(data.get(key) or 0)
+    """Missing numeric field -> 0.0, per the sender's space-saving convention.
+    Rounded to 2 decimals: the phone occasionally sends long floating-point
+    tails (e.g. a computed TRIMP or drift figure) that carry no real
+    precision — 2dp is all any consumer (the SQLite layer, the dashboard,
+    the analysis JSON export) needs, so normalize here at the single point
+    every scalar float field flows through."""
+    return round(float(data.get(key) or 0), 2)
 
 
 def _int(data: dict, key: str) -> int:
@@ -433,6 +438,7 @@ def _optional_int(data: dict, key: str) -> int | None:
 
 
 def _optional_num(data: dict, key: str) -> float | None:
-    """Float counterpart to _optional_int — see its docstring."""
+    """Float counterpart to _optional_int — see its docstring. Rounded to
+    2 decimals for the same reason as _num."""
     value = data.get(key)
-    return None if value is None else float(value)
+    return None if value is None else round(float(value), 2)

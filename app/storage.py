@@ -297,7 +297,13 @@ CREATE TABLE IF NOT EXISTS parse_failures (
 # never reading timeSeconds). Feeds app.analysis.stretch_weekly_trend. Every
 # STRETCH set synced before this bump has time_seconds NULL until
 # reparse.py --stale re-extracts it from the raw file.
-PARSER_SCHEMA_VERSION = 8
+# Bumped to 9: every scalar float the parser extracts (session/readiness/
+# scale numeric fields, per-set weight, tonnage_by_bodypart values) is now
+# rounded to 2 decimals at extraction — the phone occasionally sends long
+# floating-point tails that carry no real precision, and 2dp is all any
+# consumer needs. Values only; no field added or removed. reparse.py --stale
+# re-normalizes rows written by an earlier version.
+PARSER_SCHEMA_VERSION = 9
 
 # schema_version stamped on a row written from step 6's "on failure" path —
 # the raw file is safely stored but nothing has been successfully parsed yet.
@@ -1116,7 +1122,12 @@ def upsert_parsed_ecg(
 # Recovery" section). Rows analyzed under schema_version < 9 may have a
 # hrr_1min/hrr_2min value that would now be discarded; hrr_*min_discarded
 # is NULL for all of them until re-analyzed.
-ECG_ANALYSIS_SCHEMA_VERSION = 9
+# Bumped to 10: every stored ECG metric is now rounded to 2 decimals at the
+# upsert_ecg_analysis write boundary — the raw computed figures carry no
+# real precision past that and the long tails were just noise in the export.
+# Values only; no formula or column changed. analyze_ecg.py --stale
+# re-normalizes rows written by an earlier version.
+ECG_ANALYSIS_SCHEMA_VERSION = 10
 
 
 def upsert_ecg_analysis(
@@ -1127,6 +1138,15 @@ def upsert_ecg_analysis(
     reprocesses a session it just finished. Both writes happen in the same
     caller-managed transaction (see app.storage.connect) so a crash between
     them can't leave the queue and the result table disagreeing."""
+
+    def r(value: float | None) -> float | None:
+        """Every stored ECG metric is a derived figure with no meaningful
+        precision past 2 decimals — normalize at the single write boundary
+        rather than sprinkling round() through app.ecg_analysis's formulas.
+        Integer counts (pac_count, peak_count, …) and the *_discarded /
+        used_hrr flags are passed straight through, not through here."""
+        return None if value is None else round(value, 2)
+
     conn.execute(
         """
         INSERT INTO ecg_analysis (
@@ -1177,42 +1197,42 @@ def upsert_ecg_analysis(
         """,
         {
             "session_id": result.session_id,
-            "avg_hr": result.avg_hr,
-            "session_rmssd": result.session_rmssd,
-            "sdnn": result.sdnn,
-            "pnn50": result.pnn50,
-            "poincare_sd1": result.poincare_sd1,
-            "poincare_sd2": result.poincare_sd2,
-            "poincare_ratio": result.poincare_ratio,
+            "avg_hr": r(result.avg_hr),
+            "session_rmssd": r(result.session_rmssd),
+            "sdnn": r(result.sdnn),
+            "pnn50": r(result.pnn50),
+            "poincare_sd1": r(result.poincare_sd1),
+            "poincare_sd2": r(result.poincare_sd2),
+            "poincare_ratio": r(result.poincare_ratio),
             "pac_count": result.pac_count,
             "pause_count": result.pause_count,
             "irregular_beats": result.irregular_beats,
             "afib_suspicion_episodes": result.afib_suspicion_episodes,
             "peak_count": result.peak_count,
-            "kurtosis_sqi": result.kurtosis_sqi,
-            "b_sqi": result.b_sqi,
-            "dfa_alpha1": result.dfa_alpha1,
-            "hrv_lf": result.hrv_lf,
-            "hrv_hf": result.hrv_hf,
-            "hrv_lf_hf": result.hrv_lf_hf,
-            "sample_entropy": result.sample_entropy,
-            "csi": result.csi,
-            "cvi": result.cvi,
-            "hrr_1min": result.hrr_1min,
-            "hrr_2min": result.hrr_2min,
+            "kurtosis_sqi": r(result.kurtosis_sqi),
+            "b_sqi": r(result.b_sqi),
+            "dfa_alpha1": r(result.dfa_alpha1),
+            "hrv_lf": r(result.hrv_lf),
+            "hrv_hf": r(result.hrv_hf),
+            "hrv_lf_hf": r(result.hrv_lf_hf),
+            "sample_entropy": r(result.sample_entropy),
+            "csi": r(result.csi),
+            "cvi": r(result.cvi),
+            "hrr_1min": r(result.hrr_1min),
+            "hrr_2min": r(result.hrr_2min),
             "hrr_1min_discarded": int(result.hrr_1min_discarded),
             "hrr_2min_discarded": int(result.hrr_2min_discarded),
-            "hr_zone1_min": result.hr_zone1_min,
-            "hr_zone2_min": result.hr_zone2_min,
-            "hr_zone3_min": result.hr_zone3_min,
-            "hr_zone4_min": result.hr_zone4_min,
-            "hr_zone5_min": result.hr_zone5_min,
-            "hr_below_zone1_min": result.hr_below_zone1_min,
+            "hr_zone1_min": r(result.hr_zone1_min),
+            "hr_zone2_min": r(result.hr_zone2_min),
+            "hr_zone3_min": r(result.hr_zone3_min),
+            "hr_zone4_min": r(result.hr_zone4_min),
+            "hr_zone5_min": r(result.hr_zone5_min),
+            "hr_below_zone1_min": r(result.hr_below_zone1_min),
             "hr_zones_used_hrr": (
                 None if result.hr_zones_used_hrr is None else int(result.hr_zones_used_hrr)
             ),
-            "session_calories_ecg": result.session_calories_ecg,
-            "session_trimp_ecg": result.session_trimp_ecg,
+            "session_calories_ecg": r(result.session_calories_ecg),
+            "session_trimp_ecg": r(result.session_trimp_ecg),
             "analyzed_at": analyzed_at,
             "schema_version": ECG_ANALYSIS_SCHEMA_VERSION,
         },
