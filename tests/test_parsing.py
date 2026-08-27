@@ -106,6 +106,50 @@ def test_is_bodyweight_parsed_when_present() -> None:
     assert parsed.exercise_sets[0].is_bodyweight is True
 
 
+def test_bodyweight_load_audit_fields_parsed_when_present() -> None:
+    # The phone now materializes `weight` for bodyweight sets and attaches the
+    # audit pair explaining it. All three must round-trip.
+    md = (
+        b"---\n"
+        b"id: eeeeeeee\n"
+        b"exercises:\n"
+        b"  - exerciseId: ex-44444444\n"
+        b"    type: FORZA\n"
+        b"    sets:\n"
+        b"      - reps: 10\n"
+        b"        weight: 61.5\n"
+        b"        isBodyweight: true\n"
+        b"        bwLoadPercent: 75\n"
+        b"        bwBaseWeightKg: 82.0\n"
+        b"---\n"
+    )
+    parsed = parse_session_file(md)
+    s = parsed.exercise_sets[0]
+    assert s.is_bodyweight is True
+    assert s.weight == 61.5
+    assert s.bw_load_percent == 75
+    assert s.bw_base_weight_kg == 82.0
+
+
+def test_bodyweight_load_audit_fields_default_to_none_when_omitted() -> None:
+    # Older synced sessions (and every non-bodyweight set) carry neither field.
+    md = (
+        b"---\n"
+        b"id: ffffffff\n"
+        b"exercises:\n"
+        b"  - exerciseId: ex-55555555\n"
+        b"    type: FORZA\n"
+        b"    sets:\n"
+        b"      - reps: 8\n"
+        b"        weight: 80.0\n"
+        b"---\n"
+    )
+    parsed = parse_session_file(md)
+    s = parsed.exercise_sets[0]
+    assert s.bw_load_percent is None
+    assert s.bw_base_weight_kg is None
+
+
 def test_cardio_exercise_populates_cardio_fields_and_nulls_reps_weight() -> None:
     md = (
         b"---\n"

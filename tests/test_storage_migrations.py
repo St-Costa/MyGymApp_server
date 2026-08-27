@@ -125,6 +125,48 @@ def test_init_db_adds_cardio_columns_to_existing_exercise_sets_table(tmp_path) -
     conn.close()
 
 
+def test_init_db_adds_bodyweight_load_columns_to_existing_exercise_sets_table(tmp_path) -> None:
+    db_path = tmp_path / "old_bwload.sqlite3"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE exercise_sets (
+          session_id            TEXT NOT NULL,
+          exercise_id           TEXT NOT NULL,
+          exercise_name         TEXT,
+          exercise_type         TEXT,
+          bodypart               TEXT,
+          set_index             INTEGER NOT NULL,
+          reps                  INTEGER,
+          weight                REAL,
+          exclude_from_tonnage  INTEGER NOT NULL DEFAULT 0,
+          is_daily              INTEGER NOT NULL DEFAULT 0,
+          is_bodyweight         INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    conn.execute(
+        """INSERT INTO exercise_sets
+           (session_id, exercise_id, set_index, reps, weight, exclude_from_tonnage,
+            is_daily, is_bodyweight)
+           VALUES ('s1', 'ex-a', 0, 12, 0.0, 0, 0, 1)"""
+    )
+    conn.commit()
+    conn.close()
+
+    init_db(db_path)
+
+    conn = sqlite3.connect(db_path)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(exercise_sets)")}
+    assert {"bw_load_percent", "bw_base_weight_kg"} <= columns
+
+    row = conn.execute(
+        "SELECT bw_load_percent, bw_base_weight_kg FROM exercise_sets WHERE session_id = 's1'"
+    ).fetchone()
+    assert row == (None, None)  # pre-existing bodyweight rows stay NULL — weight already stands
+    conn.close()
+
+
 def test_init_db_is_idempotent_on_already_migrated_table(tmp_path) -> None:
     db_path = tmp_path / "new.sqlite3"
     init_db(db_path)

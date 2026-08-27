@@ -96,6 +96,17 @@ print('is_bodyweight=1 rows:', n)
 already handles this correctly; this entry exists mainly so a sudden appearance of
 bodyweight-flagged data doesn't go unnoticed as "how long has this been available".)
 
+**Update 2026-08-27 — largely resolved by the phone.** The bodyweight-load
+materialization change (see `ANALYSIS_SPEC.md`'s second opening note) means the phone now
+writes a real positive `weight` for touched bodyweight sets, computed from `bwLoadPercent
+× body_weight_kg`. So the "dependent metrics" this entry was waiting on — tonnage, PR,
+e1RM contribution from bodyweight work — now happen automatically through the existing
+`reps * weight` paths, no new server code required. `PARSER_SCHEMA_VERSION` is at 7 and
+`exercise_sets` carries `bw_load_percent` / `bw_base_weight_kg` (audit only). What still
+lands here: a bodyweight set with `weight: 0.0` (no weigh-in was available) still
+contributes 0 to tonnage — that's correct, not a gap, and `is_bodyweight` keeps it from
+being misread as untouched. Nothing further to unblock.
+
 ---
 
 ## 4. Baseline HRV z-score personalization

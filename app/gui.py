@@ -29,6 +29,7 @@ from app.analysis import (
     exercise_history,
     exercise_ids_trained_this_week,
     hr_zones_weekly_trend,
+    latest_bodyweight_load,
     list_exercises,
     muscle_group_weekly_trend,
     progressive_overload_verdict,
@@ -238,6 +239,7 @@ def exercise_detail(request: Request, exercise_id: str, today: str | None = Quer
         recent_warmup = recent_heaviest_set_pr(conn, exercise_id, is_daily=False, is_warmup=True)
         recent_daily = recent_heaviest_set_pr(conn, exercise_id, is_daily=True, is_warmup=False)
         history = exercise_history(conn, exercise_id, today=today)
+        bodyweight_load = latest_bodyweight_load(conn, exercise_id)
         # Best-effort display name: pull it from any set we can find.
         name_row = conn.execute(
             """SELECT exercise_name FROM exercise_sets
@@ -256,5 +258,6 @@ def exercise_detail(request: Request, exercise_id: str, today: str | None = Quer
             "recent_warmup_pr": recent_warmup,
             "recent_daily_pr": recent_daily,
             "history": [asdict(p) for p in history],
+            "bodyweight_load": asdict(bodyweight_load) if bodyweight_load else None,
         },
     )

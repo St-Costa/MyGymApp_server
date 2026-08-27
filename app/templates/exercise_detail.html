@@ -18,6 +18,31 @@
 <p class="empty">No qualifying set found (needs weight &gt; 0, not excluded from tonnage).</p>
 {% endif %}
 
+{% if bodyweight_load %}
+<h2>Bodyweight load</h2>
+<p class="section-desc">
+  This is a bodyweight exercise: each set's weight is materialized on the phone at
+  completion as a fraction of body weight, then flows through tonnage and PRs like any
+  other weight.
+</p>
+<div class="card">
+  {% if bodyweight_load.base_weight_kg %}
+  <div class="metric-value">
+    {{ bodyweight_load.load_percent }}% &times; {{ "%.1f"|format(bodyweight_load.base_weight_kg) }} kg
+    = {{ "%.1f"|format(bodyweight_load.weight) }} kg
+  </div>
+  <div class="metric-delta">
+    per set, from the weigh-in on or before {{ bodyweight_load.session_date }}
+  </div>
+  {% else %}
+  <div class="metric-value">{{ bodyweight_load.load_percent }}% of body weight</div>
+  <div class="metric-delta">
+    no weigh-in was available for {{ bodyweight_load.session_date }}, so weight stayed 0 kg
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+
 <h2>Recent heaviest set (last 30 sessions)</h2>
 <p class="section-desc">
   The heaviest set from the last 30 sessions that included this exercise, split out by

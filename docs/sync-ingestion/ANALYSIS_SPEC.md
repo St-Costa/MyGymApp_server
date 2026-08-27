@@ -10,6 +10,26 @@
 > recovers pre-existing raw files once this lands, since they already have the field if
 > sent after this change — the field was simply never present before it, which parses fine
 > under the existing "missing field defaults to false" tolerance.
+>
+> **Update (bodyweight-load materialization)**: the phone no longer leaves a touched
+> bodyweight set at `weight: 0.0`. At completion it *materializes* `weight` =
+> `bwLoadPercent/100 × body_weight_kg`, rounded to 0.5 kg, where `body_weight_kg` is the
+> last scale weigh-in with `date ≤` the session date (or 0.0 if there was none). It also
+> attaches an audit pair on the set: `bwLoadPercent` (int, one of 25/50/75/100 — the
+> movement's bodyweight fraction: squat 100, plank 75, reverse sit-up 50, tibialis raise
+> 25) and `bwBaseWeightKg` (float, the body weight used). Server side (`PARSER_SCHEMA_VERSION`
+> bumped to 7): `exercise_sets` gained `bw_load_percent` / `bw_base_weight_kg`, both NULL
+> for every non-bodyweight row and for bodyweight rows synced before the phone sent them.
+> **No §1 math changes** — `weight` is now a real positive number, so `reps * weight`
+> tonnage and every `weight > 0` filter include these sets automatically and correctly. A
+> bodyweight set with `weight: 0.0` still means "no weigh-in was available at completion";
+> `is_bodyweight` still keeps it from being read as untouched. Do *not* reconstruct the
+> weight server-side — the phone already froze the correct value for that session's date;
+> old sessions keep the body weight of their day. The audit fields are surfaced in the
+> exercise-detail GUI (`latest_bodyweight_load`) purely to explain a set's weight; nothing
+> computes from them. The phone also stores `bwLoadPercent` on the exercise definition file
+> (`exercises/{id}.md` frontmatter, legacy files without it read as 75) — irrelevant to the
+> server, which never ingests exercise-definition files.
 
 ## Context
 

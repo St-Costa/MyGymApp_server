@@ -20,13 +20,21 @@ the source of truth):
 - `excludeFromTonnage` / `isDaily` are omitted when false — missing means False.
 - Unrecognized top-level YAML keys are ignored, not an error — the phone app
   evolves independently and may add fields these parsers don't know about yet.
-- `sets[].isBodyweight` (proposed, not yet sent by the phone as of writing):
-  same "omitted means False" convention as the other booleans above. Once
-  the phone starts sending it, no server-side change is needed — the parser
-  already reads it defensively. See ANALYSIS_SPEC.md's common_tonnage note
-  for why this distinction matters (a completed bodyweight set and an
-  untouched/empty one both have weight=0 today, indistinguishable without
-  this field).
+- `sets[].isBodyweight`: same "omitted means False" convention as the other
+  booleans above. See ANALYSIS_SPEC.md's common_tonnage note for why this
+  distinction matters (an untouched/empty set also has weight=0). The phone
+  now sends it, together with a materialized `weight` (see next) and the
+  `bwLoadPercent`/`bwBaseWeightKg` audit pair.
+- `sets[].bwLoadPercent` / `sets[].bwBaseWeightKg` (ANALYSIS_SPEC.md's
+  isBodyweight note): audit fields the phone attaches to a bodyweight set
+  alongside a now-materialized `weight` (= bwLoadPercent/100 * body weight at
+  session date, rounded to 0.5 kg; stays 0.0 only when no weigh-in was
+  available). `bwLoadPercent` is one of 25/50/75/100 — the movement's
+  bodyweight fraction; `bwBaseWeightKg` is the body weight used. Both stay
+  `None` when absent (they only appear on bodyweight sets, and older synced
+  files predate them) — no server math reads them, they exist to explain a
+  set's weight in the detail view. `weight` itself now flows through the
+  existing tonnage/PR/e1RM paths unchanged, since it's a real positive number.
 - `sessionRpe`/`sessionLoad` (ANALYSIS_SPEC.md §13): unlike the space-saving
   "missing means 0" numeric fields above, these stay `None` when absent —
   0 is not a valid RPE value, so "not answered" must be distinguishable from
@@ -364,15 +372,17 @@ def _parse_exercises(raw_exercises: list) -> list[ExerciseSet]:
                     weight=float(raw_set.get("weight") or 0.0),
                     exclude_from_tonnage=exclude_from_tonnage,
                     is_daily=is_daily,
-                    # Not part of the wire format yet — proposed addition to
-                    # distinguish a completed bodyweight set (weight=0 by
-                    # nature) from an untouched/empty one, which today look
-                    # identical (see ANALYSIS_SPEC.md's known common_tonnage
-                    # gap). Parsed defensively now so nothing needs to change
-                    # here once the phone starts sending it; absent -> False,
-                    # same "omitted means false" convention as the other
-                    # per-set/per-exercise booleans.
+                    # Distinguishes a completed bodyweight set from an
+                    # untouched/empty one, which both have weight=0 without it
+                    # (see ANALYSIS_SPEC.md's common_tonnage gap). Absent ->
+                    # False, same "omitted means false" convention as the
+                    # other per-set/per-exercise booleans.
                     is_bodyweight=bool(raw_set.get("isBodyweight", False)),
+                    # Audit only — see the module docstring. Present only on
+                    # bodyweight sets; None otherwise. Nothing computes from
+                    # these (the phone already materialized `weight`).
+                    bw_load_percent=_optional_int(raw_set, "bwLoadPercent"),
+                    bw_base_weight_kg=_optional_num(raw_set, "bwBaseWeightKg"),
                 )
             )
     return exercise_sets

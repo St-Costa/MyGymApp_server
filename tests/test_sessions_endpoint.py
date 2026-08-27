@@ -169,6 +169,45 @@ def test_forza_only_session_leaves_cardio_columns_null(app_client) -> None:
     assert rows == [(None, None, None, None), (None, None, None, None)]
 
 
+def test_bodyweight_set_materialized_weight_and_audit_fields_round_trip(app_client) -> None:
+    # The phone now writes a real positive `weight` for bodyweight sets plus
+    # the bwLoadPercent/bwBaseWeightKg audit pair. weight must flow into
+    # exercise_sets unchanged and land in tonnage like any other weight.
+    md = SESSION_MD.replace(
+        "    sets:\n"
+        "      - reps: 8\n"
+        "        weight: 80.0\n"
+        "      - reps: 6\n"
+        "        weight: 85.0\n",
+        "    sets:\n"
+        "      - reps: 10\n"
+        "        weight: 61.5\n"
+        "        isBodyweight: true\n"
+        "        bwLoadPercent: 75\n"
+        "        bwBaseWeightKg: 82.0\n",
+    ).encode()
+    response = post_session(app_client, md, content_hash=content_hash_of(md))
+    assert response.status_code == 200
+
+    conn = _db_conn(app_client)
+    row = conn.execute(
+        """SELECT reps, weight, is_bodyweight, bw_load_percent, bw_base_weight_kg
+           FROM exercise_sets WHERE session_id = ?""",
+        ("3c4d5e6f",),
+    ).fetchone()
+    assert row == (10, 61.5, 1, 75, 82.0)
+
+
+def test_plain_weighted_session_leaves_bodyweight_load_columns_null(app_client) -> None:
+    post_session(app_client)
+    conn = _db_conn(app_client)
+    rows = conn.execute(
+        "SELECT bw_load_percent, bw_base_weight_kg FROM exercise_sets WHERE session_id = ?",
+        ("3c4d5e6f",),
+    ).fetchall()
+    assert rows == [(None, None), (None, None)]
+
+
 def test_malformed_envelope_json_returns_400(app_client) -> None:
     response = app_client.post(
         "/v1/sessions",
