@@ -31,6 +31,7 @@ from app.analysis import (
     compute_rpe_acwr_trend,
     recent_heaviest_set_pr,
     resting_hr_weekly_trend,
+    round_floats,
     rpe_acwr_daily_trend,
     scale_weekly_trend,
     session_load_trend,
@@ -53,6 +54,11 @@ from app.storage import connect
 logger = logging.getLogger("mygymapp.routes")
 
 router = APIRouter()
+
+# app.analysis.round_floats, aliased for brevity at the call sites below —
+# every /v1/analysis/* handler runs its asdict()'d result through this so the
+# JSON export is capped at 2 decimals (see the helper's docstring).
+_round_floats = round_floats
 
 REQUIRED_ENVELOPE_FIELDS = ("relPath", "contentHash", "appVersion", "clientSentAt")
 
@@ -222,7 +228,7 @@ def get_cardio_trend(today: str | None = Query(default=None)) -> dict:
     self-diagnosis alert strings."""
     with connect(DB_PATH) as conn:
         card = compute_cardio_trend_card(conn, today=today)
-    return asdict(card)
+    return _round_floats(asdict(card))
 
 
 @router.get("/v1/analysis/acwr-trend", dependencies=[Depends(require_valid_bearer_token)])
@@ -230,7 +236,7 @@ def get_acwr_trend(today: str | None = Query(default=None)) -> dict:
     """§12: acute:chronic tonnage workload ratio, 7-day vs 28-day rolling mean."""
     with connect(DB_PATH) as conn:
         trend = compute_acwr_trend(conn, today=today)
-    return asdict(trend)
+    return _round_floats(asdict(trend))
 
 
 @router.get("/v1/analysis/acwr-daily-trend", dependencies=[Depends(require_valid_bearer_token)])
@@ -238,7 +244,7 @@ def get_acwr_daily_trend(today: str | None = Query(default=None)) -> list[dict]:
     """§12 chart series: 12-week window, one ACWR point per day."""
     with connect(DB_PATH) as conn:
         points = acwr_daily_trend(conn, today=today)
-    return [asdict(p) for p in points]
+    return _round_floats([asdict(p) for p in points])
 
 
 @router.get("/v1/analysis/session-load-trend", dependencies=[Depends(require_valid_bearer_token)])
@@ -246,7 +252,7 @@ def get_session_load_trend(today: str | None = Query(default=None)) -> list[dict
     """§13: session-RPE / Foster session-load, 12-week window."""
     with connect(DB_PATH) as conn:
         points = session_load_trend(conn, today=today)
-    return [asdict(p) for p in points]
+    return _round_floats([asdict(p) for p in points])
 
 
 @router.get("/v1/analysis/rpe-acwr-trend", dependencies=[Depends(require_valid_bearer_token)])
@@ -254,7 +260,7 @@ def get_rpe_acwr_trend(today: str | None = Query(default=None)) -> dict:
     """§13.1: acute:chronic session-load ratio, the "internal load" ACWR."""
     with connect(DB_PATH) as conn:
         trend = compute_rpe_acwr_trend(conn, today=today)
-    return asdict(trend)
+    return _round_floats(asdict(trend))
 
 
 @router.get("/v1/analysis/rpe-acwr-daily-trend", dependencies=[Depends(require_valid_bearer_token)])
@@ -262,7 +268,7 @@ def get_rpe_acwr_daily_trend(today: str | None = Query(default=None)) -> list[di
     """§13.1 chart series: 12-week window, one RPE-ACWR point per day."""
     with connect(DB_PATH) as conn:
         points = rpe_acwr_daily_trend(conn, today=today)
-    return [asdict(p) for p in points]
+    return _round_floats([asdict(p) for p in points])
 
 
 @router.get("/v1/analysis/resting-hr-trend", dependencies=[Depends(require_valid_bearer_token)])
@@ -270,7 +276,7 @@ def get_resting_hr_trend(today: str | None = Query(default=None)) -> list[dict]:
     """§11.3: 8-week rolling window, weekly median resting HR."""
     with connect(DB_PATH) as conn:
         buckets = resting_hr_weekly_trend(conn, today=today)
-    return [asdict(b) for b in buckets]
+    return _round_floats([asdict(b) for b in buckets])
 
 
 @router.get("/v1/analysis/vo2max-trend", dependencies=[Depends(require_valid_bearer_token)])
@@ -278,7 +284,7 @@ def get_vo2max_trend(today: str | None = Query(default=None)) -> list[dict]:
     """§11.3: 6-month window, 4-week median buckets."""
     with connect(DB_PATH) as conn:
         buckets = vo2max_4week_trend(conn, today=today)
-    return [asdict(b) for b in buckets]
+    return _round_floats([asdict(b) for b in buckets])
 
 
 @router.get("/v1/analysis/scale-trend", dependencies=[Depends(require_valid_bearer_token)])
@@ -286,7 +292,9 @@ def get_scale_trend(today: str | None = Query(default=None)) -> dict[str, list[d
     """§11.3: 8-week rolling window, weekly medians for weight/BMI/body-fat/lean-mass."""
     with connect(DB_PATH) as conn:
         trends = scale_weekly_trend(conn, today=today)
-    return {metric: [asdict(b) for b in buckets] for metric, buckets in trends.items()}
+    return _round_floats(
+        {metric: [asdict(b) for b in buckets] for metric, buckets in trends.items()}
+    )
 
 
 @router.get(
@@ -302,8 +310,10 @@ def get_exercise_pr(
     with connect(DB_PATH) as conn:
         all_time = all_time_tonnage_pr(conn, exercise_id)
         recent = recent_heaviest_set_pr(conn, exercise_id, is_daily=is_daily, is_warmup=is_warmup)
-    return {
-        "exerciseId": exercise_id,
-        "allTimeTonnagePr": asdict(all_time) if all_time else None,
-        "recentHeaviestSetPr": asdict(recent) if recent else None,
-    }
+    return _round_floats(
+        {
+            "exerciseId": exercise_id,
+            "allTimeTonnagePr": asdict(all_time) if all_time else None,
+            "recentHeaviestSetPr": asdict(recent) if recent else None,
+        }
+    )

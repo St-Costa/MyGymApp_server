@@ -28,6 +28,25 @@ from datetime import UTC, datetime, timedelta
 
 from app.ecg_analysis import estimated_max_hr
 
+
+def round_floats(value, ndigits: int = 2):
+    """Recursively round every float in a JSON-shaped structure (dict / list /
+    scalar) to `ndigits` decimals. The functions in this module compute
+    ratios, rolling means and semaphore deltas that come out with long
+    floating-point tails carrying no real precision — 2dp is all any
+    consumer (the /v1/analysis/* JSON export, the server-rendered dashboard)
+    needs. Applied once at each output boundary (app.routes, app.gui) rather
+    than sprinkled through every formula here. bool passes straight through
+    (it is an int subclass, not a float)."""
+    if isinstance(value, float):
+        return round(value, ndigits)
+    if isinstance(value, dict):
+        return {k: round_floats(v, ndigits) for k, v in value.items()}
+    if isinstance(value, list):
+        return [round_floats(v, ndigits) for v in value]
+    return value
+
+
 # ---------------------------------------------------------------------------
 # §11.1 Cardio 4-week trend card (semaphore-based)
 # ---------------------------------------------------------------------------
