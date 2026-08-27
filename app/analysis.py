@@ -758,6 +758,51 @@ def readiness_daily_trend(
     ]
 
 
+def readiness_current_week(
+    conn: sqlite3.Connection, *, today: str | None = None
+) -> list[ReadinessPoint]:
+    """Readiness for the current calendar week only — Monday through Sunday of
+    the ISO week that contains `today` — as exactly 7 points in day order.
+
+    Unlike `readiness_daily_trend` (a 30-day scrolling history feeding the raw
+    HR/VO2max charts), this is the small at-a-glance week box: fixed M..S axis,
+    one point per weekday. A day with more than one reading keeps only the last
+    (max `measured_at`); a day with no reading is a `ReadinessPoint` whose
+    fields are all None, so the box always renders all 7 slots.
+    """
+    today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
+    monday = today_date - timedelta(days=today_date.weekday())
+    sunday = monday + timedelta(days=6)
+
+    rows = conn.execute(
+        """SELECT measured_at, readiness, ln_rmssd, resting_hr, vo2max
+           FROM readiness_events
+           WHERE substr(measured_at, 1, 10) >= ? AND substr(measured_at, 1, 10) <= ?
+           ORDER BY measured_at""",
+        (monday.isoformat(), sunday.isoformat()),
+    ).fetchall()
+
+    # ORDER BY measured_at means the last row seen for a given day wins.
+    by_day: dict[str, tuple] = {}
+    for measured_at, readiness, ln_rmssd, resting_hr, vo2max in rows:
+        by_day[measured_at[:10]] = (readiness, ln_rmssd, resting_hr, vo2max)
+
+    week = []
+    for i in range(7):
+        day = (monday + timedelta(days=i)).isoformat()
+        readiness, ln_rmssd, resting_hr, vo2max = by_day.get(day, (None, None, None, None))
+        week.append(
+            ReadinessPoint(
+                date=day,
+                readiness=readiness,
+                ln_rmssd=ln_rmssd or None,
+                resting_hr=resting_hr or None,
+                vo2max=vo2max or None,
+            )
+        )
+    return week
+
+
 def vo2max_4week_trend(conn: sqlite3.Connection, *, today: str | None = None) -> list[WeeklyBucket]:
     """§11.3: 4-week buckets (not weekly) over a 6-month fetch window, bucket
     boundary = window_start + floor(weeks_since_start / 4) * 4 weeks,

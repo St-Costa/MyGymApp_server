@@ -33,6 +33,7 @@ from app.analysis import (
     list_exercises,
     muscle_group_weekly_trend,
     progressive_overload_verdict,
+    readiness_current_week,
     readiness_daily_trend,
     recent_heaviest_set_pr,
     resting_hr_weekly_trend,
@@ -66,6 +67,7 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
         scale = scale_weekly_trend(conn, today=today)
         steps_avg_per_day_trend = steps_avg_per_day_weekly_trend(conn, today=today)
         readiness_trend = readiness_daily_trend(conn, today=today)
+        readiness_week = readiness_current_week(conn, today=today)
         acwr_trend = acwr_daily_trend(conn, today=today)
         session_load = session_load_trend(conn, today=today)
         rpe_acwr_trend = rpe_acwr_daily_trend(conn, today=today)
@@ -93,6 +95,7 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
             "scale_trend": scale,
             "steps_avg_per_day_trend": [asdict(b) for b in steps_avg_per_day_trend],
             "readiness_trend": [asdict(p) for p in readiness_trend],
+            "readiness_week": [asdict(p) for p in readiness_week],
             "acwr_trend": [asdict(p) for p in acwr_trend],
             "session_load_trend": [asdict(p) for p in session_load],
             "rpe_acwr_trend": [asdict(p) for p in rpe_acwr_trend],
