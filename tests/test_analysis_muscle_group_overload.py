@@ -169,14 +169,20 @@ def test_muscle_group_weekly_trend_untouched_bodyweight_set_not_counted(conn):
     assert "core" not in trend or all(w.set_count == 0 for w in trend["core"])
 
 
-def test_muscle_group_weekly_trend_excludes_exclude_from_tonnage_sets(conn):
+def test_muscle_group_weekly_trend_counts_exclude_from_tonnage_sets(conn):
+    # Per user decision: a daily/accessory set the phone keeps OUT of the
+    # session tonnage still counts as hypertrophy volume for its muscle —
+    # exclude_from_tonnage is a load-accounting flag, not a "not work" marker.
+    # (Regression: this filter previously dropped ~all of a real user's sets,
+    # which are mostly daily-flagged, leaving the volume board near-empty.)
     _insert_session(conn, "s1", "2026-08-03")
     for i in range(6):
         _insert_set(conn, "s1", "ex-a", i, reps=8, weight=80, bodypart="chest", exclude=True)
     conn.commit()
 
     trend = muscle_group_weekly_trend(conn, today="2026-08-09")
-    assert "chest" not in trend or all(w.set_count == 0 for w in trend["chest"])
+    week = next(w for w in trend["chest"] if w.week_start == "2026-08-03")
+    assert week.set_count == 6
 
 
 def test_muscle_group_weekly_trend_excludes_stretch_type(conn):
