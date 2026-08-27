@@ -1948,7 +1948,7 @@ def _frequency_semaphore(session_count: int) -> str:
 class MuscleGroupWeek:
     week_start: str  # ISO date of the Monday keying this bucket
     bodypart: str
-    set_count: int  # sets with reps>0 (or is_bodyweight), counted on their primary bodypart only
+    set_count: int  # completed sets (reps>0, weight>0 or bodyweight), primary bodypart only
     session_count: int  # distinct sessions that week touching this bodypart
     volume_semaphore: str  # GRAY | RED | YELLOW | GREEN
     frequency_semaphore: str  # RED | YELLOW | GREEN
@@ -1976,11 +1976,15 @@ def muscle_group_weekly_trend(
     table would need to be maintained by hand and would encode arbitrary
     judgment calls about fractional credit).
 
-    A "working set" here is exclude_from_tonnage=0 and either
-    (reps>0 and weight>0) or (reps>0 and is_bodyweight) — same completed-set
-    definition as _is_untouched_or_empty elsewhere in this module, so this
-    doesn't count warmups/untouched/bodyweight-mistaken-for-empty sets as
-    volume. STRETCH-type exercises are excluded (bodypart-set volume is a
+    A "working set" here is (reps>0 and weight>0) or (reps>0 and
+    is_bodyweight) — same completed-set definition as _is_untouched_or_empty
+    elsewhere in this module, so this doesn't count warmups/untouched/
+    bodyweight-mistaken-for-empty sets as volume. `exclude_from_tonnage` is
+    deliberately NOT applied: per user decision a daily/accessory set the
+    phone keeps out of the *session tonnage* is still hypertrophy volume for
+    the muscle it trained — the flag is a load-accounting choice, not a
+    "this set wasn't work" marker (same reasoning as stretch_weekly_trend).
+    STRETCH-type exercises are excluded (bodypart-set volume is a
     hypertrophy/strength concept; stretching isn't working sets toward it).
 
     Matches `exercise_type` case-insensitively: SPEC.md's documented values
@@ -2001,7 +2005,6 @@ def muscle_group_weekly_trend(
         FROM exercise_sets es
         JOIN sessions s ON s.id = es.session_id
         WHERE s.date >= ? AND s.date <= ? AND s.schema_version > 0
-          AND es.exclude_from_tonnage = 0
           AND UPPER(es.exercise_type) = 'FORZA'
           AND es.bodypart IS NOT NULL AND es.bodypart != ''
           AND es.reps > 0 AND (es.weight > 0 OR es.is_bodyweight = 1)
