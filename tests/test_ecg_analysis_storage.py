@@ -172,3 +172,31 @@ def test_get_stale_ecg_analysis_excludes_up_to_date_rows(app_client) -> None:
         upsert_ecg_analysis(conn, _full_result("3c4d5e6f"), analyzed_at="2026-08-11T10:00:00Z")
 
     assert get_stale_ecg_analysis(conn) == []
+
+
+def test_upsert_ecg_analysis_rounds_float_metrics_to_two_decimals(app_client) -> None:
+    """The raw HRV/Poincaré/entropy figures come out of the math with long
+    floating-point tails carrying no real precision — upsert_ecg_analysis
+    caps every stored float at 2 decimals. Integer counts and the None
+    sentinels are untouched."""
+    _insert_unanalyzed_recording(app_client)
+    conn = _db_conn(app_client)
+
+    result = _full_result("3c4d5e6f")
+    result.avg_hr = 72.456789
+    result.session_rmssd = 45.001
+    result.sdnn = 50.6666
+    result.sample_entropy = 1.234567
+    result.session_calories_ecg = 88.888
+    result.pac_count = 3  # int — must stay exact
+
+    with conn:
+        upsert_ecg_analysis(conn, result, analyzed_at="2026-08-11T10:00:00Z")
+
+    row = conn.execute(
+        """SELECT avg_hr, session_rmssd, sdnn, sample_entropy,
+                  session_calories_ecg, pac_count
+           FROM ecg_analysis WHERE session_id = ?""",
+        ("3c4d5e6f",),
+    ).fetchone()
+    assert row == (72.46, 45.0, 50.67, 1.23, 88.89, 3)

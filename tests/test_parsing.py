@@ -340,3 +340,52 @@ def test_body_can_be_empty() -> None:
     md = b"---\nid: eeeeeeee\n---\n"
     parsed = parse_session_file(md)
     assert parsed.notes == ""
+
+
+def test_scalar_floats_are_rounded_to_two_decimals() -> None:
+    # The phone occasionally sends computed figures (TRIMP, cardiac drift,
+    # RMSSD) with a long floating-point tail that carries no real precision —
+    # every scalar float field is normalized to 2dp at extraction.
+    md = (
+        b"---\n"
+        b"id: ff001122\n"
+        b"sessionTrimp: 42.123456789\n"
+        b"cardiacDriftBpmMin: 1.005\n"  # rounds up to 1.01 (banker's? -> 1.0; see assert)
+        b"sdnn: 55.6666\n"
+        b"---\n"
+    )
+    parsed = parse_session_file(md)
+    assert parsed.session_trimp == 42.12
+    assert parsed.sdnn == 55.67
+    # 1.005 is not exactly representable; round() gives 1.0 here — the point
+    # is "at most 2 decimals", not a specific rounding mode.
+    assert parsed.cardiac_drift_bpm_min == round(1.005, 2)
+
+
+def test_per_set_weight_and_tonnage_by_bodypart_are_rounded() -> None:
+    md = (
+        b"---\n"
+        b"id: ff334455\n"
+        b"tonnageByBodypart:\n"
+        b"  chest: 8200.333333\n"
+        b"exercises:\n"
+        b"  - exerciseId: ex-1\n"
+        b"    exerciseName: Bench\n"
+        b"    type: FORZA\n"
+        b"    bodypart: chest\n"
+        b"    sets:\n"
+        b"      - reps: 5\n"
+        b"        weight: 80.123456\n"
+        b"---\n"
+    )
+    parsed = parse_session_file(md)
+    assert parsed.tonnage_by_bodypart == {"chest": 8200.33}
+    assert parsed.exercise_sets[0].weight == 80.12
+
+
+def test_optional_num_rounds_when_present() -> None:
+    # sessionLoad stays None when absent (see _optional_num) but is rounded
+    # to 2dp when present, same as the space-saving _num fields.
+    md = b"---\nid: ff667788\nsessionLoad: 123.98765\n---\n"
+    parsed = parse_session_file(md)
+    assert parsed.session_load == 123.99
