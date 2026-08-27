@@ -37,6 +37,7 @@ from app.analysis import (
     readiness_daily_trend,
     recent_heaviest_set_pr,
     resting_hr_weekly_trend,
+    round_floats,
     rpe_acwr_daily_trend,
     scale_weekly_trend,
     session_calories_trend,
@@ -78,36 +79,42 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
         maintenance = estimated_maintenance_calories(conn, today=today)
         exercise_analysis = _exercise_analysis_context(conn, today)
 
+    # Every numeric value below is display-only and feeds either an inline
+    # {{ }} or a |tojson chart series — round to 2 decimals at this single
+    # boundary so the rendered page never shows a long floating-point tail
+    # (see app.analysis.round_floats).
     return templates.TemplateResponse(
         request,
         "dashboard.html",
-        {
-            "cardio": cardio,
-            # cardio_series feeds a |tojson in the template — dataclasses
-            # aren't JSON-serializable by Jinja2's tojson filter, so convert
-            # up front (WeeklyBucket -> plain dict) rather than in-template.
-            "cardio_series": {k: [asdict(b) for b in v] for k, v in cardio_series.items()},
-            "ecg_advanced_series": {
-                k: [asdict(b) for b in v] for k, v in ecg_advanced_series.items()
-            },
-            "hr_zones_series": {k: [asdict(b) for b in v] for k, v in hr_zones_series.items()},
-            "resting_hr_trend": resting_hr,
-            "vo2max_trend": vo2max,
-            "scale_trend": scale,
-            "steps_avg_per_day_trend": [asdict(b) for b in steps_avg_per_day_trend],
-            "readiness_trend": [asdict(p) for p in readiness_trend],
-            "readiness_week": [asdict(p) for p in readiness_week],
-            "acwr_trend": [asdict(p) for p in acwr_trend],
-            "session_load_trend": [asdict(p) for p in session_load],
-            "rpe_acwr_trend": [asdict(p) for p in rpe_acwr_trend],
-            "session_calories_trend": [asdict(p) for p in session_calories],
-            "session_trimp_trend": [asdict(p) for p in session_trimp],
-            "monotony_trend": [asdict(p) for p in monotony_trend],
-            "maintenance": asdict(maintenance) if maintenance else None,
-            "current_week": exercise_analysis["current_week"],
-            "stretch_current_week": exercise_analysis["stretch_current_week"],
-            "overload_rows": exercise_analysis["overload_rows"],
-        },
+        round_floats(
+            {
+                "cardio": asdict(cardio),
+                # cardio_series feeds a |tojson in the template — dataclasses
+                # aren't JSON-serializable by Jinja2's tojson filter, so convert
+                # up front (WeeklyBucket -> plain dict) rather than in-template.
+                "cardio_series": {k: [asdict(b) for b in v] for k, v in cardio_series.items()},
+                "ecg_advanced_series": {
+                    k: [asdict(b) for b in v] for k, v in ecg_advanced_series.items()
+                },
+                "hr_zones_series": {k: [asdict(b) for b in v] for k, v in hr_zones_series.items()},
+                "resting_hr_trend": [asdict(b) for b in resting_hr],
+                "vo2max_trend": [asdict(b) for b in vo2max],
+                "scale_trend": {k: [asdict(b) for b in v] for k, v in scale.items()},
+                "steps_avg_per_day_trend": [asdict(b) for b in steps_avg_per_day_trend],
+                "readiness_trend": [asdict(p) for p in readiness_trend],
+                "readiness_week": [asdict(p) for p in readiness_week],
+                "acwr_trend": [asdict(p) for p in acwr_trend],
+                "session_load_trend": [asdict(p) for p in session_load],
+                "rpe_acwr_trend": [asdict(p) for p in rpe_acwr_trend],
+                "session_calories_trend": [asdict(p) for p in session_calories],
+                "session_trimp_trend": [asdict(p) for p in session_trimp],
+                "monotony_trend": [asdict(p) for p in monotony_trend],
+                "maintenance": asdict(maintenance) if maintenance else None,
+                "current_week": exercise_analysis["current_week"],
+                "stretch_current_week": exercise_analysis["stretch_current_week"],
+                "overload_rows": exercise_analysis["overload_rows"],
+            }
+        ),
     )
 
 

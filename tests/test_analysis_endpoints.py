@@ -1,7 +1,55 @@
 """HTTP-level tests for the GET /v1/analysis/* endpoints — auth, shape, and
 that they reflect data ingested through the normal POST endpoints."""
 
+from app.analysis import round_floats
 from tests.conftest import SESSION_MD, auth_headers, post_session
+
+
+def _max_decimals(obj) -> int:
+    """Deepest fractional-digit count anywhere in a JSON-shaped structure."""
+    if isinstance(obj, float):
+        text = repr(obj)
+        return len(text.split(".", 1)[1]) if "." in text and "e" not in text else 0
+    if isinstance(obj, dict):
+        return max((_max_decimals(v) for v in obj.values()), default=0)
+    if isinstance(obj, list):
+        return max((_max_decimals(v) for v in obj), default=0)
+    return 0
+
+
+def test_round_floats_recurses_through_dicts_and_lists() -> None:
+    raw = {
+        "a": 1.23456,
+        "b": [0.1111, {"c": 9.99999}],
+        "d": None,
+        "e": "text",
+        "f": 3,
+        "g": True,
+    }
+    assert round_floats(raw) == {
+        "a": 1.23,
+        "b": [0.11, {"c": 10.0}],
+        "d": None,
+        "e": "text",
+        "f": 3,
+        "g": True,
+    }
+    # bool must not be coerced to float
+    assert round_floats(raw)["g"] is True
+
+
+def test_analysis_endpoint_response_has_at_most_two_decimals(app_client) -> None:
+    post_session(app_client)
+    for path in (
+        "/v1/analysis/cardio-trend",
+        "/v1/analysis/acwr-trend",
+        "/v1/analysis/acwr-daily-trend",
+        "/v1/analysis/session-load-trend",
+        "/v1/analysis/scale-trend",
+    ):
+        response = app_client.get(path, params={"today": "2025-04-20"}, headers=auth_headers())
+        assert response.status_code == 200, path
+        assert _max_decimals(response.json()) <= 2, path
 
 
 def test_cardio_trend_requires_auth(app_client) -> None:
