@@ -22,18 +22,49 @@ def test_dashboard_reflects_ingested_session(app_client) -> None:
     assert "Only 1 session(s) in last 4 weeks" in response.text
 
 
-def test_dashboard_progressive_overload_omits_rows_with_no_data_on_either_metric(
+def test_dashboard_progressive_overload_omits_rows_missing_either_metric(
     app_client,
+    monkeypatch,
 ) -> None:
-    """A single ingested session has nothing to compare against (no prior
-    week trained) — progressive_overload_verdict returns INSUFFICIENT_DATA
-    on both e1RM and tonnage, so the row would render as "(Not enough
-    data)" in every column. Such a row is noise, not signal, and must be
-    omitted from the table entirely rather than shown."""
-    post_session(app_client)  # SESSION_MD: dated 2025-04-15, only session for ex-a1b2c3d4
+    """A row is dropped from the progressive-overload table if *either*
+    e1RM or tonnage has insufficient data — per user decision a
+    "(Not enough data)" cell in any column is noise, not signal. A single
+    ingested session (nothing to compare against) is the both-missing case;
+    the monkeypatched verdict below is the one-metric-only case."""
+    from app import gui
+    from app.analysis import OverloadMetricVerdict, ProgressiveOverloadVerdict
+
+    def _one_metric_only(conn, exercise_id, **kwargs):
+        return ProgressiveOverloadVerdict(
+            exercise_id=exercise_id,
+            point_count=3,
+            e1rm=OverloadMetricVerdict(
+                verdict="UP_HEALTHY",
+                current_week_avg=100.0,
+                prior_week_avg=98.0,
+                prior_week_start="2025-04-07",
+                weeks_ago=1,
+                change_percent=2.0,
+                percent_per_week=2.0,
+            ),
+            tonnage=OverloadMetricVerdict(
+                verdict="INSUFFICIENT_DATA",
+                current_week_avg=None,
+                prior_week_avg=None,
+                prior_week_start=None,
+                weeks_ago=None,
+                change_percent=None,
+                percent_per_week=None,
+            ),
+        )
+
+    monkeypatch.setattr(gui, "progressive_overload_verdict", _one_metric_only)
+    post_session(app_client)  # SESSION_MD: dated 2025-04-15, gets ex-a1b2c3d4 into "this week"
     response = app_client.get("/", params={"today": "2025-04-20"})
     assert response.status_code == 200
     assert "Not enough data" not in response.text
+    # The exercise has a real e1RM verdict but no tonnage verdict -> whole row omitted.
+    assert "Bench Press" not in response.text
 
 
 def test_dashboard_readiness_chart_renders_with_no_data(app_client) -> None:
