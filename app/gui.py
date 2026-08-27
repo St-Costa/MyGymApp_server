@@ -204,10 +204,10 @@ def _exercise_analysis_context(conn, today: str | None) -> dict:
     for v in overload:
         e1rm_cell = _overload_cell(v.e1rm)
         tonnage_cell = _overload_cell(v.tonnage)
-        # Skip exercises with no verdict on either metric — a row that's
-        # "(Not enough data)" in both columns tells the user nothing
-        # actionable, just adds noise to a table meant to highlight movers.
-        if e1rm_cell is None and tonnage_cell is None:
+        # Skip exercises missing a verdict on either metric — per user
+        # decision, a row with "(Not enough data)" in any column is noise in
+        # a table meant to highlight movers, so it's omitted entirely.
+        if e1rm_cell is None or tonnage_cell is None:
             continue
         overload_rows.append(
             {

@@ -245,7 +245,7 @@
 <h3 style="text-align: center;">Progressive overload</h3>
 <p class="section-desc" style="max-width: 70ch; margin-left: auto; margin-right: auto; text-align: center;">
   This week's average vs. the average of the last week this exercise was also trained.
-  Exercises with not enough data on both e1RM and tonnage are omitted.
+  Exercises without enough data on e1RM or tonnage are omitted.
 </p>
 
 {% if not overload_rows %}
@@ -264,12 +264,8 @@
     {% for v in overload_rows %}
     <tr>
       <td><a class="row-link" href="/exercises/{{ v.exercise_id }}">{{ v.exercise_name }}</a></td>
-      <td>
-        {% if v.e1rm %}<span class="dot {{ v.e1rm.color }}"></span>{{ v.e1rm.percent }}{% else %}(Not enough data){% endif %}
-      </td>
-      <td>
-        {% if v.tonnage %}<span class="dot {{ v.tonnage.color }}"></span>{{ v.tonnage.percent }}{% else %}(Not enough data){% endif %}
-      </td>
+      <td><span class="dot {{ v.e1rm.color }}"></span>{{ v.e1rm.percent }}</td>
+      <td><span class="dot {{ v.tonnage.color }}"></span>{{ v.tonnage.percent }}</td>
     </tr>
     {% endfor %}
   </tbody>
@@ -1221,7 +1217,7 @@
     lines.push(
       "### Progressive overload (this week vs. last time trained)",
       "",
-      "_Exercises with not enough data on both e1RM and tonnage are omitted._",
+      "_Exercises without enough data on e1RM or tonnage are omitted._",
       ""
     );
     {
@@ -1229,9 +1225,7 @@
       if (overloadRows.length) {
         lines.push("| Exercise | e1RM change | Tonnage change |", "|---|---|---|");
         overloadRows.forEach(v => {
-          const e1rm = v.e1rm ? v.e1rm.percent : "(not enough data)";
-          const tonnage = v.tonnage ? v.tonnage.percent : "(not enough data)";
-          lines.push(`| ${v.exercise_name} | ${e1rm} | ${tonnage} |`);
+          lines.push(`| ${v.exercise_name} | ${v.e1rm.percent} | ${v.tonnage.percent} |`);
         });
       } else {
         lines.push("_No exercises trained this week yet._");
