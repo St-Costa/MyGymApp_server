@@ -19,6 +19,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import LOGS_DIR
+from app.git_backup import ensure_repo
 from app.gui import router as gui_router
 from app.routes import router
 from app.storage import init_db
@@ -30,6 +31,10 @@ logging.basicConfig(level=logging.INFO)
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     init_db()
+    # docs/backup-server-brief.md Task 1.1: turn data/raw/ into a git repo on
+    # first startup (idempotent — a no-op once .git exists), so every raw
+    # write from here on is one commit and any prior state is recoverable.
+    ensure_repo()
     yield
 
 

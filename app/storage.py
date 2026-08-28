@@ -246,6 +246,58 @@ CREATE TABLE IF NOT EXISTS ecg_analysis (
   schema_version           INTEGER NOT NULL
 );
 
+-- Repo files: exercises/routines (docs/backup-server-brief.md Task 4), the
+-- fifth record type, synced via POST /v1/repo. Parallel to `sessions` — a
+-- tolerant parse over the YAML shapes in the app repo's docs/STORAGE.md
+-- §Exercise / §Routine. A parse failure here logs and still returns 200 and
+-- still commits (the raw file + git history are the durable copy). Rows are
+-- soft-deleted (deleted_at set), never dropped, mirroring the raw store's
+-- move-to-deleted/ tombstone. `_`-prefixed basenames (the phone's
+-- routines/_debug-backup-{ts}.md test file) are written+committed like any
+-- file but never produce a row here.
+CREATE TABLE IF NOT EXISTS exercises (
+  id               TEXT PRIMARY KEY,      -- ex-XXXXXXXX
+  name             TEXT,
+  type             TEXT,                  -- FORZA | STRETCH | CARDIO
+  bodypart         TEXT,
+  link             TEXT,                  -- image / YouTube URL
+  default_rep_min  INTEGER,
+  default_rep_max  INTEGER,
+  is_bodyweight    INTEGER,               -- 0/1
+  bw_load_percent  INTEGER,
+  notes            TEXT,
+  content_hash     TEXT NOT NULL,
+  raw_path         TEXT NOT NULL,
+  received_at      TEXT NOT NULL,
+  deleted_at       TEXT,                  -- set when op:delete tombstoned it
+  schema_version   INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS routines (
+  id             TEXT PRIMARY KEY,        -- rt-XXXXXXXX
+  name           TEXT,
+  day            TEXT,
+  enabled        INTEGER,                 -- 0/1
+  content_hash   TEXT NOT NULL,
+  raw_path       TEXT NOT NULL,
+  received_at    TEXT NOT NULL,
+  deleted_at     TEXT,
+  schema_version INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS routine_exercises (
+  routine_id           TEXT NOT NULL REFERENCES routines(id) ON DELETE CASCADE,
+  position             INTEGER NOT NULL,
+  exercise_id          TEXT NOT NULL,
+  sets                 INTEGER,
+  rep_min              INTEGER,
+  rep_max              INTEGER,
+  time_per_set_seconds INTEGER,
+  superset_with_next   INTEGER,           -- 0/1
+  is_warmup            INTEGER            -- 0/1
+);
+CREATE INDEX IF NOT EXISTS idx_routine_exercises_routine ON routine_exercises(routine_id);
+
 -- Records whose raw file was stored but whose parse step failed (step 6
 -- "on failure" case in the spec). schema_version = 0 on the corresponding
 -- row already marks this, but keeping the exception text separately makes
@@ -303,7 +355,11 @@ CREATE TABLE IF NOT EXISTS parse_failures (
 # floating-point tails that carry no real precision, and 2dp is all any
 # consumer needs. Values only; no field added or removed. reparse.py --stale
 # re-normalizes rows written by an earlier version.
-PARSER_SCHEMA_VERSION = 9
+# Bumped to 10: added the `exercises`/`routines`/`routine_exercises` tables
+# (docs/backup-server-brief.md Task 4) — the parsed SQL view over repo files
+# synced by POST /v1/repo. No session/readiness/scale/ecg field changed;
+# nothing existed below this version for those two new record types.
+PARSER_SCHEMA_VERSION = 10
 
 # schema_version stamped on a row written from step 6's "on failure" path —
 # the raw file is safely stored but nothing has been successfully parsed yet.
@@ -662,6 +718,55 @@ class ParsedScaleWeighin:
 
 
 @dataclass
+class RoutineExercise:
+    """One entry in a routine's exercise list (app repo docs/STORAGE.md
+    §Routine). `position` is the 0-based slot in the list; the other fields
+    map 1:1 to the YAML keys, all optional (missing -> None, tolerant parse)."""
+
+    position: int
+    exercise_id: str
+    sets: int | None = None
+    rep_min: int | None = None
+    rep_max: int | None = None
+    time_per_set_seconds: int | None = None
+    superset_with_next: bool = False
+    is_warmup: bool = False
+
+
+@dataclass
+class ParsedExercise:
+    """A repo `exercises/{slug}-{id}.md` file (docs/backup-server-brief.md
+    Task 4, app repo docs/STORAGE.md §Exercise). `id` is `ex-XXXXXXXX`, its
+    own namespace. Every field but `id` is optional — a tolerant parse over
+    an actively-evolving phone-side format; unknown keys are ignored."""
+
+    id: str
+    name: str | None = None
+    type: str | None = None
+    bodypart: str | None = None
+    link: str | None = None
+    default_rep_min: int | None = None
+    default_rep_max: int | None = None
+    is_bodyweight: bool = False
+    bw_load_percent: int | None = None
+    notes: str = ""
+
+
+@dataclass
+class ParsedRoutine:
+    """A repo `routines/{slug}-{id}.md` file (docs/backup-server-brief.md
+    Task 4, app repo docs/STORAGE.md §Routine). `id` is `rt-XXXXXXXX`. The
+    exercise list becomes `routine_exercises` child rows, delete-then-
+    reinsert on every upsert (same pattern as sessions' child tables)."""
+
+    id: str
+    name: str | None = None
+    day: str | None = None
+    enabled: bool = False
+    exercises: list[RoutineExercise] = field(default_factory=list)
+
+
+@dataclass
 class ParsedEcg:
     """See docs/sync-ingestion/ECG_SPEC.md. `id` is the sessionId (matches
     `sessions.id`), not a namespace of its own — one ECG recording per
@@ -752,7 +857,14 @@ class EcgAnalysisResult:
 # Tables that participate in the generic id -> content_hash / stale-lookup
 # helpers below. Whitelisted rather than interpolating an arbitrary caller-
 # supplied table name into SQL.
-_RECORD_TABLES = {"sessions", "readiness_events", "scale_weighins", "ecg_recordings"}
+_RECORD_TABLES = {
+    "sessions",
+    "readiness_events",
+    "scale_weighins",
+    "ecg_recordings",
+    "exercises",
+    "routines",
+}
 
 # Most record tables' primary key column is named `id`; ecg_recordings' is
 # `session_id` (per ECG_SPEC.md's suggested schema — it's the natural join
@@ -1023,6 +1135,148 @@ def upsert_parsed_scale_weighin(
     conn.execute(
         "DELETE FROM parse_failures WHERE record_type = 'scale_weighins' AND record_id = ?",
         (parsed.id,),
+    )
+
+
+def upsert_parsed_exercise(
+    conn: sqlite3.Connection,
+    parsed: ParsedExercise,
+    *,
+    content_hash: str,
+    raw_path: str,
+    received_at: str,
+) -> None:
+    """Step 7 "on success" path for POST /v1/repo when relPath is an
+    `exercises/*.md` file (docs/backup-server-brief.md Task 4). Flat row, no
+    child tables. An upsert clears `deleted_at` — re-adding a previously
+    tombstoned exercise (a rename that reuses the id, an undo on the phone)
+    brings its row back to life rather than leaving a stale tombstone."""
+    conn.execute(
+        """
+        INSERT INTO exercises (
+            id, name, type, bodypart, link, default_rep_min, default_rep_max,
+            is_bodyweight, bw_load_percent, notes,
+            content_hash, raw_path, received_at, deleted_at, schema_version
+        ) VALUES (
+            :id, :name, :type, :bodypart, :link, :default_rep_min, :default_rep_max,
+            :is_bodyweight, :bw_load_percent, :notes,
+            :content_hash, :raw_path, :received_at, NULL, :schema_version
+        )
+        ON CONFLICT(id) DO UPDATE SET
+            name=excluded.name, type=excluded.type, bodypart=excluded.bodypart,
+            link=excluded.link, default_rep_min=excluded.default_rep_min,
+            default_rep_max=excluded.default_rep_max, is_bodyweight=excluded.is_bodyweight,
+            bw_load_percent=excluded.bw_load_percent, notes=excluded.notes,
+            content_hash=excluded.content_hash, raw_path=excluded.raw_path,
+            received_at=excluded.received_at, deleted_at=NULL,
+            schema_version=excluded.schema_version
+        """,
+        {
+            "id": parsed.id,
+            "name": parsed.name,
+            "type": parsed.type,
+            "bodypart": parsed.bodypart,
+            "link": parsed.link,
+            "default_rep_min": parsed.default_rep_min,
+            "default_rep_max": parsed.default_rep_max,
+            "is_bodyweight": int(parsed.is_bodyweight),
+            "bw_load_percent": parsed.bw_load_percent,
+            "notes": parsed.notes,
+            "content_hash": content_hash,
+            "raw_path": raw_path,
+            "received_at": received_at,
+            "schema_version": PARSER_SCHEMA_VERSION,
+        },
+    )
+    conn.execute(
+        "DELETE FROM parse_failures WHERE record_type = 'exercises' AND record_id = ?",
+        (parsed.id,),
+    )
+
+
+def upsert_parsed_routine(
+    conn: sqlite3.Connection,
+    parsed: ParsedRoutine,
+    *,
+    content_hash: str,
+    raw_path: str,
+    received_at: str,
+) -> None:
+    """Step 7 "on success" path for POST /v1/repo when relPath is a
+    `routines/*.md` file. `routine_exercises` child rows are delete-then-
+    reinsert on every call, same reasoning as sessions' child tables (a
+    routine that lost an exercise must not leave a stale child row). An
+    upsert clears `deleted_at` — see upsert_parsed_exercise."""
+    conn.execute(
+        """
+        INSERT INTO routines (
+            id, name, day, enabled,
+            content_hash, raw_path, received_at, deleted_at, schema_version
+        ) VALUES (
+            :id, :name, :day, :enabled,
+            :content_hash, :raw_path, :received_at, NULL, :schema_version
+        )
+        ON CONFLICT(id) DO UPDATE SET
+            name=excluded.name, day=excluded.day, enabled=excluded.enabled,
+            content_hash=excluded.content_hash, raw_path=excluded.raw_path,
+            received_at=excluded.received_at, deleted_at=NULL,
+            schema_version=excluded.schema_version
+        """,
+        {
+            "id": parsed.id,
+            "name": parsed.name,
+            "day": parsed.day,
+            "enabled": int(parsed.enabled),
+            "content_hash": content_hash,
+            "raw_path": raw_path,
+            "received_at": received_at,
+            "schema_version": PARSER_SCHEMA_VERSION,
+        },
+    )
+
+    conn.execute("DELETE FROM routine_exercises WHERE routine_id = ?", (parsed.id,))
+    conn.executemany(
+        """
+        INSERT INTO routine_exercises (
+            routine_id, position, exercise_id, sets, rep_min, rep_max,
+            time_per_set_seconds, superset_with_next, is_warmup
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                parsed.id,
+                e.position,
+                e.exercise_id,
+                e.sets,
+                e.rep_min,
+                e.rep_max,
+                e.time_per_set_seconds,
+                int(e.superset_with_next),
+                int(e.is_warmup),
+            )
+            for e in parsed.exercises
+        ],
+    )
+    conn.execute(
+        "DELETE FROM parse_failures WHERE record_type = 'routines' AND record_id = ?",
+        (parsed.id,),
+    )
+
+
+def mark_repo_file_deleted(
+    conn: sqlite3.Connection, *, table: str, record_id: str, deleted_at: str
+) -> None:
+    """POST /v1/repo `op: delete` (docs/backup-server-brief.md §2.3 step 6):
+    set `deleted_at` on the matching exercises/routines row rather than
+    dropping it — the SQL view mirrors the raw store's move-to-`deleted/`
+    tombstone. A no-op if there's no such row (the file existed on disk but
+    never parsed into a row, e.g. a `_`-prefixed debug file, or a parse
+    failure)."""
+    if table not in ("exercises", "routines"):
+        raise ValueError(f"not a repo-file table: {table}")
+    conn.execute(
+        f"UPDATE {table} SET deleted_at = ? WHERE id = ?",  # noqa: S608 — table checked above
+        (deleted_at, record_id),
     )
 
 

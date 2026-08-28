@@ -21,7 +21,7 @@ from collections.abc import Callable
 from dataclasses import asdict
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from app.analysis import (
     acwr_daily_trend,
@@ -38,6 +38,7 @@ from app.analysis import (
     vo2max_4week_trend,
 )
 from app.config import DB_PATH
+from app.git_backup import GitBackupError, commit_raw_store, format_commit_message
 from app.ingestion import (
     Envelope,
     HashMismatchError,
@@ -47,6 +48,13 @@ from app.ingestion import (
     ingest_scale_weighin,
     ingest_session,
     verify_content_hash,
+)
+from app.repo import (
+    RepoPathError,
+    build_manifest,
+    ingest_repo_delete,
+    ingest_repo_upsert,
+    read_live_file,
 )
 from app.security import require_valid_bearer_token
 from app.storage import connect
@@ -75,6 +83,7 @@ async def _handle_ingest(
     id_field: str,
     response_id_key: str,
     ingest_fn: Callable[[sqlite3.Connection, Envelope, bytes], IngestResult],
+    commit_count_key: str,
     extra_required_fields: tuple[str, ...] = (),
     include_steps: bool = False,
 ) -> JSONResponse:
@@ -145,6 +154,22 @@ async def _handle_ingest(
             status_code=500, detail={"error": f"failed to persist raw file: {exc}"}
         ) from exc
 
+    # docs/backup-server-brief.md Task 1.2: one commit per successful request,
+    # after the raw file(s) are durably on disk. A safe-no-op "duplicate"
+    # wrote nothing, so `git add -A` stages nothing and commit_raw_store()
+    # returns False without a commit — no need to special-case it here. A
+    # genuine git failure (disk full mid-commit, corrupt index) is a 500:
+    # the raw file is on disk but this request didn't cross the durability
+    # boundary; the client retries and the next push's `git add -A` sweeps
+    # in the uncommitted file.
+    try:
+        commit_raw_store(format_commit_message(**{commit_count_key: 1}))
+    except GitBackupError as exc:
+        logger.exception("git commit failed after ingesting %s", env.record_id)
+        raise HTTPException(
+            status_code=500, detail={"error": f"raw file stored but not committed: {exc}"}
+        ) from exc
+
     return JSONResponse({response_id_key: result.record_id, "status": result.status})
 
 
@@ -159,6 +184,7 @@ async def post_session(
         id_field="sessionId",
         response_id_key="sessionId",
         ingest_fn=ingest_session,
+        commit_count_key="sessions",
     )
 
 
@@ -173,6 +199,7 @@ async def post_readiness(
         id_field="eventId",
         response_id_key="eventId",
         ingest_fn=ingest_readiness,
+        commit_count_key="readiness",
         include_steps=True,
     )
 
@@ -188,6 +215,7 @@ async def post_scale_weighin(
         id_field="weighInId",
         response_id_key="weighInId",
         ingest_fn=ingest_scale_weighin,
+        commit_count_key="scale",
     )
 
 
@@ -208,7 +236,129 @@ async def post_ecg(
         id_field="sessionId",
         response_id_key="sessionId",
         ingest_fn=ingest_ecg,
+        commit_count_key="ecg",
         extra_required_fields=("encoding",),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Repo files: exercises/routines (docs/backup-server-brief.md Tasks 2 & 3).
+#
+# The fifth record type — bidirectional. POST /v1/repo upserts/deletes one
+# exercises/*.md or routines/*.md file (soft-delete to deleted/, one git
+# commit per successful push); GET /v1/manifest + GET /v1/file are the
+# pull-only restore path the phone's "Ripristina dal server" flow uses.
+# ---------------------------------------------------------------------------
+
+_REQUIRED_REPO_ENVELOPE_FIELDS = ("relPath", "op", "contentHash")
+
+
+@router.post("/v1/repo", dependencies=[Depends(require_valid_bearer_token)])
+async def post_repo(
+    envelope: str = Form(...),
+    file: UploadFile | None = File(default=None),  # absent for op == "delete"  # noqa: B008
+) -> JSONResponse:
+    """docs/backup-server-brief.md §2. `op: "upsert"` needs a `file` part;
+    `op: "delete"` doesn't. Same bearer auth, hash check, tolerant parse,
+    and one-commit-per-request boundary as the other four endpoints."""
+    try:
+        envelope_data = json.loads(envelope)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=400, detail={"error": f"malformed envelope JSON: {exc}"}
+        ) from exc
+
+    missing = [f for f in _REQUIRED_REPO_ENVELOPE_FIELDS if not envelope_data.get(f)]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": f"envelope missing required field(s): {', '.join(missing)}"},
+        )
+
+    rel_path = envelope_data["relPath"]
+    op = envelope_data["op"]
+    content_hash = envelope_data["contentHash"]
+
+    if op not in ("upsert", "delete"):
+        raise HTTPException(
+            status_code=422, detail={"error": f"unknown op: {op!r} (expected upsert|delete)"}
+        )
+
+    try:
+        with connect(DB_PATH) as conn:
+            if op == "upsert":
+                if file is None:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={"error": "op 'upsert' requires a 'file' part"},
+                    )
+                raw_bytes = await file.read()
+                try:
+                    result = ingest_repo_upsert(
+                        conn,
+                        rel_path=rel_path,
+                        content_hash=content_hash,
+                        raw_bytes=raw_bytes,
+                    )
+                except RepoPathError as exc:
+                    raise HTTPException(status_code=422, detail={"error": str(exc)}) from exc
+                except ValueError as exc:  # hash mismatch
+                    raise HTTPException(status_code=422, detail={"error": str(exc)}) from exc
+            else:
+                try:
+                    result = ingest_repo_delete(conn, rel_path=rel_path)
+                except RepoPathError as exc:
+                    raise HTTPException(status_code=422, detail={"error": str(exc)}) from exc
+    except OSError as exc:
+        logger.exception("failed to persist repo file %s", rel_path)
+        raise HTTPException(
+            status_code=500, detail={"error": f"failed to persist repo file: {exc}"}
+        ) from exc
+
+    # §2.2 step 5 / §2.3 step 4: a duplicate upsert or an already-absent
+    # delete wrote nothing and must not commit.
+    if result.status in ("duplicate", "already_absent"):
+        return JSONResponse({"relPath": result.rel_path, "status": result.status})
+
+    note = None
+    if result.status == "deleted":
+        note = f"delete {rel_path} → deleted/"
+    try:
+        commit_raw_store(format_commit_message(repo=1, note=note))
+    except GitBackupError as exc:
+        logger.exception("git commit failed after repo %s of %s", op, rel_path)
+        raise HTTPException(
+            status_code=500, detail={"error": f"repo file stored but not committed: {exc}"}
+        ) from exc
+
+    return JSONResponse({"relPath": result.rel_path, "status": result.status})
+
+
+@router.get("/v1/manifest", dependencies=[Depends(require_valid_bearer_token)])
+def get_manifest() -> dict:
+    """§3.1: content hash of every live file under data/raw/ (everything
+    except deleted/ and .git/), keyed by relPath."""
+    return build_manifest()
+
+
+@router.get("/v1/file", dependencies=[Depends(require_valid_bearer_token)])
+def get_file(relPath: str = Query(...)) -> Response:  # noqa: N803 — matches the wire param name
+    """§3.2: raw bytes of one live file, with an X-Content-SHA256 header.
+    422 if relPath fails the safety check, 404 if it isn't a live file."""
+    try:
+        raw_bytes, sha = read_live_file(relPath)
+    except RepoPathError as exc:
+        raise HTTPException(status_code=422, detail={"error": str(exc)}) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=404, detail={"error": f"not a live file: {relPath}"}
+        ) from exc
+
+    media_type = "text/markdown" if relPath.endswith(".md") else "application/octet-stream"
+    return Response(
+        content=raw_bytes,
+        media_type=media_type,
+        headers={"X-Content-SHA256": sha},
     )
 
 

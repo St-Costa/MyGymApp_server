@@ -8,8 +8,10 @@ import sys
 
 from tests.conftest import (
     build_ecg_bytes,
+    content_hash_of,
     post_ecg,
     post_readiness,
+    post_repo,
     post_scale_weighin,
     post_session,
 )
@@ -87,6 +89,62 @@ def test_reparse_all_covers_all_four_record_types(app_client):
     assert conn.execute("SELECT COUNT(*) FROM scale_weighins").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM ecg_recordings").fetchone()[0] == 1
     conn.close()
+
+
+def test_reparse_all_reproduces_repo_file_rows(app_client):
+    """docs/backup-server-brief.md Task 4: reparse must re-derive the
+    exercises/routines SQL view from the raw files, and skip _-prefixed
+    debug files exactly as the live /v1/repo path does."""
+    post_repo(app_client)  # exercise
+    post_repo(app_client, rel_path="routines/push-day-rt-b2c3d4e5.md", md_bytes=_routine_bytes())
+    debug_md = b"---\nid: rt-deadbeef\nname: debug\ndebug: true\n---\n"
+    post_repo(
+        app_client,
+        debug_md,
+        rel_path="routines/_debug-backup-1725480000000.md",
+        content_hash=content_hash_of(debug_md),
+    )
+
+    import app.config
+
+    # received_at is a fresh timestamp on every (re)parse — compare the
+    # stable parsed columns only, same as test_reparse_all_reproduces_same_rows.
+    ex_cols = (
+        "id, name, type, bodypart, link, default_rep_min, default_rep_max, "
+        "is_bodyweight, deleted_at, schema_version"
+    )
+    rt_cols = "id, name, day, enabled, deleted_at, schema_version"
+
+    conn = sqlite3.connect(app.config.DB_PATH)
+    before_ex = conn.execute(f"SELECT {ex_cols} FROM exercises ORDER BY id").fetchall()
+    before_rt = conn.execute(f"SELECT {rt_cols} FROM routines ORDER BY id").fetchall()
+    before_kids = conn.execute(
+        "SELECT * FROM routine_exercises ORDER BY routine_id, position"
+    ).fetchall()
+    conn.close()
+
+    sys.modules.pop("reparse", None)
+    import reparse
+
+    importlib.reload(reparse)
+    assert _run_reparse_all(reparse) == 0
+
+    conn = sqlite3.connect(app.config.DB_PATH)
+    assert conn.execute(f"SELECT {ex_cols} FROM exercises ORDER BY id").fetchall() == before_ex
+    assert conn.execute(f"SELECT {rt_cols} FROM routines ORDER BY id").fetchall() == before_rt
+    assert (
+        conn.execute("SELECT * FROM routine_exercises ORDER BY routine_id, position").fetchall()
+        == before_kids
+    )
+    # The _-prefixed debug file was committed to raw/ but still has no row.
+    assert conn.execute("SELECT COUNT(*) FROM routines").fetchone()[0] == 1
+    conn.close()
+
+
+def _routine_bytes() -> bytes:
+    from tests.conftest import ROUTINE_MD
+
+    return ROUTINE_MD.encode()
 
 
 def test_reparse_readiness_falls_back_to_frontmatter_steps_fields(app_client):

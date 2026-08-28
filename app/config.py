@@ -18,6 +18,14 @@ DATA_ROOT = Path(os.environ.get("DATA_ROOT", "./data")).resolve()
 
 PORT = int(os.environ.get("PORT", "8420"))
 
+# Optional off-box mirror for the data/raw/ backup git repo (docs/backup-
+# server-brief.md Task 1.3): a bare repo on another disk, or a private
+# GitHub/Gitea URL with a deploy key. When set, every successful commit is
+# followed by a best-effort `git push <remote> HEAD:main` — a push failure
+# is logged, never fatal (the local commit is the real backup). Empty/unset
+# disables the mirror entirely.
+BACKUP_GIT_REMOTE = os.environ.get("BACKUP_GIT_REMOTE", "")
+
 RAW_DIR = DATA_ROOT / "raw"
 DB_PATH = DATA_ROOT / "db.sqlite3"
 LOGS_DIR = DATA_ROOT / "logs"

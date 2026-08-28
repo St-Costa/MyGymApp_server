@@ -67,7 +67,16 @@ import struct
 
 import yaml
 
-from app.storage import ExerciseSet, ParsedEcg, ParsedReadiness, ParsedScaleWeighin, ParsedSession
+from app.storage import (
+    ExerciseSet,
+    ParsedEcg,
+    ParsedExercise,
+    ParsedReadiness,
+    ParsedRoutine,
+    ParsedScaleWeighin,
+    ParsedSession,
+    RoutineExercise,
+)
 
 
 class SessionParseError(ValueError):
@@ -247,6 +256,85 @@ def parse_scale_weighin_file(raw_bytes: bytes) -> ParsedScaleWeighin:
         body_fat_percent=_num(data, "bodyFatPercent"),
         lean_mass_percent=_num(data, "leanMassPercent"),
     )
+
+
+def parse_exercise_file(raw_bytes: bytes) -> ParsedExercise:
+    """A repo `exercises/{slug}-{id}.md` file (docs/backup-server-brief.md
+    Task 4). YAML shape: app repo docs/STORAGE.md §Exercise. Same tolerance
+    as the session parser — unknown keys ignored, only `id` is required.
+
+    `_`-prefixed basenames (the phone's debug test file) are handled one
+    layer up (app.repo / reparse.py early-return before calling this), not
+    here — this function has no access to the path."""
+    data = _load_repo_frontmatter(raw_bytes)
+
+    exercise_id = data.get("id")
+    if not exercise_id or not isinstance(exercise_id, str):
+        raise SessionParseError("exercise frontmatter missing required 'id' field")
+
+    _, body = _split_frontmatter(raw_bytes.decode("utf-8"))
+
+    return ParsedExercise(
+        id=exercise_id,
+        name=data.get("name"),
+        type=data.get("type"),
+        bodypart=data.get("bodypart"),
+        link=data.get("link"),
+        default_rep_min=_optional_int(data, "defaultRepRangeMin"),
+        default_rep_max=_optional_int(data, "defaultRepRangeMax"),
+        is_bodyweight=bool(data.get("isBodyweight", False)),
+        bw_load_percent=_optional_int(data, "bwLoadPercent"),
+        notes=body.strip(),
+    )
+
+
+def parse_routine_file(raw_bytes: bytes) -> ParsedRoutine:
+    """A repo `routines/{slug}-{id}.md` file (docs/backup-server-brief.md
+    Task 4). YAML shape: app repo docs/STORAGE.md §Routine — a flat header
+    plus an `exercises:` list that becomes `routine_exercises` child rows.
+    Same tolerance as above; only `id` is required."""
+    data = _load_repo_frontmatter(raw_bytes)
+
+    routine_id = data.get("id")
+    if not routine_id or not isinstance(routine_id, str):
+        raise SessionParseError("routine frontmatter missing required 'id' field")
+
+    exercises = [
+        RoutineExercise(
+            position=position,
+            exercise_id=str(raw.get("exerciseId") or ""),
+            sets=_optional_int(raw, "sets"),
+            rep_min=_optional_int(raw, "repRangeMin"),
+            rep_max=_optional_int(raw, "repRangeMax"),
+            time_per_set_seconds=_optional_int(raw, "timePerSetSeconds"),
+            superset_with_next=bool(raw.get("supersetWithNext", False)),
+            is_warmup=bool(raw.get("isWarmup", False)),
+        )
+        for position, raw in enumerate(data.get("exercises") or [])
+    ]
+
+    return ParsedRoutine(
+        id=routine_id,
+        name=data.get("name"),
+        day=data.get("day"),
+        enabled=bool(data.get("enabled", False)),
+        exercises=exercises,
+    )
+
+
+def _load_repo_frontmatter(raw_bytes: bytes) -> dict:
+    """Shared front-half of parse_exercise_file/parse_routine_file: decode,
+    split the `---` frontmatter, parse it with the same string-id-preserving
+    loader the other parsers use, and assert it's a mapping."""
+    text = raw_bytes.decode("utf-8")
+    frontmatter, _body = _split_frontmatter(text)
+    try:
+        data = yaml.load(frontmatter, Loader=_StringIdLoader) or {}
+    except yaml.YAMLError as exc:
+        raise SessionParseError(f"invalid YAML frontmatter: {exc}") from exc
+    if not isinstance(data, dict):
+        raise SessionParseError("frontmatter did not parse to a mapping")
+    return data
 
 
 _ECG_MAGIC = b"MYGMECG1"

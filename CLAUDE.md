@@ -133,9 +133,13 @@ In this repository, committing is part of finishing a unit of work — you do no
 - CI/CD workflow files (`.github/workflows/`) — changes here affect every future PR.
 - Anything under `docs/adr/` — these are historical records, not living docs; add a new ADR instead of editing an old one.
 - `.claude/settings.json`, `lefthook.yml`, `.gitleaks.toml`, `commitlint.config.js` — these govern what Claude itself is permitted to do and what gets checked before a commit lands; loosening them is a trust decision for the user to make, not the agent.
-- The `sessions` / `exercise_sets` / `tonnage_by_bodypart` SQLite schema — it's re-derivable
-  from raw files via `reparse.py`, but a breaking change still needs a `PARSER_SCHEMA_VERSION`
-  bump and a migration plan, not a silent edit.
+- The `sessions` / `exercise_sets` / `tonnage_by_bodypart` / `readiness_events` /
+  `scale_weighins` / `ecg_recordings` / `exercises` / `routines` / `routine_exercises`
+  SQLite schema — it's re-derivable from raw files via `reparse.py`, but a breaking change
+  still needs a `PARSER_SCHEMA_VERSION` bump and a migration plan, not a silent edit.
+- `data/raw/` is a git repository (`app/git_backup.py`, see [docs/backup/README.md](docs/backup/README.md)):
+  every successful ingest makes one commit. Don't change the commit-per-request boundary,
+  the commit-message format, or the soft-delete-to-`deleted/` behaviour without a reason.
 - `docs/sync-ingestion/SPEC.md` — the source spec for this project; treat as a historical
   record like an ADR. If behavior needs to diverge from it, document the divergence rather
   than editing the spec to match.
