@@ -22,8 +22,10 @@ best-effort step — so a phone-side format change never risks silently losing d
 
 ## Status
 
-✅ All four ingestion endpoints, storage layer, and reparse tooling implemented per spec.
-Tailscale Serve setup (below) is a manual step to run on the actual self-hosted box.
+✅ All five ingestion endpoints (sessions, readiness, scale, ECG, repo files), the restore
+endpoints, the git-versioned `data/raw/` backup store, storage layer, and reparse tooling
+implemented per spec. Tailscale Serve setup (below) is a manual step to run on the actual
+self-hosted box.
 
 ## API
 
@@ -33,6 +35,9 @@ Tailscale Serve setup (below) is a manual step to run on the actual self-hosted 
 | `POST /v1/readiness` | HRV readiness event | [READINESS_SPEC.md](docs/sync-ingestion/READINESS_SPEC.md) |
 | `POST /v1/scale-weighins` | Smart-scale weigh-in | [SCALE_SPEC.md](docs/sync-ingestion/SCALE_SPEC.md) |
 | `POST /v1/ecg` | Raw ECG waveform | [ECG_SPEC.md](docs/sync-ingestion/ECG_SPEC.md) |
+| `POST /v1/repo` | Repo file (`exercises/*.md`, `routines/*.md`) — upsert/delete | [backup/README.md](docs/backup/README.md) |
+| `GET /v1/manifest` | Restore: content hash of every live raw file | [backup/README.md](docs/backup/README.md) |
+| `GET /v1/file?relPath=…` | Restore: raw bytes of one live file | [backup/README.md](docs/backup/README.md) |
 | `GET /health` | — | no auth required |
 
 The three text-record POST endpoints share the same request contract: `multipart/form-data`
@@ -52,6 +57,13 @@ cardio trend/alerts, weekly resting-HR/VO2max/scale trends, exercise PRs — as 
 (`ExerciseType.CARDIO`) — no new endpoint, this rides the existing `POST /v1/sessions`
 transport; `exercise_sets` gained four nullable columns (`started_at`/`ended_at`/`avg_hr`/
 `max_hr`) for it. See [CARDIO_BLOCKS_SPEC.md](docs/sync-ingestion/CARDIO_BLOCKS_SPEC.md).
+
+**Git-versioned backup**: `data/raw/` is a git repo — every successful ingest (all five
+record types) makes one commit, so any prior state or an accidentally deleted file is
+recoverable. `POST /v1/repo` adds `exercises/*.md` / `routines/*.md` as a fifth record type
+(upsert + soft-delete-to-`deleted/`), and `GET /v1/manifest` + `GET /v1/file` are the
+pull-only restore path the phone uses. Optional off-box mirror via `BACKUP_GIT_REMOTE`. See
+[docs/backup/README.md](docs/backup/README.md).
 
 ### ECG waveform analysis
 

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Standalone maintenance script: re-parse raw record files already on disk,
-across all four record types (sessions, readiness events, scale weigh-ins,
-raw ECG recordings — see docs/sync-ingestion/{SPEC,READINESS_SPEC,
-SCALE_SPEC,ECG_SPEC}.md).
+across all five record types (sessions, readiness events, scale weigh-ins,
+raw ECG recordings, and repo files — exercises/routines — see
+docs/sync-ingestion/{SPEC,READINESS_SPEC,SCALE_SPEC,ECG_SPEC}.md and
+docs/backup/README.md).
 
 Never touches the network — reads DATA_ROOT/raw/**, re-runs the *same*
 per-type parsing function the live POST handlers use (app.parsing, via
@@ -12,7 +13,7 @@ is improved to handle a new field, without needing the phone involved: the
 raw files already have everything they ever sent.
 
 Usage:
-    python reparse.py --all                  # every record, all four types
+    python reparse.py --all                  # every record, all five types
     python reparse.py --stale                # only schema_version < current, all types
     python reparse.py --type readiness --all  # restrict to one record type
     python reparse.py <id> [<id> ...]          # specific ids (searched across all types)
@@ -24,12 +25,15 @@ import sys
 import traceback
 from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 
 from app.config import DATA_ROOT, DB_PATH, RAW_DIR
 from app.parsing import (
     SessionParseError,
     parse_ecg_file,
+    parse_exercise_file,
     parse_readiness_file,
+    parse_routine_file,
     parse_scale_weighin_file,
     parse_session_file,
 )
@@ -41,7 +45,9 @@ from app.storage import (
     init_db,
     record_parse_failure,
     upsert_parsed_ecg,
+    upsert_parsed_exercise,
     upsert_parsed_readiness,
+    upsert_parsed_routine,
     upsert_parsed_scale_weighin,
     upsert_parsed_session,
 )
@@ -62,6 +68,12 @@ RECORD_TYPES = {
         lambda raw_bytes, record_id: replace(parse_ecg_file(raw_bytes), id=record_id),
         upsert_parsed_ecg,
     ),
+    # docs/backup-server-brief.md Task 4: the parsed SQL view over repo files
+    # synced by POST /v1/repo. `_`-prefixed basenames (the phone's debug
+    # test file) are skipped in reparse_one before the parser runs, same as
+    # the live endpoint.
+    "exercises": ("exercises", parse_exercise_file, upsert_parsed_exercise),
+    "routines": ("routines", parse_routine_file, upsert_parsed_routine),
 }
 
 # Whether a record type's parse function needs `record_id` passed alongside
@@ -81,6 +93,14 @@ def reparse_one(conn, record_type: str, record_id: str, raw_path: str) -> bool:
     if not full_path.exists():
         logger.error("raw file missing for %s %s: %s", record_type, record_id, full_path)
         return False
+
+    # docs/backup-server-brief.md §4: a `_`-prefixed basename (the phone's
+    # routines/_debug-backup-{ts}.md test file) is written and committed like
+    # any file but must never produce an exercises/routines row — skip it
+    # here exactly as app.repo does on the live path.
+    if record_type in ("exercises", "routines") and Path(raw_path).name.startswith("_"):
+        logger.debug("skipping _-prefixed repo file on reparse: %s", raw_path)
+        return True
 
     raw_bytes = full_path.read_bytes()
     received_at = datetime.now(UTC).isoformat()
@@ -142,7 +162,7 @@ def main() -> int:
         "--type",
         choices=list(RECORD_TYPES),
         default=None,
-        help="restrict to one record type (default: all three)",
+        help="restrict to one record type (default: all five)",
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--all", action="store_true", help="reparse every stored record")
@@ -170,7 +190,7 @@ def main() -> int:
                 ):
                     targets.append((record_type, record_id, raw_path))
         else:
-            # Specific ids: search each requested type's table (or all three
+            # Specific ids: search each requested type's table (or all five
             # if --type wasn't given) since ids are only unique within their
             # own record type, not globally.
             for record_type in types_to_scan:

@@ -109,6 +109,44 @@ def recent_scale_weighin_md(*, weight_kg: float = 78.4) -> bytes:
     ).encode()
 
 
+EXERCISE_MD = """---
+id: ex-a1b2c3d4
+name: Bench Press
+type: FORZA
+bodypart: chest
+link: https://example.com/bench.png
+defaultRepRangeMin: 8
+defaultRepRangeMax: 12
+isBodyweight: false
+created: 2025-03-15T10:22:14
+updated: 2025-04-18T09:00:00
+---
+
+Form cues: retract scapula, controlled eccentric.
+"""
+
+ROUTINE_MD = """---
+id: rt-b2c3d4e5
+name: Push Day
+day: monday
+enabled: true
+exercises:
+  - exerciseId: ex-a1b2c3d4
+    sets: 4
+    repRangeMin: 6
+    repRangeMax: 10
+    timePerSetSeconds: 60
+    supersetWithNext: false
+    isWarmup: true
+  - exerciseId: ex-b2c3d4e5
+    sets: 3
+    repRangeMin: 8
+    repRangeMax: 12
+---
+
+Routine notes.
+"""
+
 SHARED_SECRET = "test-secret-for-unit-tests"
 
 
@@ -160,9 +198,11 @@ def app_client(tmp_path, monkeypatch):
     monkeypatch.setenv("DATA_ROOT", str(tmp_path / "data"))
 
     import app.config
+    import app.git_backup
     import app.gui
     import app.ingestion
     import app.main
+    import app.repo
     import app.routes
     import app.security
     import app.storage
@@ -170,6 +210,10 @@ def app_client(tmp_path, monkeypatch):
     importlib.reload(app.config)
     importlib.reload(app.security)
     importlib.reload(app.storage)
+    # git_backup/repo bind `from app.config import RAW_DIR` at import time —
+    # reload them after app.config so each test's tmp_path DATA_ROOT takes.
+    importlib.reload(app.git_backup)
+    importlib.reload(app.repo)
     importlib.reload(app.ingestion)
     importlib.reload(app.routes)
     importlib.reload(app.gui)
@@ -286,6 +330,44 @@ def post_scale_weighin(
         rel_path=rel_path or f"2026/08/{weighin_id}.md",
         content_hash=content_hash,
         headers=headers,
+    )
+
+
+def post_repo(
+    client,
+    md_bytes: bytes | None = EXERCISE_MD.encode(),
+    *,
+    rel_path: str = "exercises/bench-press-ex-a1b2c3d4.md",
+    op: str = "upsert",
+    content_hash: str | None = None,
+    headers: dict | None = None,
+    omit_field: str | None = None,
+):
+    """POST /v1/repo (docs/backup-server-brief.md §2). For op='delete' pass
+    md_bytes=None — no `file` part is sent. `omit_field` drops one required
+    envelope key, for the 422 tests."""
+    import json
+
+    envelope = {
+        "relPath": rel_path,
+        "op": op,
+        "contentHash": content_hash
+        or (content_hash_of(md_bytes) if md_bytes is not None else "sha256:" + "0" * 64),
+        "appVersion": "1.0-test",
+        "clientSentAt": "2026-09-04T20:11:03Z",
+    }
+    if omit_field is not None:
+        envelope.pop(omit_field, None)
+
+    files = None
+    if md_bytes is not None and op == "upsert":
+        files = {"file": ("record.md", md_bytes, "text/markdown")}
+
+    return client.post(
+        "/v1/repo",
+        data={"envelope": json.dumps(envelope)},
+        files=files,
+        headers=headers if headers is not None else auth_headers(),
     )
 
 
