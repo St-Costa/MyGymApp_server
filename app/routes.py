@@ -73,7 +73,9 @@ REQUIRED_ENVELOPE_FIELDS = ("relPath", "contentHash", "appVersion", "clientSentA
 
 @router.get("/health")
 def health() -> dict:
-    return {"status": "ok"}
+    # No auth (see docs/sync-ingestion/SPEC.md) — backs the app's
+    # "Verifica connessione" button, which checks for {"ok": true}.
+    return {"ok": True}
 
 
 async def _handle_ingest(
