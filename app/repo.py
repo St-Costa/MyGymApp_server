@@ -26,11 +26,14 @@ path-traversal check, and the `_`-prefixed-basename skip for the phone's
 debug test file. app/routes.py stays a thin HTTP adapter over this.
 """
 
+import gzip
 import hashlib
+import io
 import logging
 import os
 import sqlite3
 import subprocess
+import tarfile
 import threading
 import traceback
 from dataclasses import dataclass
@@ -272,6 +275,148 @@ def ingest_repo_delete(*, rel_path: str) -> RepoResult:
     _bump_write_generation()
 
     return RepoResult(rel_path=rel_path, status="deleted")
+
+
+# ---------------------------------------------------------------------------
+# Batch write — POST /v1/repo/bulk (docs/backup/OPTIMIZATION.md point 2)
+# ---------------------------------------------------------------------------
+
+# Soft caps per bulk request (docs/backup/OPTIMIZATION.md point 2). Over
+# either -> 413; the client splits into smaller batches. Protects the
+# server's RAM (multipart is buffered) without a hard architectural limit.
+BULK_MAX_FILES = 500
+BULK_MAX_TOTAL_BYTES = 50 * 1024 * 1024
+
+
+@dataclass
+class BulkEntryResult:
+    rel_path: str
+    # "stored" | "duplicate" | "deleted" | "already_absent" | "error"
+    status: str
+    error: str | None = None
+
+
+def ingest_repo_bulk(
+    entries: list[dict],
+    files_by_index: dict[int, bytes],
+) -> tuple[list[BulkEntryResult], int, list[str]]:
+    """N repo upserts/deletes in one request. `entries[i]` is
+    `{relPath, op, contentHash}`; `files_by_index[i]` is the raw bytes for
+    entry i when its op is "upsert". Applies every entry independently — a
+    bad hash or path on one is a per-entry "error", not a request failure —
+    then returns:
+
+      (per-entry results in order, count that actually touched the tree,
+       delete-tombstone notes for the commit message)
+
+    The route makes ONE debounced commit and enqueues the parse for each
+    touched entry. No commit here (same split of responsibilities as the
+    single-file path)."""
+    results: list[BulkEntryResult] = []
+    touched = 0
+    notes: list[str] = []
+
+    for i, entry in enumerate(entries):
+        rel_path = entry.get("relPath")
+        op = entry.get("op")
+        content_hash = entry.get("contentHash")
+
+        if not rel_path or not op or not content_hash:
+            results.append(
+                BulkEntryResult(
+                    rel_path=rel_path or f"<entry {i}>",
+                    status="error",
+                    error="entry missing relPath / op / contentHash",
+                )
+            )
+            continue
+        if op not in ("upsert", "delete"):
+            results.append(
+                BulkEntryResult(rel_path=rel_path, status="error", error=f"unknown op: {op!r}")
+            )
+            continue
+
+        try:
+            if op == "upsert":
+                raw_bytes = files_by_index.get(i)
+                if raw_bytes is None:
+                    raise ValueError(f"no file part for upsert entry {i} ({rel_path})")
+                res = ingest_repo_upsert(
+                    rel_path=rel_path, content_hash=content_hash, raw_bytes=raw_bytes
+                )
+            else:
+                res = ingest_repo_delete(rel_path=rel_path)
+        except (RepoPathError, ValueError) as exc:
+            results.append(BulkEntryResult(rel_path=rel_path, status="error", error=str(exc)))
+            continue
+        except OSError as exc:
+            results.append(
+                BulkEntryResult(rel_path=rel_path, status="error", error=f"write failed: {exc}")
+            )
+            continue
+
+        results.append(BulkEntryResult(rel_path=res.rel_path, status=res.status))
+        if res.status in ("stored", "deleted"):
+            touched += 1
+            from app.repo_worker import enqueue_parse
+
+            enqueue_parse(rel_path, content_hash, op)
+            if res.status == "deleted":
+                notes.append(f"delete {rel_path} → deleted/")
+
+    return results, touched, notes
+
+
+# ---------------------------------------------------------------------------
+# Batch read — POST /v1/repo/files, GET /v1/repo/tarball
+# (docs/backup/OPTIMIZATION.md point 3)
+# ---------------------------------------------------------------------------
+
+
+def read_live_files(rel_paths: list[str]) -> list[tuple[str, bytes | None, str | None]]:
+    """POST /v1/repo/files: for each requested relPath, return
+    `(relPath, raw_bytes, sha256)` for a live file, or `(relPath, None, None)`
+    if it isn't one (missing, a directory, under deleted/ | .git/, or fails
+    the safety check). One list, same order as the request — the client
+    diffs it against its ledger. Pull-only; never deletes anything."""
+    out: list[tuple[str, bytes | None, str | None]] = []
+    for rel_path in rel_paths:
+        try:
+            raw_bytes, sha = read_live_file(rel_path)
+        except (RepoPathError, FileNotFoundError):
+            out.append((rel_path, None, None))
+        else:
+            out.append((rel_path, raw_bytes, sha))
+    return out
+
+
+def build_tarball(since_manifest_hash: str | None = None) -> tuple[bytes, str]:
+    """GET /v1/repo/tarball: a gzip-compressed tar of live files, for a
+    from-scratch restore in one transfer. Returns `(tar_gz_bytes,
+    manifest_hash)` — `manifest_hash` is the sha256 of the current manifest's
+    sorted `relPath\\ncontentHash` lines, which the client passes back as
+    `since=` next time to get only what changed.
+
+    `since_manifest_hash` — when it matches the current manifest hash, the
+    tar is empty (nothing changed). Otherwise every live file is included
+    (a cheap, correct "changed set" — a true delta would need the client's
+    old manifest, which it doesn't send here; `GET /v1/manifest` already
+    covers fine-grained per-file diffing)."""
+    manifest = build_manifest()["files"]
+    manifest_hash = _sha256_hex(
+        "\n".join(f"{p}\n{h}" for p, h in sorted(manifest.items())).encode()
+    )
+
+    raw_root = RAW_DIR.resolve()
+    buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=buf, mode="wb", mtime=0) as gz:
+        with tarfile.open(fileobj=gz, mode="w") as tar:  # type: ignore[arg-type]
+            if since_manifest_hash != manifest_hash:
+                for rel_path in manifest:
+                    abs_path = raw_root / rel_path
+                    if abs_path.is_file():
+                        tar.add(abs_path, arcname=rel_path)
+    return buf.getvalue(), manifest_hash
 
 
 def _slug_id_from(rel_path: str) -> str:
