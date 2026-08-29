@@ -5,8 +5,20 @@ The fifth record type. Unlike the other four this one is *bidirectional* —
 the phone pushes `exercises/*.md` / `routines/*.md` up (upsert/delete), and
 pulls them back down during a "Ripristina dal server" restore (manifest +
 per-file fetch). It rides the same bearer auth and the same raw-first /
-tolerant-parse philosophy, and every successful push is one git commit
-(app/git_backup.py), same as Tasks 1.2.
+tolerant-parse philosophy.
+
+docs/backup/OPTIMIZATION.md points 4/5/6 changed three internals here
+(the wire contract is untouched):
+
+- Point 5: the soft-delete moves the file with `os.rename` into
+  `deleted/<relPath>.<unix_ts>` instead of forking `git mv` — the debounced
+  committer's `git add -A` records the move.
+- Point 6: `ingest_repo_upsert` no longer parses. It fsyncs the bytes and
+  returns; the route enqueues the relPath for app.repo_worker, which calls
+  `parse_repo_file_into_view` off the request path.
+- Point 4: `build_manifest()` caches its result keyed on `git rev-parse
+  HEAD` plus a write-generation counter, so a manifest with no writes since
+  the last call is O(1) instead of an os.walk + sha256 of every file.
 
 Kept out of app/ingestion.py because it doesn't fit `ingest_record`'s
 shape: two ops (upsert/delete), a soft-delete-to-tombstone path, a strict
@@ -18,6 +30,8 @@ import hashlib
 import logging
 import os
 import sqlite3
+import subprocess
+import threading
 import traceback
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -56,6 +70,26 @@ class RepoPathError(ValueError):
 class RepoResult:
     rel_path: str
     status: str  # "stored" | "duplicate" | "deleted" | "already_absent"
+
+
+# Bumped on every write to the raw store (upsert that actually wrote, or a
+# delete that actually moved a file). build_manifest() compares this plus
+# `git rev-parse HEAD` against what it last hashed; if neither moved, it
+# returns the cached manifest instead of re-walking the tree. See
+# docs/backup/OPTIMIZATION.md point 4.
+_write_generation = 0
+_write_gen_lock = threading.Lock()
+
+
+def _bump_write_generation() -> None:
+    global _write_generation
+    with _write_gen_lock:
+        _write_generation += 1
+
+
+def _current_write_generation() -> int:
+    with _write_gen_lock:
+        return _write_generation
 
 
 def validate_rel_path(rel_path: str) -> Path:
@@ -101,23 +135,47 @@ def _is_skipped_basename(rel_path: str) -> bool:
     return Path(rel_path).name.startswith(_SKIP_ROW_PREFIX)
 
 
-def _parse_into_sql_view(
+def parse_repo_file_into_view(
     conn: sqlite3.Connection,
-    rel_path: str,
-    raw_bytes: bytes,
     *,
+    rel_path: str,
     content_hash: str,
+    op: str,
     received_at: str,
 ) -> None:
-    """§2.2 step 7: tolerant parse of a just-written repo file into the
-    exercises/routines SQL view. Any parse error is caught and logged — it
-    must never fail the request (the raw file + git commit are the durable
-    copy). `_`-prefixed basenames are skipped entirely per the brief §4."""
+    """Worker entry point (app.repo_worker), off the request path — see
+    docs/backup/OPTIMIZATION.md point 6. Re-reads the raw file from disk and
+    folds it into the exercises/routines SQL view:
+
+    - op "upsert": tolerant parse -> upsert the row (or record_parse_failure
+      on a bad shape). If the file has since vanished (a delete raced ahead),
+      no-op.
+    - op "delete": mark the matching row `deleted_at`, don't drop it.
+
+    Any parse error is caught and logged — the raw file + git history are
+    the durable copy, and `reparse.py --stale` can always rebuild this view.
+    `_`-prefixed basenames never produce a row (brief §4)."""
     if _is_skipped_basename(rel_path):
         logger.debug("skipping SQL view for _-prefixed repo file: %s", rel_path)
         return
 
     table, parse_fn, upsert_fn = _table_and_parser_for(rel_path)
+
+    if op == "delete":
+        mark_repo_file_deleted(
+            conn, table=table, record_id=_slug_id_from(rel_path), deleted_at=received_at
+        )
+        return
+
+    abs_path = RAW_DIR / rel_path
+    if not abs_path.is_file():
+        # A delete for this relPath landed between the upsert's fsync and
+        # this parse. The delete's own worker item will mark the row; nothing
+        # to do here.
+        logger.info("repo file %s gone before parse (delete raced ahead) — skipping", rel_path)
+        return
+
+    raw_bytes = abs_path.read_bytes()
     try:
         parsed = parse_fn(raw_bytes)
         upsert_fn(
@@ -164,17 +222,20 @@ def _atomic_write(dest_abs: Path, raw_bytes: bytes) -> None:
 
 
 def ingest_repo_upsert(
-    conn: sqlite3.Connection,
     *,
     rel_path: str,
     content_hash: str,
     raw_bytes: bytes,
 ) -> RepoResult:
-    """§2.2. Caller (app/routes.py) has already done bearer + envelope
-    validation and the relPath safety check. This does: hash verify,
-    idempotency check, atomic write, tolerant SQL-view parse. The git
-    commit is the route's responsibility (so it owns the one-commit-per-
-    request boundary and the 500-on-commit-failure)."""
+    """§2.2 steps 3-6. Caller (app/routes.py) has already done bearer +
+    envelope validation. This does the relPath safety check, hash verify,
+    on-disk idempotency check, and the atomic write. It does NOT parse or
+    commit: the route enqueues the parse (app.repo_worker) and the debounced
+    committer (app.git_backup) picks up the write — see
+    docs/backup/OPTIMIZATION.md points 1 & 6.
+
+    Returns "duplicate" (no write) if the file is already there byte-for-byte,
+    "stored" otherwise."""
     dest_abs = validate_rel_path(rel_path)
 
     actual = _sha256_hex(raw_bytes)
@@ -182,45 +243,33 @@ def ingest_repo_upsert(
         raise ValueError(f"contentHash mismatch: envelope said {content_hash}, computed {actual}")
 
     # §2.2 step 5: idempotency by on-disk bytes. If the file is already there
-    # and identical, no write, no commit — the route returns "duplicate".
+    # and identical, no write — the route returns "duplicate", no commit,
+    # no parse enqueued.
     if dest_abs.exists() and _sha256_hex(dest_abs.read_bytes()) == content_hash:
         return RepoResult(rel_path=rel_path, status="duplicate")
 
     _atomic_write(dest_abs, raw_bytes)
-
-    received_at = datetime.now(UTC).isoformat()
-    _parse_into_sql_view(
-        conn, rel_path, raw_bytes, content_hash=content_hash, received_at=received_at
-    )
+    _bump_write_generation()  # invalidate the manifest cache (point 4)
     return RepoResult(rel_path=rel_path, status="stored")
 
 
-def ingest_repo_delete(conn: sqlite3.Connection, *, rel_path: str) -> RepoResult:
-    """§2.3. Soft delete: never `rm`. If the file exists, `git mv` it into
-    `deleted/<relPath>.<unix_ts>` and mark the SQL row (if any) deleted.
-    Returns "already_absent" (no commit) if there's nothing there. The git
-    commit is the route's responsibility, same as the upsert path."""
+def ingest_repo_delete(*, rel_path: str) -> RepoResult:
+    """§2.3. Soft delete: never `rm`. If the file exists, move it with
+    `os.rename` into `deleted/<relPath>.<unix_ts>` (no `git mv` fork — see
+    docs/backup/OPTIMIZATION.md point 5; the debounced committer's
+    `git add -A` records the move). Returns "already_absent" (no commit,
+    no parse) if there's nothing there. Does NOT touch the SQL view — the
+    route enqueues that (app.repo_worker marks the row `deleted_at`)."""
     dest_abs = validate_rel_path(rel_path)
 
     if not dest_abs.exists():
         return RepoResult(rel_path=rel_path, status="already_absent")
 
     unix_ts = int(datetime.now(UTC).timestamp())
-    tombstone_rel = f"deleted/{rel_path}.{unix_ts}"
-
-    # Import here rather than at module load: git_backup pulls in the git
-    # subprocess machinery, and keeping this module importable without it
-    # makes the parse/path-safety logic unit-testable in isolation.
-    from app.git_backup import git_mv
-
-    git_mv(rel_path, tombstone_rel)
-
-    if not _is_skipped_basename(rel_path):
-        table, _parse_fn, _upsert_fn = _table_and_parser_for(rel_path)
-        deleted_at = datetime.now(UTC).isoformat()
-        mark_repo_file_deleted(
-            conn, table=table, record_id=_slug_id_from(rel_path), deleted_at=deleted_at
-        )
+    tombstone_abs = RAW_DIR / "deleted" / f"{rel_path}.{unix_ts}"
+    tombstone_abs.parent.mkdir(parents=True, exist_ok=True)
+    os.rename(dest_abs, tombstone_abs)
+    _bump_write_generation()
 
     return RepoResult(rel_path=rel_path, status="deleted")
 
@@ -262,17 +311,61 @@ def _iter_live_files() -> list[Path]:
     return out
 
 
-def build_manifest() -> dict:
-    """§3.1. Content hash of every live file, keyed by its relPath (forward
-    slashes). `generatedAt` is an ISO-8601 UTC timestamp."""
-    files: dict[str, str] = {}
+# Cached {relPath: sha256} plus the (HEAD commit, write-generation) it was
+# computed at. build_manifest() reuses it when neither has moved since —
+# docs/backup/OPTIMIZATION.md point 4. A backfill burst bumps the write
+# generation on every file, so the first manifest after it still pays one
+# full walk; every manifest after that (restore read-back, "Verifica
+# backup" re-runs) is O(1).
+_manifest_cache: dict[str, str] | None = None
+_manifest_cache_key: tuple[str | None, int] | None = None
+_manifest_lock = threading.Lock()
+
+
+def _git_head() -> str | None:
+    """`git rev-parse HEAD`, or None if the repo has no commits yet / git
+    isn't reachable. Cheap (one fork, no tree walk)."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(RAW_DIR), "rev-parse", "HEAD"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return None
+    return result.stdout.strip() or None if result.returncode == 0 else None
+
+
+def _compute_manifest_files() -> dict[str, str]:
     raw_root = RAW_DIR.resolve()
+    files: dict[str, str] = {}
     for path in _iter_live_files():
         rel = path.relative_to(raw_root).as_posix()
         files[rel] = _sha256_hex(path.read_bytes())
+    return dict(sorted(files.items()))
+
+
+def build_manifest() -> dict:
+    """§3.1. Content hash of every live file, keyed by its relPath (forward
+    slashes). `generatedAt` is an ISO-8601 UTC timestamp.
+
+    Cached: if neither `git rev-parse HEAD` nor the raw-store write
+    generation has changed since the last call, the cached file map is
+    returned (only `generatedAt` is refreshed). See
+    docs/backup/OPTIMIZATION.md point 4."""
+    global _manifest_cache, _manifest_cache_key
+    key = (_git_head(), _current_write_generation())
+    with _manifest_lock:
+        if _manifest_cache is not None and _manifest_cache_key == key:
+            files = _manifest_cache
+        else:
+            files = _compute_manifest_files()
+            _manifest_cache = files
+            _manifest_cache_key = key
     return {
         "generatedAt": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "files": dict(sorted(files.items())),
+        "files": files,
     }
 
 

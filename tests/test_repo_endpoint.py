@@ -1,6 +1,10 @@
 """docs/backup-server-brief.md Tasks 2 & 3: POST /v1/repo (upsert/delete,
 soft-delete, path safety, the _-prefixed debug file) plus GET /v1/manifest
-and GET /v1/file."""
+and GET /v1/file.
+
+The git commit and the SQL-view parse both run off the request path now
+(docs/backup/OPTIMIZATION.md points 1 & 6), so tests that assert on parsed
+rows or on `git log` call settle_backup() first."""
 
 import sqlite3
 
@@ -11,6 +15,7 @@ from tests.conftest import (
     content_hash_of,
     post_repo,
     post_session,
+    settle_backup,
 )
 
 
@@ -35,6 +40,7 @@ def test_upsert_exercise_stores_file_and_row(app_client) -> None:
 
     assert (app.config.RAW_DIR / "exercises/bench-press-ex-a1b2c3d4.md").exists()
 
+    settle_backup()
     row = (
         _db(app_client)
         .execute(
@@ -54,6 +60,7 @@ def test_upsert_routine_stores_child_rows(app_client) -> None:
         rel_path="routines/push-day-rt-b2c3d4e5.md",
     )
     assert resp.json()["status"] == "stored"
+    settle_backup()
 
     conn = _db(app_client)
     routine_row = conn.execute(
@@ -86,6 +93,7 @@ def test_upsert_changed_bytes_overwrites_and_reparses(app_client) -> None:
     edited = EXERCISE_MD.replace("bodypart: chest", "bodypart: shoulders").encode()
     resp = post_repo(app_client, edited, content_hash=content_hash_of(edited))
     assert resp.json()["status"] == "stored"
+    settle_backup()
 
     row = (
         _db(app_client)
@@ -137,6 +145,7 @@ def test_path_traversal_is_rejected(app_client) -> None:
 
 def test_delete_soft_deletes_to_tombstone(app_client) -> None:
     assert post_repo(app_client).json()["status"] == "stored"
+    settle_backup()
 
     resp = post_repo(app_client, md_bytes=None, op="delete")
     assert resp.status_code == 200
@@ -150,6 +159,7 @@ def test_delete_soft_deletes_to_tombstone(app_client) -> None:
     tombstones = list(tombstone_dir.glob("bench-press-ex-a1b2c3d4.md.*"))
     assert len(tombstones) == 1
 
+    settle_backup()
     # Row is marked deleted, not dropped.
     row = (
         _db(app_client)
@@ -169,9 +179,12 @@ def test_delete_of_absent_file_is_already_absent_no_commit(app_client) -> None:
 
 def test_reupsert_after_delete_revives_row(app_client) -> None:
     assert post_repo(app_client).json()["status"] == "stored"
+    settle_backup()
     assert post_repo(app_client, md_bytes=None, op="delete").json()["status"] == "deleted"
+    settle_backup()
 
     assert post_repo(app_client).json()["status"] == "stored"
+    settle_backup()
     row = (
         _db(app_client)
         .execute("SELECT deleted_at FROM exercises WHERE id = ?", ("ex-a1b2c3d4",))
@@ -189,6 +202,7 @@ def test_debug_backup_file_is_committed_but_never_a_row(app_client) -> None:
 
     up = post_repo(app_client, debug_md, rel_path=rel, content_hash=content_hash_of(debug_md))
     assert up.json()["status"] == "stored"
+    settle_backup()
 
     import app.config
 
@@ -198,6 +212,7 @@ def test_debug_backup_file_is_committed_but_never_a_row(app_client) -> None:
 
     dele = post_repo(app_client, md_bytes=None, op="delete", rel_path=rel)
     assert dele.json()["status"] == "deleted"
+    settle_backup()
     tombstones = list((app.config.RAW_DIR / "deleted/routines").glob("_debug-backup-*"))
     assert len(tombstones) == 1
 

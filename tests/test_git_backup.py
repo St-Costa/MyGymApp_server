@@ -1,5 +1,6 @@
-"""docs/backup-server-brief.md Task 1: data/raw/ is a git repository, one
-commit per successful ingest."""
+"""docs/backup-server-brief.md Task 1 + docs/backup/OPTIMIZATION.md point 1:
+data/raw/ is a git repository, and commits are debounced into one per burst
+rather than one per request."""
 
 import subprocess
 
@@ -8,6 +9,7 @@ from tests.conftest import (
     content_hash_of,
     post_repo,
     post_session,
+    settle_backup,
 )
 
 
@@ -31,14 +33,13 @@ def test_startup_initializes_repo(app_client) -> None:
     import app.config
 
     assert (app.config.RAW_DIR / ".git").is_dir()
-    # Fresh tmp DATA_ROOT has an empty raw/ — init makes the repo but the
-    # first commit only lands on the first real ingest.
     name = _git(app_client, "config", "user.name").strip()
     assert name == "MyGymApp Sync"
 
 
 def test_session_push_makes_one_commit(app_client) -> None:
     assert post_session(app_client).status_code == 200
+    settle_backup()
 
     subjects = _log_subjects(app_client)
     assert len(subjects) == 1
@@ -50,29 +51,53 @@ def test_session_push_makes_one_commit(app_client) -> None:
     assert status.strip() == ""
 
 
+def test_burst_of_writes_coalesces_into_one_commit(app_client) -> None:
+    """docs/backup/OPTIMIZATION.md point 1: N writes with no quiet gap
+    between them become a single commit whose message sums the burst."""
+    for i in range(5):
+        md = SESSION_MD.replace("id: 3c4d5e6f", f"id: sess{i:04d}").encode()
+        rel = f"2025/04/2025-04-15_rt-b2c3d4e5_sess{i:04d}.md"
+        resp = post_session(
+            app_client,
+            md,
+            session_id=f"sess{i:04d}",
+            rel_path=rel,
+            content_hash=content_hash_of(md),
+        )
+        assert resp.status_code == 200
+    settle_backup()
+
+    subjects = _log_subjects(app_client)
+    assert len(subjects) == 1
+    assert "sessions:5" in subjects[0]
+
+
 def test_duplicate_delivery_makes_no_new_commit(app_client) -> None:
     assert post_session(app_client).status_code == 200
+    settle_backup()
     before = _log_subjects(app_client)
 
     dup = post_session(app_client)
     assert dup.json()["status"] == "duplicate"
+    settle_backup()
     assert _log_subjects(app_client) == before  # no second commit
 
 
 def test_session_edit_makes_a_second_commit(app_client) -> None:
     assert post_session(app_client).status_code == 200
+    settle_backup()
 
     edited = SESSION_MD.replace("totalTonnage: 12450.0", "totalTonnage: 13000.0").encode()
     resp = post_session(app_client, edited, content_hash=content_hash_of(edited))
     assert resp.status_code == 200
+    settle_backup()
 
     assert len(_log_subjects(app_client)) == 2
 
 
 def test_db_is_not_committed(app_client) -> None:
-    """The SQLite DB lives at data/app.db-style path *outside* data/raw/ —
-    here it's data/db.sqlite3 — so it can never be swept into a commit."""
     assert post_session(app_client).status_code == 200
+    settle_backup()
     tracked = _git(app_client, "ls-files")
     assert "db.sqlite3" not in tracked
     assert ".sqlite3" not in tracked
@@ -80,6 +105,18 @@ def test_db_is_not_committed(app_client) -> None:
 
 def test_repo_push_commit_message_counts_repo(app_client) -> None:
     assert post_repo(app_client).status_code == 200
+    settle_backup()
     subjects = _log_subjects(app_client)
     assert subjects[0].startswith("sync ")
     assert "repo:1" in subjects[0]
+
+
+def test_shutdown_flush_commits_pending_burst(app_client) -> None:
+    """A clean shutdown flushes whatever the debounce timer hadn't yet
+    committed, so a restart never inherits uncommitted raw writes. The
+    app_client fixture's `with TestClient(...)` runs the lifespan;
+    settle_backup() here stands in for that flush and must leave the tree
+    clean."""
+    assert post_session(app_client).status_code == 200
+    settle_backup()
+    assert _git(app_client, "status", "--porcelain").strip() == ""

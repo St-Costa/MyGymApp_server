@@ -38,7 +38,7 @@ from app.analysis import (
     vo2max_4week_trend,
 )
 from app.config import DB_PATH
-from app.git_backup import GitBackupError, commit_raw_store, format_commit_message
+from app.git_backup import request_commit
 from app.ingestion import (
     Envelope,
     HashMismatchError,
@@ -56,6 +56,7 @@ from app.repo import (
     ingest_repo_upsert,
     read_live_file,
 )
+from app.repo_worker import enqueue_parse
 from app.security import require_valid_bearer_token
 from app.storage import connect
 
@@ -156,21 +157,14 @@ async def _handle_ingest(
             status_code=500, detail={"error": f"failed to persist raw file: {exc}"}
         ) from exc
 
-    # docs/backup-server-brief.md Task 1.2: one commit per successful request,
-    # after the raw file(s) are durably on disk. A safe-no-op "duplicate"
-    # wrote nothing, so `git add -A` stages nothing and commit_raw_store()
-    # returns False without a commit — no need to special-case it here. A
-    # genuine git failure (disk full mid-commit, corrupt index) is a 500:
-    # the raw file is on disk but this request didn't cross the durability
-    # boundary; the client retries and the next push's `git add -A` sweeps
-    # in the uncommitted file.
-    try:
-        commit_raw_store(format_commit_message(**{commit_count_key: 1}))
-    except GitBackupError as exc:
-        logger.exception("git commit failed after ingesting %s", env.record_id)
-        raise HTTPException(
-            status_code=500, detail={"error": f"raw file stored but not committed: {exc}"}
-        ) from exc
+    # docs/backup/OPTIMIZATION.md point 1: the raw file is fsynced by now
+    # (that's what "stored" means to the client, and always has been — the
+    # 2xx never waited on the git commit conceptually). Hand the burst to
+    # the debounced committer instead of forking `git` here; it folds this
+    # write into one commit for the whole burst after ~3s of write silence.
+    # A "duplicate" wrote nothing, so there's nothing to commit.
+    if result.status != "duplicate":
+        request_commit(**{commit_count_key: 1})
 
     return JSONResponse({response_id_key: result.record_id, "status": result.status})
 
@@ -261,8 +255,11 @@ async def post_repo(
     file: UploadFile | None = File(default=None),  # absent for op == "delete"  # noqa: B008
 ) -> JSONResponse:
     """docs/backup-server-brief.md §2. `op: "upsert"` needs a `file` part;
-    `op: "delete"` doesn't. Same bearer auth, hash check, tolerant parse,
-    and one-commit-per-request boundary as the other four endpoints."""
+    `op: "delete"` doesn't. Same bearer auth and hash check as the other
+    four endpoints. The YAML parse into the SQL view runs off the request
+    path (app.repo_worker), and the git commit is debounced
+    (app.git_backup) — see docs/backup/OPTIMIZATION.md points 1 & 6. A 2xx
+    means the raw bytes are fsynced + hash-verified, nothing more."""
     try:
         envelope_data = json.loads(envelope)
     except json.JSONDecodeError as exc:
@@ -287,30 +284,28 @@ async def post_repo(
         )
 
     try:
-        with connect(DB_PATH) as conn:
-            if op == "upsert":
-                if file is None:
-                    raise HTTPException(
-                        status_code=422,
-                        detail={"error": "op 'upsert' requires a 'file' part"},
-                    )
-                raw_bytes = await file.read()
-                try:
-                    result = ingest_repo_upsert(
-                        conn,
-                        rel_path=rel_path,
-                        content_hash=content_hash,
-                        raw_bytes=raw_bytes,
-                    )
-                except RepoPathError as exc:
-                    raise HTTPException(status_code=422, detail={"error": str(exc)}) from exc
-                except ValueError as exc:  # hash mismatch
-                    raise HTTPException(status_code=422, detail={"error": str(exc)}) from exc
-            else:
-                try:
-                    result = ingest_repo_delete(conn, rel_path=rel_path)
-                except RepoPathError as exc:
-                    raise HTTPException(status_code=422, detail={"error": str(exc)}) from exc
+        if op == "upsert":
+            if file is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"error": "op 'upsert' requires a 'file' part"},
+                )
+            raw_bytes = await file.read()
+            try:
+                result = ingest_repo_upsert(
+                    rel_path=rel_path,
+                    content_hash=content_hash,
+                    raw_bytes=raw_bytes,
+                )
+            except RepoPathError as exc:
+                raise HTTPException(status_code=422, detail={"error": str(exc)}) from exc
+            except ValueError as exc:  # hash mismatch
+                raise HTTPException(status_code=422, detail={"error": str(exc)}) from exc
+        else:
+            try:
+                result = ingest_repo_delete(rel_path=rel_path)
+            except RepoPathError as exc:
+                raise HTTPException(status_code=422, detail={"error": str(exc)}) from exc
     except OSError as exc:
         logger.exception("failed to persist repo file %s", rel_path)
         raise HTTPException(
@@ -318,20 +313,15 @@ async def post_repo(
         ) from exc
 
     # §2.2 step 5 / §2.3 step 4: a duplicate upsert or an already-absent
-    # delete wrote nothing and must not commit.
+    # delete wrote nothing — no commit, no parse.
     if result.status in ("duplicate", "already_absent"):
         return JSONResponse({"relPath": result.rel_path, "status": result.status})
 
-    note = None
-    if result.status == "deleted":
-        note = f"delete {rel_path} → deleted/"
-    try:
-        commit_raw_store(format_commit_message(repo=1, note=note))
-    except GitBackupError as exc:
-        logger.exception("git commit failed after repo %s of %s", op, rel_path)
-        raise HTTPException(
-            status_code=500, detail={"error": f"repo file stored but not committed: {exc}"}
-        ) from exc
+    # Enqueue the SQL-view parse (off the request path) and hand the write
+    # to the debounced committer.
+    enqueue_parse(rel_path, content_hash, op)
+    note = f"delete {rel_path} → deleted/" if result.status == "deleted" else None
+    request_commit(repo=1, note=note)
 
     return JSONResponse({"relPath": result.rel_path, "status": result.status})
 

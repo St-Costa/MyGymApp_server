@@ -137,9 +137,13 @@ In this repository, committing is part of finishing a unit of work — you do no
   `scale_weighins` / `ecg_recordings` / `exercises` / `routines` / `routine_exercises`
   SQLite schema — it's re-derivable from raw files via `reparse.py`, but a breaking change
   still needs a `PARSER_SCHEMA_VERSION` bump and a migration plan, not a silent edit.
-- `data/raw/` is a git repository (`app/git_backup.py`, see [docs/backup/README.md](docs/backup/README.md)):
-  every successful ingest makes one commit. Don't change the commit-per-request boundary,
-  the commit-message format, or the soft-delete-to-`deleted/` behaviour without a reason.
+- `data/raw/` is a git repository (`app/git_backup.py`, see [docs/backup/README.md](docs/backup/README.md)
+  and [docs/backup/OPTIMIZATION.md](docs/backup/OPTIMIZATION.md)): commits are **debounced**
+  (one background `git commit` per burst of writes, ~3s after the last), a 2xx means
+  "raw bytes fsynced + hash verified" not "committed", and the `/v1/repo` YAML parse into
+  the `exercises`/`routines` view runs on a worker thread (`app/repo_worker.py`). Don't
+  change the debounce/flush model, the commit-message format, or the
+  soft-delete-to-`deleted/` behaviour without a reason.
 - `docs/sync-ingestion/SPEC.md` — the source spec for this project; treat as a historical
   record like an ADR. If behavior needs to diverge from it, document the divergence rather
   than editing the spec to match.

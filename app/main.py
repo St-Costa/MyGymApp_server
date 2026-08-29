@@ -19,8 +19,9 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import LOGS_DIR
-from app.git_backup import ensure_repo
+from app.git_backup import ensure_repo, start_committer, stop_committer
 from app.gui import router as gui_router
+from app.repo_worker import start_worker, stop_worker
 from app.routes import router
 from app.storage import init_db
 
@@ -32,10 +33,19 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     init_db()
     # docs/backup-server-brief.md Task 1.1: turn data/raw/ into a git repo on
-    # first startup (idempotent — a no-op once .git exists), so every raw
-    # write from here on is one commit and any prior state is recoverable.
+    # first startup (idempotent — a no-op once .git exists). Also sweeps in
+    # any raw writes a previous run left uncommitted (see ensure_repo).
     ensure_repo()
-    yield
+    # docs/backup/OPTIMIZATION.md points 1 & 6: the debounced git committer
+    # and the off-request-path repo-file parse worker. Both are daemon
+    # threads; stop_* below flushes their pending work on a clean shutdown.
+    start_committer()
+    start_worker()
+    try:
+        yield
+    finally:
+        stop_worker()
+        stop_committer()
 
 
 app = FastAPI(title="MyGymApp Sync Server", lifespan=lifespan)

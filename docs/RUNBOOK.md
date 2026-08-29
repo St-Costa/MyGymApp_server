@@ -59,6 +59,13 @@ Operational playbook for MyGymApp Sync Server running on the self-hosted box.
   by whatever means you back up the rest of the self-hosted box. If `db.sqlite3` is lost or
   corrupted but `DATA_ROOT/raw/` survives, delete the DB file and run `python reparse.py --all`
   to rebuild it entirely from the raw files.
+- **`DATA_ROOT/raw/` is itself a git repo** ([docs/backup/README.md](backup/README.md)):
+  commits are debounced (one per burst of writes, ~3s after it settles), so a hard crash can
+  lose the *commit* for the last few seconds of writes — the raw files are still on the
+  working tree and the next startup's `git add -A` sweeps them in. To recover a specific
+  file: `git -C "$DATA_ROOT/raw" log --oneline -- <relPath>` then
+  `git -C "$DATA_ROOT/raw" show <commit>:<relPath>`, or look in `raw/deleted/`. Set
+  `BACKUP_GIT_REMOTE` for an automatic off-box mirror push after each commit.
 - **RTO / RPO targets**: informal — personal project. Losing `db.sqlite3` is fully recoverable
   from raw files; losing `DATA_ROOT/raw/` itself loses the source data (protect this directory
   with regular backups).

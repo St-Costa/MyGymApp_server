@@ -14,6 +14,7 @@ from tests.conftest import (
     post_repo,
     post_scale_weighin,
     post_session,
+    settle_backup,
 )
 
 
@@ -104,6 +105,9 @@ def test_reparse_all_reproduces_repo_file_rows(app_client):
         rel_path="routines/_debug-backup-1725480000000.md",
         content_hash=content_hash_of(debug_md),
     )
+    # The /v1/repo parse into the SQL view runs on a worker thread now
+    # (docs/backup/OPTIMIZATION.md point 6) — let it land before snapshotting.
+    settle_backup()
 
     import app.config
 
