@@ -36,8 +36,11 @@ self-hosted box.
 | `POST /v1/scale-weighins` | Smart-scale weigh-in | [SCALE_SPEC.md](docs/sync-ingestion/SCALE_SPEC.md) |
 | `POST /v1/ecg` | Raw ECG waveform | [ECG_SPEC.md](docs/sync-ingestion/ECG_SPEC.md) |
 | `POST /v1/repo` | Repo file (`exercises/*.md`, `routines/*.md`) — upsert/delete | [backup/README.md](docs/backup/README.md) |
+| `POST /v1/repo/bulk` | N repo upserts/deletes in one request, one commit | [backup/README.md](docs/backup/README.md#batch-endpoints-optional) |
 | `GET /v1/manifest` | Restore: content hash of every live raw file | [backup/README.md](docs/backup/README.md) |
 | `GET /v1/file?relPath=…` | Restore: raw bytes of one live file | [backup/README.md](docs/backup/README.md) |
+| `POST /v1/repo/files` | Restore: many live files in one `multipart/mixed` response | [backup/README.md](docs/backup/README.md#batch-endpoints-optional) |
+| `GET /v1/repo/tarball` | Restore: gzip tar of every live file (`?since=` for a no-op when unchanged) | [backup/README.md](docs/backup/README.md#batch-endpoints-optional) |
 | `GET /health` | — | no auth required |
 
 The three text-record POST endpoints share the same request contract: `multipart/form-data`
@@ -62,7 +65,9 @@ transport; `exercise_sets` gained four nullable columns (`started_at`/`ended_at`
 bursts (one background `git commit` ~3s after a burst settles), so any prior state or an
 accidentally deleted file is recoverable. `POST /v1/repo` adds `exercises/*.md` /
 `routines/*.md` as a fifth record type (upsert + soft-delete-to-`deleted/`), and
-`GET /v1/manifest` + `GET /v1/file` are the pull-only restore path the phone uses. Optional
+`GET /v1/manifest` + `GET /v1/file` are the pull-only restore path. Optional batch endpoints
+(`POST /v1/repo/bulk`, `POST /v1/repo/files`, `GET /v1/repo/tarball`) collapse a
+backfill/restore to one round-trip; the single-file endpoints stay as the fallback. Optional
 off-box mirror via `BACKUP_GIT_REMOTE`. See [docs/backup/README.md](docs/backup/README.md)
 and [docs/backup/OPTIMIZATION.md](docs/backup/OPTIMIZATION.md).
 

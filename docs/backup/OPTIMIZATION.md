@@ -2,12 +2,15 @@
 
 The incremental backup (`POST /v1/repo`, `GET /v1/manifest`, `GET /v1/file`)
 was correct but slow for bulk work: a backfill or a restore is N sequential
-requests, and — before this — N `git commit`s and N filesystem walks. This
-doc records the server-internal optimizations applied. **None of them
-change the wire contract**; the phone keeps working unmodified.
+requests, and — before this — N `git commit`s and N filesystem walks.
 
-Batch endpoints (`POST /v1/repo/bulk`, batch read) are a separate, later
-piece of work that *would* need phone changes — not covered here.
+This doc has two halves:
+
+- **Points 1, 4, 5, 6 — server-internal.** No wire-contract change; the
+  phone keeps working unmodified.
+- **Points 2, 3 — new optional batch endpoints.** The single-file endpoints
+  stay as the fallback. The phone opts into these on its own schedule; see
+  the contracts in [README.md](README.md#batch-endpoints-optional).
 
 ## 1 — Debounced git commit
 
@@ -50,6 +53,41 @@ the working tree; the next `git add -A` (next burst, or `ensure_repo` /
 `flush` on restart) sweeps them in. Nothing is lost because the raw files
 are the source of truth, exactly as before. A `git commit` failure is no
 longer a 500 — it's logged loudly and the next commit recovers.
+
+## 2 — Batch write: `POST /v1/repo/bulk`
+
+**Before**: a backfill or a "send everything queued" was N × `POST /v1/repo`
+— N requests, N debounced-commit triggers.
+
+**After** (`app/routes.py`, `app/repo.py`): one multipart request carries a
+JSON array of `{relPath, op, contentHash}` plus `file_0…file_N-1` parts for
+the `upsert` entries. Every entry is applied independently (a bad hash /
+path on one is that entry's `"error"`, not a request failure), then **one**
+debounced commit covers the whole batch and the parse for each touched
+entry is enqueued. Soft caps: `BULK_MAX_FILES` (500) entries,
+`BULK_MAX_TOTAL_BYTES` (50 MB) of file bytes → `413`.
+
+Wire contract in [README.md](README.md#post-v1repobulk). The single
+`POST /v1/repo` stays for the fine-of-session push.
+
+## 3 — Batch read: `POST /v1/repo/files`, `GET /v1/repo/tarball`
+
+**Before**: a restore or the "Verifica backup" read-back was N × `GET
+/v1/file` — 100+ serial round-trips over Tailscale for a full library.
+
+**After** (`app/routes.py`, `app/repo.py`):
+
+- `POST /v1/repo/files` — body `{"relPaths": [...]}`, response
+  `multipart/mixed` with one part per path (present → bytes +
+  `X-Content-SHA256`; absent → empty body, `X-Status: absent`). For the
+  targeted read-back — the client already knows which paths it wants.
+- `GET /v1/repo/tarball?since=<manifest-hash>` — a gzip-compressed tar of
+  every live file, `X-Manifest-SHA256` response header. Pass the hash back
+  as `?since=` and the tar is empty when nothing changed. For a
+  from-scratch restore in one transfer.
+
+Both pull-only. Contracts in
+[README.md](README.md#post-v1repofiles--get-v1repotarball).
 
 ## 4 — Manifest via cache
 

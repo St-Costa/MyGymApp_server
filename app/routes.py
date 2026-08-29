@@ -16,11 +16,12 @@ generic "record ingestion" route.
 
 import json
 import logging
+import secrets
 import sqlite3
 from collections.abc import Callable
 from dataclasses import asdict
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 
 from app.analysis import (
@@ -50,11 +51,16 @@ from app.ingestion import (
     verify_content_hash,
 )
 from app.repo import (
+    BULK_MAX_FILES,
+    BULK_MAX_TOTAL_BYTES,
     RepoPathError,
     build_manifest,
+    build_tarball,
+    ingest_repo_bulk,
     ingest_repo_delete,
     ingest_repo_upsert,
     read_live_file,
+    read_live_files,
 )
 from app.repo_worker import enqueue_parse
 from app.security import require_valid_bearer_token
@@ -326,11 +332,154 @@ async def post_repo(
     return JSONResponse({"relPath": result.rel_path, "status": result.status})
 
 
+@router.post("/v1/repo/bulk", dependencies=[Depends(require_valid_bearer_token)])
+async def post_repo_bulk(request: Request) -> JSONResponse:
+    """docs/backup/OPTIMIZATION.md point 2: N repo upserts/deletes in one
+    request, one debounced commit.
+
+    multipart/form-data:
+      - part `envelope` (application/json): a JSON array
+        `[{"relPath": ..., "op": "upsert"|"delete", "contentHash": ...}, ...]`
+      - parts `file_0`, `file_1`, … (any content type): raw bytes for the
+        entry at that index, present iff that entry's op is "upsert".
+
+    Response `200`:
+      {"results": [{"relPath": ..., "status": "stored"|"duplicate"|
+                    "deleted"|"already_absent"|"error", "error": ...?}, ...]}
+    in the same order as `envelope`. A per-entry hash mismatch / bad path is
+    that entry's `"error"`, not a request failure. `413` if the batch
+    exceeds BULK_MAX_FILES files or BULK_MAX_TOTAL_BYTES total."""
+    form = await request.form()
+    envelope_raw = form.get("envelope")
+    if not isinstance(envelope_raw, str):
+        raise HTTPException(status_code=422, detail={"error": "missing 'envelope' JSON array part"})
+    try:
+        entries = json.loads(envelope_raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=400, detail={"error": f"malformed envelope JSON: {exc}"}
+        ) from exc
+    if not isinstance(entries, list):
+        raise HTTPException(status_code=422, detail={"error": "'envelope' must be a JSON array"})
+    if len(entries) > BULK_MAX_FILES:
+        raise HTTPException(
+            status_code=413,
+            detail={"error": f"too many entries: {len(entries)} > {BULK_MAX_FILES}"},
+        )
+
+    files_by_index: dict[int, bytes] = {}
+    total = 0
+    for i in range(len(entries)):
+        part = form.get(f"file_{i}")
+        if part is None or isinstance(part, str):
+            continue
+        data = await part.read()
+        total += len(data)
+        if total > BULK_MAX_TOTAL_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail={"error": f"batch exceeds {BULK_MAX_TOTAL_BYTES} bytes"},
+            )
+        files_by_index[i] = data
+
+    results, touched, notes = ingest_repo_bulk(entries, files_by_index)
+
+    if touched:
+        note = "; ".join(notes) if notes else None
+        request_commit(repo=touched, note=note)
+
+    return JSONResponse(
+        {
+            "results": [
+                {"relPath": r.rel_path, "status": r.status}
+                | ({"error": r.error} if r.error else {})
+                for r in results
+            ]
+        }
+    )
+
+
 @router.get("/v1/manifest", dependencies=[Depends(require_valid_bearer_token)])
 def get_manifest() -> dict:
     """§3.1: content hash of every live file under data/raw/ (everything
     except deleted/ and .git/), keyed by relPath."""
     return build_manifest()
+
+
+@router.post("/v1/repo/files", dependencies=[Depends(require_valid_bearer_token)])
+async def post_repo_files(request: Request) -> Response:
+    """docs/backup/OPTIMIZATION.md point 3: fetch many live files in one
+    round-trip, for the "Verifica backup" read-back and a targeted restore.
+
+    Request JSON: `{"relPaths": ["exercises/…", "readiness/…", …]}` (any
+    live subtree, not just repo files — same as `GET /v1/file`).
+
+    Response: `multipart/mixed`, one part per requested relPath in order.
+    Each part carries `Content-Disposition: attachment; name="<relPath>"`,
+    `X-Content-SHA256: sha256:…` (present only for files that exist), and
+    `X-Status: present|absent`. `413` if `relPaths` exceeds BULK_MAX_FILES."""
+    try:
+        body = await request.json()
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=400, detail={"error": f"malformed JSON body: {exc}"}
+        ) from exc
+    rel_paths = body.get("relPaths") if isinstance(body, dict) else None
+    if not isinstance(rel_paths, list):
+        raise HTTPException(status_code=422, detail={"error": 'body must be {"relPaths": [...]}'})
+    if len(rel_paths) > BULK_MAX_FILES:
+        raise HTTPException(
+            status_code=413,
+            detail={"error": f"too many relPaths: {len(rel_paths)} > {BULK_MAX_FILES}"},
+        )
+
+    fetched = read_live_files([str(p) for p in rel_paths])
+
+    boundary = "repofiles-" + secrets.token_hex(16)
+    chunks: list[bytes] = []
+    for rel_path, raw_bytes, sha in fetched:
+        headers = [
+            f'Content-Disposition: attachment; name="{rel_path}"',
+        ]
+        if raw_bytes is None:
+            headers.append("X-Status: absent")
+            body_bytes = b""
+        else:
+            headers.append("X-Status: present")
+            headers.append(f"X-Content-SHA256: {sha}")
+            ctype = "text/markdown" if rel_path.endswith(".md") else "application/octet-stream"
+            headers.append(f"Content-Type: {ctype}")
+            body_bytes = raw_bytes
+        chunks.append(
+            f"--{boundary}\r\n".encode()
+            + ("\r\n".join(headers) + "\r\n\r\n").encode()
+            + body_bytes
+            + b"\r\n"
+        )
+    chunks.append(f"--{boundary}--\r\n".encode())
+
+    return Response(
+        content=b"".join(chunks),
+        media_type=f'multipart/mixed; boundary="{boundary}"',
+    )
+
+
+@router.get("/v1/repo/tarball", dependencies=[Depends(require_valid_bearer_token)])
+def get_repo_tarball(since: str | None = Query(default=None)) -> Response:
+    """docs/backup/OPTIMIZATION.md point 3: a gzip-compressed tar of every
+    live file, for a from-scratch restore in one transfer. The
+    `X-Manifest-SHA256` response header is the current manifest hash; pass
+    it back as `?since=<hash>` next time and the tar is empty when nothing
+    changed. Pull-only."""
+    tar_gz, manifest_hash = build_tarball(since_manifest_hash=since)
+    return Response(
+        content=tar_gz,
+        media_type="application/gzip",
+        headers={
+            "X-Manifest-SHA256": manifest_hash,
+            "Content-Disposition": 'attachment; filename="repo-restore.tar.gz"',
+        },
+    )
 
 
 @router.get("/v1/file", dependencies=[Depends(require_valid_bearer_token)])

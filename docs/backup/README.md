@@ -104,6 +104,86 @@ Unlike `/v1/repo` this accepts any live subtree (sessions/readiness/scale/
 ecg included) — a restore pulls everything, not just repo files. Pull-only:
 the phone never asks the server to delete anything during a restore.
 
+## Batch endpoints (optional)
+
+These exist so a backfill / restore / verify is **one round-trip**, not N.
+The single-file endpoints above stay as the fallback — a client can adopt
+these at its own pace. See [OPTIMIZATION.md](OPTIMIZATION.md) points 2 & 3.
+All three take the same bearer token.
+
+### `POST /v1/repo/bulk`
+
+N upserts/deletes in one request, **one** git commit for the whole batch.
+
+```
+POST /v1/repo/bulk
+Content-Type: multipart/form-data
+Authorization: Bearer <shared-secret>
+
+  part "envelope" (application/json):
+    [
+      {"relPath": "exercises/bench-ex-a1b2c3d4.md", "op": "upsert", "contentHash": "sha256:…"},
+      {"relPath": "routines/old-rt-99999999.md",    "op": "delete", "contentHash": "sha256:…"},
+      …
+    ]
+  parts "file_0", "file_1", …  (any content type):
+    raw bytes for the entry at that index — present iff that entry's op is "upsert"
+```
+
+Response `200`:
+
+```jsonc
+{
+  "results": [
+    {"relPath": "exercises/bench-ex-a1b2c3d4.md", "status": "stored"},
+    {"relPath": "routines/old-rt-99999999.md",    "status": "already_absent"},
+    {"relPath": "exercises/bad.md", "status": "error", "error": "contentHash mismatch: …"}
+  ]
+}
+```
+
+- One `results` entry per `envelope` entry, **same order**. `status` is one
+  of `stored` / `duplicate` / `deleted` / `already_absent` / `error`; an
+  `error` entry also has an `error` string.
+- A per-entry hash mismatch, bad path, or missing `file_i` is that entry's
+  `error` — the request still returns `200` and the other entries still
+  apply. Only auth (`401`), malformed envelope (`400`/`422`), or exceeding
+  **500 entries / 50 MB** of file bytes (`413`) fail the whole request.
+- Entries apply top to bottom, so an `upsert` then a `delete` of the same
+  `relPath` in one batch ends deleted.
+- Same debounced commit + off-request-path parse as `POST /v1/repo`: a 2xx
+  means every non-`error` entry's bytes are fsynced.
+
+### `POST /v1/repo/files` & `GET /v1/repo/tarball`
+
+**`POST /v1/repo/files`** — fetch many live files in one round-trip (the
+"Verifica backup" read-back, a targeted restore):
+
+```
+POST /v1/repo/files            body: {"relPaths": ["exercises/…", "readiness/…", …]}
+→ 200  Content-Type: multipart/mixed; boundary="…"
+```
+
+One part per requested `relPath`, in order. Each part:
+`Content-Disposition: attachment; name="<relPath>"`, `X-Status: present|absent`,
+and — for `present` — `X-Content-SHA256: sha256:…` + a `Content-Type` +
+the raw bytes as the part body. An `absent` part (missing file, or one that
+fails the safety check) has an empty body. `413` over 500 paths.
+
+**`GET /v1/repo/tarball?since=<manifest-hash>`** — a from-scratch restore in
+one transfer:
+
+```
+GET /v1/repo/tarball
+→ 200  Content-Type: application/gzip
+       X-Manifest-SHA256: sha256:…        ← current manifest hash
+       <gzip-compressed tar of every live file>
+```
+
+The tar's member names are relPaths. Pass the `X-Manifest-SHA256` value back
+as `?since=` next time; when it still matches, the tar is empty (nothing
+changed). Both endpoints are pull-only.
+
 ## The git repo
 
 - Initialized on startup if `data/raw/.git` is missing (`git init` +
