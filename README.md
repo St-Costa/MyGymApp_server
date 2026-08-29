@@ -58,12 +58,13 @@ cardio trend/alerts, weekly resting-HR/VO2max/scale trends, exercise PRs — as 
 transport; `exercise_sets` gained four nullable columns (`started_at`/`ended_at`/`avg_hr`/
 `max_hr`) for it. See [CARDIO_BLOCKS_SPEC.md](docs/sync-ingestion/CARDIO_BLOCKS_SPEC.md).
 
-**Git-versioned backup**: `data/raw/` is a git repo — every successful ingest (all five
-record types) makes one commit, so any prior state or an accidentally deleted file is
-recoverable. `POST /v1/repo` adds `exercises/*.md` / `routines/*.md` as a fifth record type
-(upsert + soft-delete-to-`deleted/`), and `GET /v1/manifest` + `GET /v1/file` are the
-pull-only restore path the phone uses. Optional off-box mirror via `BACKUP_GIT_REMOTE`. See
-[docs/backup/README.md](docs/backup/README.md).
+**Git-versioned backup**: `data/raw/` is a git repo — writes are committed in debounced
+bursts (one background `git commit` ~3s after a burst settles), so any prior state or an
+accidentally deleted file is recoverable. `POST /v1/repo` adds `exercises/*.md` /
+`routines/*.md` as a fifth record type (upsert + soft-delete-to-`deleted/`), and
+`GET /v1/manifest` + `GET /v1/file` are the pull-only restore path the phone uses. Optional
+off-box mirror via `BACKUP_GIT_REMOTE`. See [docs/backup/README.md](docs/backup/README.md)
+and [docs/backup/OPTIMIZATION.md](docs/backup/OPTIMIZATION.md).
 
 ### ECG waveform analysis
 

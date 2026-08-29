@@ -214,6 +214,9 @@ def app_client(tmp_path, monkeypatch):
     # reload them after app.config so each test's tmp_path DATA_ROOT takes.
     importlib.reload(app.git_backup)
     importlib.reload(app.repo)
+    import app.repo_worker
+
+    importlib.reload(app.repo_worker)
     importlib.reload(app.ingestion)
     importlib.reload(app.routes)
     importlib.reload(app.gui)
@@ -225,6 +228,19 @@ def app_client(tmp_path, monkeypatch):
 
 def auth_headers() -> dict:
     return {"Authorization": f"Bearer {SHARED_SECRET}"}
+
+
+def settle_backup() -> None:
+    """docs/backup/OPTIMIZATION.md: the git commit is debounced and the
+    repo-file SQL-view parse runs on a worker thread. A test that inspects
+    `git log` or the exercises/routines tables right after a POST must first
+    let both catch up. Call this between "POST returned 2xx" and any
+    assertion on committed state or parsed rows."""
+    import app.git_backup
+    import app.repo_worker
+
+    app.repo_worker.drain(timeout=10.0)
+    app.git_backup.flush_pending_commit(timeout=10.0)
 
 
 def _post_record(

@@ -46,10 +46,11 @@ those two subtrees is rejected `422` — nothing written.
 5. If `data/raw/<relPath>` already exists with that exact hash →
    `200 {"status":"duplicate"}`, **no write, no commit**.
 6. Atomic write (temp file + `fsync` + `os.replace`).
-7. Tolerant parse into the `exercises` / `routines` SQL view — any parse
-   error is logged and recorded in `parse_failures`, never fails the request.
-8. One git commit, `repo:1`.
-9. `200 {"relPath": "...", "status": "stored"}`.
+7. `200 {"relPath": "...", "status": "stored"}` — returned **now**, once
+   the bytes are fsynced. The parse into the `exercises` / `routines` SQL
+   view runs off the request path (a worker thread), and the git commit is
+   debounced — see [OPTIMIZATION.md](OPTIMIZATION.md) points 1 & 6. A parse
+   error is logged and recorded in `parse_failures`, never surfaced.
 
 ### `op: "delete"`
 
@@ -57,9 +58,11 @@ No `file` part. Sent when an exercise/routine is deleted, or a rename made
 the old `{slug}-{id}.md` path obsolete.
 
 - File absent → `200 {"status":"already_absent"}`, no commit.
-- **Soft delete** — never `rm`. `git mv` into
-  `data/raw/deleted/<relPath>.<unix_ts>`, mark the SQL row `deleted_at`
-  (row is never dropped), one commit `repo:1 (delete … → deleted/)`.
+- **Soft delete** — never `rm`. `os.rename` into
+  `data/raw/deleted/<relPath>.<unix_ts>` (the debounced commit records the
+  move; see [OPTIMIZATION.md](OPTIMIZATION.md) point 5). The SQL row is
+  marked `deleted_at` by the parse worker, never dropped. Commit message
+  notes it: `repo:1 (delete … → deleted/)`.
 - `200 {"relPath": "...", "status": "deleted"}`.
 
 `deleted/` grows slowly and is never served by `/v1/manifest` or
@@ -105,16 +108,22 @@ the phone never asks the server to delete anything during a restore.
 
 - Initialized on startup if `data/raw/.git` is missing (`git init` +
   `user.name`/`user.email`/`commit.gpgsign=false`, then a first
-  "import existing store" commit if there are already files). Idempotent.
-- One commit per successful request. Never batched — a commit is the
-  durability boundary. Commit message:
+  "import existing store" commit if there are already files). Idempotent;
+  also sweeps in any writes a previous run left uncommitted.
+- **Commits are debounced** (see [OPTIMIZATION.md](OPTIMIZATION.md) point 1):
+  a background thread does one `git add -A && git commit` per burst, ~3s
+  after the last write, not one per request. Commit message sums the burst:
   `sync <ISO8601 UTC> — sessions:N readiness:N scale:N ecg:N repo:N`
-  (counts of files touched *in that request*).
-- A duplicate delivery or an already-absent delete writes nothing, so
-  `git add -A` stages nothing and no commit is made.
-- If `git commit` itself fails (disk full, corrupt index) the request is
-  `500` — the raw file is on disk but uncommitted; the next successful
-  push's `git add -A` sweeps it in. Logged loudly.
+  (counts of files touched across the whole burst). A backfill of dozens of
+  files is one commit.
+- **A 2xx means "raw bytes fsynced + hash verified", not "committed."** This
+  is the phone's existing notion of SENT. A crash between the fsync and the
+  debounced commit leaves files uncommitted on the working tree; the next
+  `git add -A` (next burst, or the startup sweep) picks them up. Nothing is
+  lost — the raw files are the source of truth. A `git commit` failure is
+  logged loudly, not surfaced as a 500.
+- A duplicate delivery or an already-absent delete writes nothing → no
+  commit.
 - The SQLite DB stays at `data/db.sqlite3`, **outside** `data/raw/` — never
   committed.
 - No `git gc --aggressive`, no repack cron. Tiny text files; git's default
