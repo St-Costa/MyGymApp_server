@@ -2,6 +2,7 @@ services:
   gym-app:
     build: .
     container_name: gym-app
+    init: true
     restart: unless-stopped
     ports:
       - "127.0.0.1:8420:8420"
