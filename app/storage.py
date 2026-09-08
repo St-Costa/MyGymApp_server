@@ -123,6 +123,12 @@ CREATE TABLE IF NOT EXISTS readiness_events (
   -- downstream analysis distinguish a clean same-day reading from one
   -- smeared across several skipped days, without discarding the value.
   steps_days_spanned    INTEGER,
+  -- Subjective sleep-quality rating the user taps on the faccina after the
+  -- reading (READINESS_SPEC.md). NULL = "non valutato" (user never rated);
+  -- 1..5 when rated. The CHECK guards a genuinely corrupt write — the live
+  -- endpoint already 400s a bad envelope value and the parser drops an
+  -- out-of-range frontmatter value to NULL, so a stored value is 1..5.
+  sleep_quality         SMALLINT CHECK (sleep_quality IS NULL OR sleep_quality BETWEEN 1 AND 5),
   content_hash    TEXT NOT NULL,
   raw_path        TEXT NOT NULL,
   received_at     TEXT NOT NULL,
@@ -359,7 +365,14 @@ CREATE TABLE IF NOT EXISTS parse_failures (
 # (docs/backup-server-brief.md Task 4) — the parsed SQL view over repo files
 # synced by POST /v1/repo. No session/readiness/scale/ecg field changed;
 # nothing existed below this version for those two new record types.
-PARSER_SCHEMA_VERSION = 10
+# Bumped to 11: readiness_events gained sleep_quality — the subjective 1..5
+# rating the user taps after a reading (READINESS_SPEC.md). The phone can
+# re-send a known eventId with a new contentHash once the user rates the
+# sleep after the measurement already synced; that's an update, not a
+# duplicate (same rule sessions already use). readiness events synced
+# before this have sleep_quality NULL, indistinguishable from "non
+# valutato" until reparse.py --stale re-extracts it from the frontmatter.
+PARSER_SCHEMA_VERSION = 11
 
 # schema_version stamped on a row written from step 6's "on failure" path —
 # the raw file is safely stored but nothing has been successfully parsed yet.
@@ -381,6 +394,26 @@ def init_db(db_path: Path = DB_PATH) -> None:
         _migrate_exercise_sets_bodyweight_load_columns(conn)
         _migrate_exercise_sets_stretch_time_column(conn)
         _migrate_readiness_events_steps_columns(conn)
+        _migrate_readiness_events_sleep_quality_column(conn)
+
+
+def _migrate_readiness_events_sleep_quality_column(conn: sqlite3.Connection) -> None:
+    """One-time migration: `readiness_events.sleep_quality` (READINESS_SPEC.md)
+    was added after `readiness_events` already existed in deployed databases.
+    Additive, nullable, no backfill — existing rows stay NULL ("non
+    valutato"), same convention as any readiness event synced before the
+    phone started sending this field. reparse.py --stale re-extracts it from
+    the frontmatter fallback once PARSER_SCHEMA_VERSION is bumped (the live
+    endpoint prefers the envelope, but reparse has no envelope to read).
+
+    SQLite can't `ALTER TABLE ... ADD CONSTRAINT`, so the 1..5 CHECK only
+    guards rows written via the fresh-DB SCHEMA path; on an already-deployed
+    DB the added column has no CHECK, which is fine — every writer (live
+    endpoint, parser) has already clamped the value to NULL or 1..5 by the
+    time it reaches the INSERT."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(readiness_events)")}
+    if "sleep_quality" not in columns:
+        conn.execute("ALTER TABLE readiness_events ADD COLUMN sleep_quality SMALLINT")
 
 
 def _migrate_readiness_events_steps_columns(conn: sqlite3.Connection) -> None:
@@ -701,6 +734,11 @@ class ParsedReadiness:
     # (pre-dating this field) parsing as "no data" rather than failing.
     steps_avg_per_day: float | None = None
     steps_days_spanned: int | None = None
+    # Subjective 1..5 sleep-quality rating (READINESS_SPEC.md). None means
+    # "non valutato" — the user never tapped a faccina — never coerce to 0.
+    # An out-of-range frontmatter value is dropped to None by the parser;
+    # the live endpoint 400s a bad envelope value before it ever gets here.
+    sleep_quality: int | None = None
 
 
 @dataclass
@@ -1053,11 +1091,11 @@ def upsert_parsed_readiness(
         """
         INSERT INTO readiness_events (
             id, measured_at, readiness, ln_rmssd, resting_hr, vo2max,
-            recommendation, steps_avg_per_day, steps_days_spanned,
+            recommendation, steps_avg_per_day, steps_days_spanned, sleep_quality,
             content_hash, raw_path, received_at, schema_version
         ) VALUES (
             :id, :measured_at, :readiness, :ln_rmssd, :resting_hr, :vo2max,
-            :recommendation, :steps_avg_per_day, :steps_days_spanned,
+            :recommendation, :steps_avg_per_day, :steps_days_spanned, :sleep_quality,
             :content_hash, :raw_path, :received_at, :schema_version
         )
         ON CONFLICT(id) DO UPDATE SET
@@ -1066,6 +1104,7 @@ def upsert_parsed_readiness(
             vo2max=excluded.vo2max, recommendation=excluded.recommendation,
             steps_avg_per_day=excluded.steps_avg_per_day,
             steps_days_spanned=excluded.steps_days_spanned,
+            sleep_quality=excluded.sleep_quality,
             content_hash=excluded.content_hash, raw_path=excluded.raw_path,
             received_at=excluded.received_at, schema_version=excluded.schema_version
         """,
@@ -1079,6 +1118,7 @@ def upsert_parsed_readiness(
             "recommendation": parsed.recommendation,
             "steps_avg_per_day": parsed.steps_avg_per_day,
             "steps_days_spanned": parsed.steps_days_spanned,
+            "sleep_quality": parsed.sleep_quality,
             "content_hash": content_hash,
             "raw_path": raw_path,
             "received_at": received_at,

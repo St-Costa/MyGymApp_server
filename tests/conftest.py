@@ -11,6 +11,10 @@ from datetime import UTC, datetime
 import pytest
 from fastapi.testclient import TestClient
 
+# Sentinel: "caller didn't pass this arg" vs. an explicit None (which for
+# sleepQuality means "send JSON null"). Only post_readiness needs it so far.
+_UNSET = object()
+
 SESSION_MD = """---
 id: 3c4d5e6f
 date: 2025-04-15
@@ -64,6 +68,7 @@ readiness: "GOOD"
 lnRmssd: 4.30
 restingHr: 65
 vo2max: 45.2
+sleepQuality: 4
 recommendation: "HRV above baseline. Good day to push intensity."
 ---
 """
@@ -79,7 +84,7 @@ def recent_readiness_md(*, resting_hr: int = 65) -> bytes:
     measured_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.000")
     return (
         f'---\nid: a1b2c3d4\nmeasuredAt: "{measured_at}"\nreadiness: "GOOD"\n'
-        f"lnRmssd: 4.30\nrestingHr: {resting_hr}\nvo2max: 45.2\n"
+        f"lnRmssd: 4.30\nrestingHr: {resting_hr}\nvo2max: 45.2\nsleepQuality: 4\n"
         'recommendation: "HRV above baseline. Good day to push intensity."\n---\n'
     ).encode()
 
@@ -305,6 +310,8 @@ def post_readiness(
     steps_avg_per_day=None,
     steps_days_spanned=None,
     omit_steps_keys=False,
+    sleep_quality=_UNSET,
+    omit_sleep_quality_key=False,
 ):
     # SYNC.md "Daily step average": the real phone always sends both keys,
     # defaulting here to explicit JSON null (not omission) to match that
@@ -315,6 +322,13 @@ def post_readiness(
         if omit_steps_keys
         else {"stepsAvgPerDay": steps_avg_per_day, "stepsDaysSpanned": steps_days_spanned}
     )
+    # READINESS_SPEC.md: the real phone always sends sleepQuality (int 1..5
+    # or explicit null). Default matches READINESS_MD's frontmatter (4), the
+    # "user rated it" case; pass sleep_quality=None for explicit null,
+    # sleep_quality=<bad> for the 400 test, or omit_sleep_quality_key=True
+    # for the missing-key leniency case.
+    if not omit_sleep_quality_key:
+        extra_envelope["sleepQuality"] = 4 if sleep_quality is _UNSET else sleep_quality
     return _post_record(
         client,
         "/v1/readiness",

@@ -158,10 +158,12 @@ def test_reparse_readiness_falls_back_to_frontmatter_steps_fields(app_client):
     md = (
         b'---\nid: a1b2c3d4\nmeasuredAt: "2026-08-05T07:04:10.123"\n'
         b'readiness: "GOOD"\nlnRmssd: 4.30\nrestingHr: 65\nvo2max: 45.2\n'
-        b"stepsAvgPerDay: 8214.5\nstepsDaysSpanned: 1\n"
+        b"stepsAvgPerDay: 8214.5\nstepsDaysSpanned: 1\nsleepQuality: 3\n"
         b'recommendation: "HRV above baseline."\n---\n'
     )
-    post_readiness(app_client, md, steps_avg_per_day=8214.5, steps_days_spanned=1)
+    # Envelope disagrees with the frontmatter on every fallback field —
+    # reparse must ignore the (now-gone) envelope and take the .md values.
+    post_readiness(app_client, md, steps_avg_per_day=9999.0, steps_days_spanned=9, sleep_quality=5)
 
     import app.config
 
@@ -175,11 +177,12 @@ def test_reparse_readiness_falls_back_to_frontmatter_steps_fields(app_client):
 
     conn = sqlite3.connect(app.config.DB_PATH)
     row = conn.execute(
-        "SELECT steps_avg_per_day, steps_days_spanned FROM readiness_events WHERE id = ?",
+        "SELECT steps_avg_per_day, steps_days_spanned, sleep_quality "
+        "FROM readiness_events WHERE id = ?",
         ("a1b2c3d4",),
     ).fetchone()
     conn.close()
-    assert row == (8214.5, 1)
+    assert row == (8214.5, 1, 3)
 
 
 def test_reparse_ecg_reproduces_same_row(app_client):
