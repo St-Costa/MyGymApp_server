@@ -35,7 +35,7 @@ from app.analysis import (
     progressive_overload_verdict,
     readiness_current_week,
     readiness_daily_trend,
-    recent_heaviest_set_pr,
+    recent_prs_for_exercise,
     resting_hr_weekly_trend,
     round_floats,
     rpe_acwr_daily_trend,
@@ -266,9 +266,12 @@ def exercises_list(request: Request):
 def exercise_detail(request: Request, exercise_id: str, today: str | None = Query(default=None)):
     with connect(DB_PATH) as conn:
         all_time = all_time_tonnage_pr(conn, exercise_id)
-        recent = recent_heaviest_set_pr(conn, exercise_id, is_daily=False, is_warmup=False)
-        recent_warmup = recent_heaviest_set_pr(conn, exercise_id, is_daily=False, is_warmup=True)
-        recent_daily = recent_heaviest_set_pr(conn, exercise_id, is_daily=True, is_warmup=False)
+        # The three like-for-like PR variants in one round-trip instead of
+        # three (same predicates and same pick logic — see the helper).
+        prs = recent_prs_for_exercise(conn, exercise_id)
+        recent = prs[(False, False)]
+        recent_warmup = prs[(False, True)]
+        recent_daily = prs[(True, False)]
         history = exercise_history(conn, exercise_id, today=today)
         bodyweight_load = latest_bodyweight_load(conn, exercise_id)
         # Best-effort display name: pull it from any set we can find.

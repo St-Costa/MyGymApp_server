@@ -1,7 +1,7 @@
 # ADR 0001: Record architecture decisions with ADRs
 
 - Status: accepted
-- Date: {{YYYY-MM-DD}}
+- Date: 2026-08-05
 
 ## Context
 

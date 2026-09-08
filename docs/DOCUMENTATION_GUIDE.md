@@ -20,6 +20,12 @@ docs/
 
 Rationale: as a project grows, "where do I document X" should map to "where does X live conceptually," which is how both users and agents already navigate the codebase. A type-based split (guides/reference/concepts) forces every feature's story across three folders and tends to rot faster because updating a feature means remembering to touch three places instead of one.
 
+Current layout (maps onto the above): `docs/sync-ingestion/` is the ingestion feature's
+folder (flat spec files rather than README-plus-sub-topics); `docs/backup/` and
+`docs/weekly-report/` are feature folders; `docs/RUNBOOK.md`, `docs/API.md`, and
+`docs/backup-server-brief.md` (superseded, historical) live at the root for now. New
+features should still follow the `<feature>/README.md` shape above.
+
 ## What goes in a feature doc
 
 A feature doc (`docs/<feature-name>/README.md`) should cover, roughly in this order:
@@ -43,4 +49,4 @@ Keep it current: if a PR changes behavior a doc describes, update the doc in the
 - Process/contribution instructions → `CONTRIBUTING.md`
 - AI agent instructions and conventions → `CLAUDE.md`, `docs/ai/`
 - Why a technical decision was made → `docs/adr/`
-- API reference generated from code (OpenAPI, docstrings, etc.) → generate it; don't hand-write a duplicate here. Link to the generated output from the relevant feature doc instead.
+- API reference generated from code (OpenAPI, docstrings, etc.) → generate it; don't hand-write a duplicate here. Link to the generated output from the relevant feature doc instead. Exception: hand-write what generation can't describe — `docs/API.md` covers the multipart envelopes because OpenAPI's `Form(str)` schemas for them are lossy (see that file's note).

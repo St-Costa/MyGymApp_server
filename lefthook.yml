@@ -1,6 +1,6 @@
 # Git hooks manager (single Go binary, no runtime dependency): https://lefthook.dev
-# Install: `mise install` (add lefthook to .mise.toml) or see the site for other options.
-# Activate once per clone: `lefthook install`
+# Install lefthook itself (see the site; optionally via .mise.toml), then
+# activate once per clone: `lefthook install`
 #
 # This is the safety net behind CLAUDE.md's "commit automatically" policy —
 # it catches secrets, formatting, and lint issues before they ever enter

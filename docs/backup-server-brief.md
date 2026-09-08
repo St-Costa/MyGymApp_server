@@ -1,5 +1,12 @@
 # Server brief — git-versioned backup store + repo-file ingestion
 
+> **SUPERSEDED — historical record only.** This brief described the work before it was
+> done; the implemented design (debounced commits, worker-thread parsing, `os.rename`
+> soft-delete, `db.sqlite3` path) is in [backup/README.md](backup/README.md) and
+> [backup/OPTIMIZATION.md](backup/OPTIMIZATION.md), which win on any disagreement
+> (notably: one commit per burst, not per request; no `git mv` fork; parse off the
+> request path). Kept for archaeology, not as an instruction.
+
 > **This file is meant to be handed to the Claude Code session working on the *server*
 > repo** (`~/docker/gym-app/`, the FastAPI receiver). It is kept in the app repo only so
 > it's versioned alongside the phone-side design (`docs/BACKUP.md`). Copy its contents into

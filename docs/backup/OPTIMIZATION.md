@@ -98,10 +98,11 @@ on every request.
 `(git rev-parse HEAD, write-generation)`. The write generation is bumped
 whenever a `/v1/repo` upsert or delete actually touches the tree. A manifest
 request with neither the HEAD nor the write generation changed since the
-last one returns the cached map (only `generatedAt` is refreshed). During a
-backfill the generation bumps per file, so the first manifest after the
-burst still pays one full walk; every manifest after that (the restore
-read-back, a re-run of "Verifica backup") is O(1).
+last one returns the cached map (only `generatedAt` is refreshed). The first
+manifest after a burst still walks the tree but only re-hashes files whose
+`(mtime_ns, size)` changed since the previous walk — O(changed), not O(all);
+every manifest after that (the restore read-back, a re-run of "Verifica
+backup") is O(1).
 
 Not an incremental `relPath → sha256` index: that would need coherence
 handling across deletes, parse failures, restart rebuilds, and worker

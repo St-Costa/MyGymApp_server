@@ -41,6 +41,7 @@ from app.parsing import (
     read_ecg_samples,
 )
 from app.storage import (
+    ParsedEcg,
     ParsedReadiness,
     get_stored_content_hash,
     record_parse_failure,
@@ -328,6 +329,97 @@ def hr_and_weight_for_ecg(
     return resting_hr, weight_kg
 
 
+def _gunzip_ecg_or_fallback(envelope: Envelope, compressed_bytes: bytes) -> tuple[bytes, str]:
+    """Step 6: gunzip the verified-good compressed bytes. Shouldn't fail if
+    the hash check (step 3, in app.routes) passed — the hash covers exactly
+    what we're gunzipping here — but per the raw-first principle a corrupt
+    stream must still never fail the request. Falls back to the compressed
+    bytes as-is (still forensically useful, stored under a
+    `.gunzip-failed` path). Returns (bytes_to_store, target_rel_path)."""
+    try:
+        return gzip.decompress(compressed_bytes), envelope.rel_path
+    except (gzip.BadGzipFile, zlib.error, EOFError):
+        logger.exception(
+            "gunzip failed for ECG session %s despite passing hash check "
+            "(corrupted client-side gzip?) — storing compressed bytes as-is",
+            envelope.record_id,
+        )
+        return compressed_bytes, f"{envelope.rel_path}.gunzip-failed"
+
+
+def _store_ecg_header_best_effort(
+    conn: sqlite3.Connection,
+    envelope: Envelope,
+    raw_bytes: bytes,
+    target_path: str,
+    received_at: str,
+) -> ParsedEcg | None:
+    """Step 9: parse the header + upsert the ecg_recordings row. Never raises:
+    a bad/unrecognized header (or the gunzip failure above) is logged and
+    recorded as a parse failure — the raw file is already safely stored,
+    which is what matters. Returns the parsed header, or None on failure."""
+    try:
+        parsed = replace(parse_ecg_file(raw_bytes), id=envelope.record_id)
+        upsert_parsed_ecg(
+            conn,
+            parsed,
+            content_hash=envelope.content_hash,
+            raw_path=target_path,
+            received_at=received_at,
+        )
+    except SessionParseError:
+        logger.exception("failed to parse ECG recording %s at %s", envelope.record_id, target_path)
+        record_parse_failure(
+            conn,
+            table="ecg_recordings",
+            record_type="ecg_recordings",
+            record_id=envelope.record_id,
+            content_hash=envelope.content_hash,
+            raw_path=target_path,
+            received_at=received_at,
+            error=traceback.format_exc(),
+        )
+        return None
+    return parsed
+
+
+def _analyze_ecg_best_effort(
+    conn: sqlite3.Connection,
+    envelope: Envelope,
+    raw_bytes: bytes,
+    parsed: ParsedEcg,
+    target_path: str,
+    received_at: str,
+) -> None:
+    """Step 10: run the ECG_ANALYSIS_HANDOFF.md analysis (§1-§5) right away,
+    in the same request — only called once the header parsed successfully,
+    since analysis needs a valid sample_rate. Never raises: a bug or edge
+    case in the analysis math must never take down an otherwise-successful
+    upload — the header row already makes this recording
+    reparseable/re-analyzable later via
+    app.storage.get_unanalyzed_ecg_recordings regardless of what happens
+    here."""
+    try:
+        samples = read_ecg_samples(raw_bytes)
+        resting_hr, weight_kg = hr_and_weight_for_ecg(conn, envelope.record_id, received_at)
+        result = analyze_ecg_recording(
+            envelope.record_id,
+            samples,
+            parsed.sample_rate,
+            file_size_bytes=len(raw_bytes),
+            resting_hr=resting_hr,
+            weight_kg=weight_kg,
+        )
+        upsert_ecg_analysis(conn, result, analyzed_at=received_at)
+    except Exception:
+        logger.exception(
+            "ECG analysis failed for session %s at %s (recording is still stored; "
+            "will remain in the analyzed_at IS NULL queue for retry)",
+            envelope.record_id,
+            target_path,
+        )
+
+
 def ingest_ecg(
     conn: sqlite3.Connection, envelope: Envelope, compressed_bytes: bytes
 ) -> IngestResult:
@@ -365,82 +457,25 @@ def ingest_ecg(
 
     received_at = datetime.now(UTC).isoformat()
 
-    # Step 6: gunzip the verified-good compressed bytes. Shouldn't fail if the
-    # hash check (step 3, in app.routes) passed — the hash covers exactly
-    # what we're gunzipping here — but per the raw-first principle a corrupt
-    # stream must still never fail the request. Fall back to storing the
-    # compressed bytes as-is (still forensically useful) and record this the
-    # same way as any other step 9 parse failure, rather than inventing a
-    # separate error path.
-    try:
-        raw_bytes = gzip.decompress(compressed_bytes)
-        target_path = envelope.rel_path
-    except (gzip.BadGzipFile, zlib.error, EOFError):
-        logger.exception(
-            "gunzip failed for ECG session %s despite passing hash check "
-            "(corrupted client-side gzip?) — storing compressed bytes as-is",
-            envelope.record_id,
-        )
-        raw_bytes = compressed_bytes
-        target_path = f"{envelope.rel_path}.gunzip-failed"
+    raw_bytes, target_path = _gunzip_ecg_or_fallback(envelope, compressed_bytes)
 
     # Step 8: write the bytes (decompressed in the normal case) — the raw
     # store stays directly usable without any reader needing to know it was
     # ever gzipped in transit.
     write_raw_file(raw_bytes, target_path)
 
-    # Step 9, wrapped so a bad/unrecognized header (or the gunzip failure
-    # above) can never fail the request — the raw file is already safely
-    # stored, which is what matters.
-    try:
-        parsed = replace(parse_ecg_file(raw_bytes), id=envelope.record_id)
-        upsert_parsed_ecg(
-            conn,
-            parsed,
-            content_hash=envelope.content_hash,
-            raw_path=target_path,
-            received_at=received_at,
-        )
-    except SessionParseError:
-        logger.exception("failed to parse ECG recording %s at %s", envelope.record_id, target_path)
-        record_parse_failure(
-            conn,
-            table="ecg_recordings",
-            record_type="ecg_recordings",
-            record_id=envelope.record_id,
-            content_hash=envelope.content_hash,
-            raw_path=target_path,
-            received_at=received_at,
-            error=traceback.format_exc(),
-        )
+    parsed = _store_ecg_header_best_effort(conn, envelope, raw_bytes, target_path, received_at)
+    if parsed is None:
+        pass  # step 9 failed — already logged + recorded, raw file is safe
     else:
-        # Run the ECG_ANALYSIS_HANDOFF.md analysis (§1-§5) right away, in the
-        # same request — only reachable once the header parsed successfully
-        # above, since analysis needs a valid sample_rate. Its own try/except:
-        # a bug or edge case in the analysis math must never take down an
-        # otherwise-successful upload — the header row (just written) already
-        # makes this recording reparseable/re-analyzable later via
-        # app.storage.get_unanalyzed_ecg_recordings regardless of what
-        # happens here.
-        try:
-            samples = read_ecg_samples(raw_bytes)
-            resting_hr, weight_kg = hr_and_weight_for_ecg(conn, envelope.record_id, received_at)
-            result = analyze_ecg_recording(
-                envelope.record_id,
-                samples,
-                parsed.sample_rate,
-                file_size_bytes=len(raw_bytes),
-                resting_hr=resting_hr,
-                weight_kg=weight_kg,
-            )
-            upsert_ecg_analysis(conn, result, analyzed_at=received_at)
-        except Exception:
-            logger.exception(
-                "ECG analysis failed for session %s at %s (recording is still stored; "
-                "will remain in the analyzed_at IS NULL queue for retry)",
-                envelope.record_id,
-                target_path,
-            )
+        # Commit the header row before the (seconds-long, CPU-bound) analysis
+        # below: it shortens the write transaction to the header upsert, and
+        # scopes any later failure to the analysis write — the recording then
+        # sits in the analyzed_at IS NULL queue for retry (the documented
+        # recovery path) instead of losing the header row to a rollback.
+        # Client-visible behavior is unchanged: still one "stored" response.
+        conn.commit()
+        _analyze_ecg_best_effort(conn, envelope, raw_bytes, parsed, target_path, received_at)
 
     # Unlike sessions/readiness/scale, the spec calls for a plain "stored"
     # here even on the different-hash-overwrite path (point 4/step 5 in

@@ -16,7 +16,7 @@ See [README.md](README.md#getting-started).
 1. Create a branch: `git checkout -b feature/short-description` (or `fix/...`).
 2. Make your change, following the conventions in [CLAUDE.md](CLAUDE.md).
 3. Add or update tests.
-4. Run the full test suite and lint/format/type-check commands (see [CLAUDE.md](CLAUDE.md#commands)) before opening a PR.
+4. Run the full test suite and the lint/format commands (see [CLAUDE.md](CLAUDE.md#commands)) before opening a PR (`make typecheck` is a stub — no type-checker is configured yet).
 5. Update `CLAUDE.md` and/or `README.md` if you changed a command, convention, or the project structure.
 
 ## Commit messages

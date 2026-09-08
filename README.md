@@ -245,6 +245,7 @@ settings**, together with the `SYNC_SHARED_SECRET` you generated above.
 
 ## Documentation
 
+- [docs/API.md](docs/API.md) — endpoint contract reference (id fields, statuses, errors, examples)
 - [docs/sync-ingestion/SPEC.md](docs/sync-ingestion/SPEC.md) — the implementation spec for this project
 - [CONTRIBUTING.md](CONTRIBUTING.md) — how to propose changes
 - [docs/adr/](docs/adr/) — why key decisions were made
