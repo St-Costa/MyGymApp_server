@@ -224,6 +224,14 @@ def parse_readiness_file(raw_bytes: bytes) -> ParsedReadiness:
         # means "no data available" — see ParsedReadiness's docstring.
         steps_avg_per_day=_optional_num(data, "stepsAvgPerDay"),
         steps_days_spanned=_optional_int(data, "stepsDaysSpanned"),
+        # Subjective 1..5 sleep rating (READINESS_SPEC.md). Same frontmatter-
+        # is-the-fallback story as the steps fields — the live endpoint
+        # overrides this with the (already strictly validated) envelope
+        # value. Here, in the reparse path, an out-of-range or non-int value
+        # is dropped to None rather than raised: raw-first means a weird
+        # rating never blocks re-deriving the rest of the row, and a stored
+        # value must still be NULL or 1..5.
+        sleep_quality=_bounded_int(data, "sleepQuality", 1, 5),
     )
 
 
@@ -530,3 +538,20 @@ def _optional_num(data: dict, key: str) -> float | None:
     2 decimals for the same reason as _num."""
     value = data.get(key)
     return None if value is None else round(float(value), 2)
+
+
+def _bounded_int(data: dict, key: str, lo: int, hi: int) -> int | None:
+    """Like _optional_int, but a value outside [lo, hi] (or one that isn't
+    an int at all) is dropped to None rather than stored. For a bounded
+    subjective rating read from the frontmatter fallback (sleepQuality),
+    where the live endpoint has already strictly validated the envelope
+    copy — this path just must never let a corrupt frontmatter value land
+    in the DB or raise (raw-first: it shouldn't block re-deriving the row)."""
+    value = data.get(key)
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        ivalue = int(value)
+    except (TypeError, ValueError):
+        return None
+    return ivalue if lo <= ivalue <= hi else None

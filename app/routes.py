@@ -95,6 +95,7 @@ async def _handle_ingest(
     commit_count_key: str,
     extra_required_fields: tuple[str, ...] = (),
     include_steps: bool = False,
+    include_sleep_quality: bool = False,
 ) -> JSONResponse:
     """Steps 1-7 minus auth (already enforced by the route's dependency).
     `id_field` is the envelope JSON key holding the record id
@@ -127,6 +128,25 @@ async def _handle_ingest(
             status_code=400, detail={"error": "contentHash must be prefixed with 'sha256:'"}
         )
 
+    # READINESS_SPEC.md: sleepQuality is an explicit envelope key — an int
+    # 1..5 (rated) or literal null (non valutato). Unlike the steps fields,
+    # a present-but-malformed value is a hard 400 (same rule the spec calls
+    # out): coercing a bad rating to 0 or dropping it silently would corrupt
+    # a subjective scale where every value carries meaning. A missing key is
+    # still tolerated as "non valutato", matching the rest of the envelope.
+    sleep_quality = None
+    if include_sleep_quality and "sleepQuality" in envelope_data:
+        sleep_quality = envelope_data["sleepQuality"]
+        if sleep_quality is not None and (
+            isinstance(sleep_quality, bool)
+            or not isinstance(sleep_quality, int)
+            or not 1 <= sleep_quality <= 5
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "sleepQuality must be null or an integer in 1..5"},
+            )
+
     env = Envelope(
         record_id=envelope_data[id_field],
         rel_path=envelope_data["relPath"],
@@ -140,6 +160,7 @@ async def _handle_ingest(
         # of this envelope's optional fields.
         steps_avg_per_day=envelope_data.get("stepsAvgPerDay") if include_steps else None,
         steps_days_spanned=envelope_data.get("stepsDaysSpanned") if include_steps else None,
+        sleep_quality=sleep_quality,
     )
 
     raw_bytes = await file.read()
@@ -203,6 +224,7 @@ async def post_readiness(
         ingest_fn=ingest_readiness,
         commit_count_key="readiness",
         include_steps=True,
+        include_sleep_quality=True,
     )
 
 

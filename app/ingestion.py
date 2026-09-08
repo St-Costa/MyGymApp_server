@@ -71,6 +71,11 @@ class Envelope:
     # data available", not zero; never coerce to 0 (see ParsedReadiness).
     steps_avg_per_day: float | None = None
     steps_days_spanned: int | None = None
+    # Readiness-only (READINESS_SPEC.md). Subjective 1..5 sleep rating, or
+    # None for "non valutato". Always an explicit JSON key on the wire
+    # (int 1..5 or literal null); routes.py has already rejected any other
+    # shape with a 400 by the time it lands here. Never coerce None to 0.
+    sleep_quality: int | None = None
 
 
 @dataclass
@@ -190,12 +195,13 @@ def ingest_readiness(
 ) -> IngestResult:
     """Steps 4-7 of POST /v1/readiness (docs/sync-ingestion/READINESS_SPEC.md).
 
-    stepsAvgPerDay/stepsDaysSpanned (SYNC.md "Daily step average") are read
-    from the envelope, not the frontmatter — the envelope is the primary
-    source (it avoids a Markdown parse), the frontmatter copy is only a
-    fallback for reparse.py, which has no envelope to read. `replace()`
-    overrides the parsed frontmatter values with the envelope's here so the
-    live endpoint always trusts the envelope, per spec.
+    stepsAvgPerDay/stepsDaysSpanned (SYNC.md "Daily step average") and
+    sleepQuality (READINESS_SPEC.md) are read from the envelope, not the
+    frontmatter — the envelope is the primary source (it avoids a Markdown
+    parse), the frontmatter copy is only a fallback for reparse.py, which
+    has no envelope to read. `replace()` overrides the parsed frontmatter
+    values with the envelope's here so the live endpoint always trusts the
+    envelope, per spec.
     """
 
     def parse_fn(raw: bytes) -> ParsedReadiness:
@@ -204,6 +210,7 @@ def ingest_readiness(
             parsed,
             steps_avg_per_day=envelope.steps_avg_per_day,
             steps_days_spanned=envelope.steps_days_spanned,
+            sleep_quality=envelope.sleep_quality,
         )
 
     return ingest_record(

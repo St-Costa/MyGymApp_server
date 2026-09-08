@@ -12,7 +12,38 @@ def test_parses_full_readiness_example() -> None:
     assert parsed.ln_rmssd == 4.30
     assert parsed.resting_hr == 65
     assert parsed.vo2max == 45.2
+    assert parsed.sleep_quality == 4
     assert parsed.recommendation == "HRV above baseline. Good day to push intensity."
+
+
+def test_readiness_sleep_quality_read_from_frontmatter() -> None:
+    """READINESS_SPEC.md: the frontmatter copy is the fallback reparse.py
+    relies on, since it has no envelope to read from."""
+    md = b'---\nid: aaaaaaaa\nmeasuredAt: "2026-08-05T07:00:00"\nsleepQuality: 2\n---\n'
+    assert parse_readiness_file(md).sleep_quality == 2
+
+
+def test_readiness_missing_sleep_quality_stays_none_not_zero() -> None:
+    """None means "non valutato" — must never collapse to 0."""
+    md = b'---\nid: aaaaaaaa\nmeasuredAt: "2026-08-05T07:00:00"\n---\n'
+    assert parse_readiness_file(md).sleep_quality is None
+
+
+def test_readiness_explicit_null_sleep_quality_stays_none() -> None:
+    md = b'---\nid: aaaaaaaa\nmeasuredAt: "2026-08-05T07:00:00"\nsleepQuality: null\n---\n'
+    assert parse_readiness_file(md).sleep_quality is None
+
+
+def test_readiness_out_of_range_sleep_quality_in_frontmatter_drops_to_none() -> None:
+    """reparse path stays raw-first: a corrupt frontmatter rating must not
+    raise or land a bad value in the DB — it degrades to "non valutato".
+    (The live endpoint 400s this same value in the envelope instead.)"""
+    for bad in (b"0", b"6", b"-1", b'"lots"'):
+        md = (
+            b'---\nid: aaaaaaaa\nmeasuredAt: "2026-08-05T07:00:00"\n'
+            b"sleepQuality: " + bad + b"\n---\n"
+        )
+        assert parse_readiness_file(md).sleep_quality is None
 
 
 def test_readiness_missing_id_raises() -> None:
