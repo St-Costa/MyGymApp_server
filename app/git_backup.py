@@ -180,10 +180,11 @@ def request_commit(*, note: str | None = None, **counts: int) -> None:
     and a commit failure is the committer's problem to log, not this
     request's to surface. `counts` is any of sessions/readiness/scale/ecg/
     repo -> number of files that record type touched in this request."""
+    for key in counts:
+        if key not in _COUNT_KEYS:
+            raise ValueError(f"unknown record-type count: {key}")
     with _pending_lock:
         for key, n in counts.items():
-            if key not in _COUNT_KEYS:
-                raise ValueError(f"unknown record-type count: {key}")
             _pending_counts[key] = _pending_counts.get(key, 0) + n
         if note:
             _pending_notes.append(note)

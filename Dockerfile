@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /
 COPY pyproject.toml ./
 COPY app ./app
 COPY reparse.py ./
+COPY analyze_ecg.py ./
 
 RUN pip install --no-cache-dir .
 
@@ -20,4 +21,7 @@ ENV PORT=8420
 # "only reachable via localhost". See docs/sync-ingestion/SPEC.md.
 EXPOSE 8420
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8420"]
+# Single worker: the git committer serializes index ops under the assumption
+# of one process (see app.git_backup). Long keep-alive avoids a fresh
+# TLS handshake per file when the phone syncs over Tailscale.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8420", "--workers", "1", "--timeout-keep-alive", "75", "--timeout-graceful-shutdown", "10", "--log-level", "warning"]

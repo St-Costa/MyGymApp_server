@@ -325,9 +325,7 @@ async def post_repo(
                     content_hash=content_hash,
                     raw_bytes=raw_bytes,
                 )
-            except RepoPathError as exc:
-                raise HTTPException(status_code=422, detail={"error": str(exc)}) from exc
-            except ValueError as exc:  # hash mismatch
+            except (RepoPathError, ValueError) as exc:  # bad path / hash mismatch
                 raise HTTPException(status_code=422, detail={"error": str(exc)}) from exc
         else:
             try:

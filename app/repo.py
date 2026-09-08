@@ -222,6 +222,16 @@ def _atomic_write(dest_abs: Path, raw_bytes: bytes) -> None:
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp, dest_abs)
+    # Fsync the parent dir so the replace itself is durable on crash.
+    try:
+        dir_fd = os.open(dest_abs.parent, os.O_DIRECTORY)
+    except OSError:
+        pass
+    else:
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
 
 
 def ingest_repo_upsert(
@@ -247,9 +257,15 @@ def ingest_repo_upsert(
 
     # §2.2 step 5: idempotency by on-disk bytes. If the file is already there
     # and identical, no write — the route returns "duplicate", no commit,
-    # no parse enqueued.
-    if dest_abs.exists() and _sha256_hex(dest_abs.read_bytes()) == content_hash:
-        return RepoResult(rel_path=rel_path, status="duplicate")
+    # no parse enqueued. The size check first avoids a full read+hash in the
+    # common "different file" case.
+    if dest_abs.exists():
+        try:
+            same_size = dest_abs.stat().st_size == len(raw_bytes)
+        except OSError:
+            same_size = False
+        if same_size and _sha256_hex(dest_abs.read_bytes()) == content_hash:
+            return RepoResult(rel_path=rel_path, status="duplicate")
 
     _atomic_write(dest_abs, raw_bytes)
     _bump_write_generation()  # invalidate the manifest cache (point 4)
@@ -272,6 +288,15 @@ def ingest_repo_delete(*, rel_path: str) -> RepoResult:
     tombstone_abs = RAW_DIR / "deleted" / f"{rel_path}.{unix_ts}"
     tombstone_abs.parent.mkdir(parents=True, exist_ok=True)
     os.rename(dest_abs, tombstone_abs)
+    for parent in {dest_abs.parent, tombstone_abs.parent}:
+        try:
+            dir_fd = os.open(parent, os.O_DIRECTORY)
+        except OSError:
+            continue
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
     _bump_write_generation()
 
     return RepoResult(rel_path=rel_path, status="deleted")
@@ -316,6 +341,11 @@ def ingest_repo_bulk(
     touched = 0
     notes: list[str] = []
 
+    # Lazy (function-level, not top-level): app.repo_worker imports this
+    # module, so a top-level import would be circular. Hoisted out of the
+    # loop so a 500-entry bulk pays the lookup once, not per entry.
+    from app.repo_worker import enqueue_parse
+
     for i, entry in enumerate(entries):
         rel_path = entry.get("relPath")
         op = entry.get("op")
@@ -358,8 +388,6 @@ def ingest_repo_bulk(
         results.append(BulkEntryResult(rel_path=res.rel_path, status=res.status))
         if res.status in ("stored", "deleted"):
             touched += 1
-            from app.repo_worker import enqueue_parse
-
             enqueue_parse(rel_path, content_hash, op)
             if res.status == "deleted":
                 notes.append(f"delete {rel_path} → deleted/")

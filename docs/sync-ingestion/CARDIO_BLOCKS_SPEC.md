@@ -1,6 +1,7 @@
 # Cardio blocks — `exercise_sets` schema addendum for `ExerciseType.CARDIO`
 
-Status: **not implemented server-side yet**. Phone-side transport requires **zero** change
+Status: **implemented server-side** (`exercise_sets.started_at/ended_at/avg_hr/max_hr`,
+plus the parser branch — see `app/storage.py` and `app/parsing.py`). Phone-side transport requires **zero** change
 to `POST /v1/sessions` or `POST /v1/ecg` — this is purely an addendum to how the existing
 `exercise_sets` parser/table handle a session whose `exercises[].type` is now sometimes
 `CARDIO` instead of only `FORZA`/`STRETCH`. Read `SPEC.md` (this directory) first — this

@@ -22,10 +22,10 @@ best-effort step — so a phone-side format change never risks silently losing d
 
 ## Status
 
-✅ All five ingestion endpoints (sessions, readiness, scale, ECG, repo files), the restore
-endpoints, the git-versioned `data/raw/` backup store, storage layer, and reparse tooling
-implemented per spec. Tailscale Serve setup (below) is a manual step to run on the actual
-self-hosted box.
+✅ All six ingestion endpoints (sessions, readiness, scale, ECG, repo files, repo bulk),
+the restore endpoints, the git-versioned `data/raw/` backup store, storage layer, and
+reparse tooling implemented per spec. Tailscale Serve setup (below) is a manual step to
+run on the actual self-hosted box.
 
 ## API
 
@@ -113,7 +113,8 @@ detection, deep-learning arrhythmia classifiers) and why.
 
 ## Dashboard
 
-A server-rendered dashboard is available at `/` (trends) and `/exercises` (PR lookup),
+A server-rendered dashboard is available at `/` (trends), `/exercises` (PR lookup),
+`/exercises/{exercise_id}` (per-exercise detail), and `/weekly-report` (report preview),
 same origin as the API, no separate service or build step. Deliberately **not** behind the
 bearer token — this server is only ever reachable via Tailscale Serve on a private tailnet,
 so there's no browser-side auth flow to build for a single-user tool (see
@@ -155,8 +156,8 @@ A [devcontainer](.devcontainer/devcontainer.json) is available for a reproducibl
 
 `reparse.py` re-runs the parser against raw files already on disk — no network access — and
 is how the database catches up after a parser is improved to handle a new field. It covers
-all four record types (sessions, readiness events, scale weigh-ins, ECG recordings) in one
-pass by default:
+all six record types (sessions, readiness events, scale weigh-ins, ECG recordings,
+exercises, routines) in one pass by default:
 
 ```bash
 python reparse.py --all                    # reparse every stored record, all types
@@ -215,7 +216,7 @@ settings**, together with the `SYNC_SHARED_SECRET` you generated above.
 │   └── RUNBOOK.md           # operational playbook (fill in once deployed)
 ├── app/                    # FastAPI application
 │   ├── main.py               # app entrypoint, startup (DB init)
-│   ├── routes.py              # API handlers (GET /health, /v1/analysis/*, POST /v1/sessions|readiness|scale-weighins|ecg)
+│   ├── routes.py              # API handlers (GET /health, /v1/analysis/*, POST /v1/sessions|readiness|scale-weighins|ecg|repo|repo/bulk, GET /v1/manifest|/v1/file|/v1/repo/tarball, POST /v1/repo/files)
 │   ├── gui.py                  # server-rendered dashboard routes (no auth — see module docstring)
 │   ├── templates/                # Jinja2 templates for the dashboard
 │   ├── static/                    # vendored JS (Chart.js) served at /static
@@ -224,6 +225,10 @@ settings**, together with the `SYNC_SHARED_SECRET` you generated above.
 │   ├── ingestion.py                 # hash verification, raw write, idempotency (steps 3-7)
 │   ├── parsing.py                    # YAML frontmatter parser, shared with reparse.py
 │   ├── storage.py                     # SQLite schema + upsert logic
+│   ├── repo.py                        # repo-file ingestion + restore (manifest/tarball)
+│   ├── repo_worker.py                   # background SQL-view parse worker for repo files
+│   ├── git_backup.py                     # debounced git committer for data/raw/
+│   ├── weekly_report.py                   # deterministic weekly report content
 │   ├── security.py                     # bearer-token auth
 │   └── config.py                        # env-driven configuration
 ├── reparse.py               # standalone re-parse maintenance script (reuses app/parsing.py)
