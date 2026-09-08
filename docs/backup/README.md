@@ -56,7 +56,9 @@ those two subtrees is rejected `422` — nothing written.
 ### `op: "delete"`
 
 No `file` part. Sent when an exercise/routine is deleted, or a rename made
-the old `{slug}-{id}.md` path obsolete.
+the old `{slug}-{id}.md` path obsolete. `contentHash` is still required in the
+envelope (same three keys as upsert) but is advisory here — there are no bytes to
+hash it against, so it is never verified.
 
 - File absent → `200 {"status":"already_absent"}`, no commit.
 - **Soft delete** — never `rm`. `os.rename` into

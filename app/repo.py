@@ -437,7 +437,10 @@ def build_tarball(since_manifest_hash: str | None = None) -> tuple[bytes, str]:
 
     raw_root = RAW_DIR.resolve()
     buf = io.BytesIO()
-    with gzip.GzipFile(fileobj=buf, mode="wb", mtime=0) as gz:
+    # compresslevel=6, not the default 9: restores are decompressed once but
+    # compressed on every request — level 6 is ~2x faster to produce at a
+    # few percent larger output, and the wire format (gzip tar) is unchanged.
+    with gzip.GzipFile(fileobj=buf, mode="wb", compresslevel=6, mtime=0) as gz:
         with tarfile.open(fileobj=gz, mode="w") as tar:  # type: ignore[arg-type]
             if since_manifest_hash != manifest_hash:
                 for rel_path in manifest:
@@ -492,6 +495,9 @@ def _iter_live_files() -> list[Path]:
 # backup" re-runs) is O(1).
 _manifest_cache: dict[str, str] | None = None
 _manifest_cache_key: tuple[str | None, int] | None = None
+# (mtime_ns, size) per relPath from the walk that produced _manifest_cache —
+# lets a recompute skip re-hashing files the filesystem reports as untouched.
+_manifest_cache_stats: dict[str, tuple[int, int]] | None = None
 _manifest_lock = threading.Lock()
 
 
@@ -510,13 +516,36 @@ def _git_head() -> str | None:
     return result.stdout.strip() or None if result.returncode == 0 else None
 
 
-def _compute_manifest_files() -> dict[str, str]:
+def _compute_manifest_files(
+    prev_files: dict[str, str] | None = None,
+    prev_stats: dict[str, tuple[int, int]] | None = None,
+) -> tuple[dict[str, str], dict[str, tuple[int, int]]]:
+    """Walk + hash every live file. Files whose (mtime_ns, size) match the
+    previous walk reuse their previous hash without being re-read, so the
+    first manifest after a burst that touched 1 file costs O(changed), not
+    O(all). Same map as a from-scratch hash — mtime_ns + size matching with
+    different bytes would need a same-size rewrite inside one nanosecond
+    tick, which this single-user local store doesn't defend against
+    anywhere else either."""
     raw_root = RAW_DIR.resolve()
     files: dict[str, str] = {}
+    stats: dict[str, tuple[int, int]] = {}
     for path in _iter_live_files():
         rel = path.relative_to(raw_root).as_posix()
+        # Re-check, as before: a path that stopped being a file mid-walk is
+        # excluded, not an error.
+        if not path.is_file():
+            continue
+        st = path.stat()
+        key = (st.st_mtime_ns, st.st_size)
+        stats[rel] = key
+        if prev_files is not None and prev_stats is not None and prev_stats.get(rel) == key:
+            cached = prev_files.get(rel)
+            if cached is not None:
+                files[rel] = cached
+                continue
         files[rel] = _sha256_hex(path.read_bytes())
-    return dict(sorted(files.items()))
+    return dict(sorted(files.items())), stats
 
 
 def build_manifest() -> dict:
@@ -527,15 +556,16 @@ def build_manifest() -> dict:
     generation has changed since the last call, the cached file map is
     returned (only `generatedAt` is refreshed). See
     docs/backup/OPTIMIZATION.md point 4."""
-    global _manifest_cache, _manifest_cache_key
+    global _manifest_cache, _manifest_cache_key, _manifest_cache_stats
     key = (_git_head(), _current_write_generation())
     with _manifest_lock:
         if _manifest_cache is not None and _manifest_cache_key == key:
             files = _manifest_cache
         else:
-            files = _compute_manifest_files()
+            files, stats = _compute_manifest_files(_manifest_cache, _manifest_cache_stats)
             _manifest_cache = files
             _manifest_cache_key = key
+            _manifest_cache_stats = stats
     return {
         "generatedAt": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "files": files,

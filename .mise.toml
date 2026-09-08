@@ -1,5 +1,6 @@
-# Pins exact tool/runtime versions for this project, enforced consistently
-# across local dev, CI, and the devcontainer. Install mise: https://mise.jdx.dev
+# Pins the Python runtime version for local dev (and the devcontainer).
+# CI installs its own Python via actions/setup-python — keep the versions
+# in sync by hand. Install mise: https://mise.jdx.dev
 
 [tools]
 python = "3.12"

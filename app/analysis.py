@@ -79,27 +79,42 @@ _GOOD_DIRECTION = {
 }
 
 
+# §11.1 semaphore cutoffs (ANALYSIS_SPEC.md's table, transcribed verbatim —
+# grouped here so a spec correction touches one place, not two predicates).
+_RESTING_HR_RED_ABOVE = 85
+_RESTING_HR_GREEN_LO = 40
+_RESTING_HR_GREEN_HI = 75
+_HRR_RED_BELOW = 12
+_HRR_GREEN_FROM = 20
+_DRIFT_RED_ABOVE = 1.0
+_DRIFT_GREEN_BELOW = 0.5
+_POINCARE_RED_LO = 1.0
+_POINCARE_RED_HI = 6.0
+_POINCARE_GREEN_LO = 1.5
+_POINCARE_GREEN_HI = 4.5
+
+
 def _is_red(metric: str, value: float) -> bool:
     if metric == "restingHr":
-        return value > 85
+        return value > _RESTING_HR_RED_ABOVE
     if metric == "hrr60s":
-        return value < 12
+        return value < _HRR_RED_BELOW
     if metric == "drift":
-        return abs(value) > 1.0
+        return abs(value) > _DRIFT_RED_ABOVE
     if metric == "poincareRatio":
-        return value < 1.0 or value > 6.0
+        return value < _POINCARE_RED_LO or value > _POINCARE_RED_HI
     return False  # vo2max/rmssd/sdnn: never RED per the spec's table
 
 
 def _is_green(metric: str, value: float) -> bool:
     if metric == "restingHr":
-        return 40 <= value <= 75
+        return _RESTING_HR_GREEN_LO <= value <= _RESTING_HR_GREEN_HI
     if metric == "hrr60s":
-        return value >= 20
+        return value >= _HRR_GREEN_FROM
     if metric == "drift":
-        return abs(value) < 0.5
+        return abs(value) < _DRIFT_GREEN_BELOW
     if metric == "poincareRatio":
-        return 1.5 <= value <= 4.5
+        return _POINCARE_GREEN_LO <= value <= _POINCARE_GREEN_HI
     return True  # vo2max/rmssd/sdnn: always GREEN per the spec's table
 
 
@@ -994,9 +1009,13 @@ def average_weekly_delta(series: list[float]) -> float | None:
 # §1.4 Estimated 1RM — Epley formula
 # ---------------------------------------------------------------------------
 
+# Epley's divisor (1RM ≈ w·(1 + r/30)): the reps-per-doubling constant from
+# Epley 1985, kept as the spec transcribed it.
+_EPLEY_DIVISOR = 30.0
+
 
 def estimate_1rm(weight: float, reps: int) -> float:
-    return weight * (1 + reps / 30.0)
+    return weight * (1 + reps / _EPLEY_DIVISOR)
 
 
 @dataclass
@@ -1101,36 +1120,25 @@ class RecentHeaviestPR:
     session_date: str
 
 
-def recent_heaviest_set_pr(
-    conn: sqlite3.Connection,
-    exercise_id: str,
-    *,
-    is_daily: bool,
-    is_warmup: bool,
-    limit_sessions: int = 30,
+_RECENT_PR_ROWS_SQL = """
+    SELECT es.reps, es.weight, es.session_id, s.date
+    FROM exercise_sets es
+    JOIN sessions s ON s.id = es.session_id
+    WHERE es.exercise_id = ?
+      AND es.is_daily = ?
+      AND (es.exclude_from_tonnage = 1 AND es.is_daily = 0) = ?
+      AND es.weight > 0
+    ORDER BY s.date DESC
+    LIMIT ?
+"""
+
+
+def _recent_heaviest_from_rows(
+    rows: list, *, exercise_id: str, limit_sessions: int
 ) -> RecentHeaviestPR | None:
-    """Last 30 sessions containing this exercise, matched like-for-like on
-    is_daily and (exclude_from_tonnage and not is_daily) == is_warmup.
-    Best set = max(weight, reps) lexicographically (weight first)."""
-    rows = conn.execute(
-        """
-        SELECT es.reps, es.weight, es.session_id, s.date
-        FROM exercise_sets es
-        JOIN sessions s ON s.id = es.session_id
-        WHERE es.exercise_id = ?
-          AND es.is_daily = ?
-          AND (es.exclude_from_tonnage = 1 AND es.is_daily = 0) = ?
-          AND es.weight > 0
-        ORDER BY s.date DESC
-        LIMIT ?
-        """,
-        (
-            exercise_id,
-            int(is_daily),
-            int(is_warmup),
-            limit_sessions * 20,
-        ),  # generous cap on rows scanned
-    ).fetchall()
+    """Pure second half of recent_heaviest_set_pr: session-limit + best-set
+    pick over already-fetched rows. Shared by the single-variant query and
+    the three-variant UNION below, so both paths compute identically."""
     if not rows:
         return None
 
@@ -1156,6 +1164,85 @@ def recent_heaviest_set_pr(
         session_id=best[2],
         session_date=best[3],
     )
+
+
+def recent_heaviest_set_pr(
+    conn: sqlite3.Connection,
+    exercise_id: str,
+    *,
+    is_daily: bool,
+    is_warmup: bool,
+    limit_sessions: int = 30,
+) -> RecentHeaviestPR | None:
+    """Last 30 sessions containing this exercise, matched like-for-like on
+    is_daily and (exclude_from_tonnage and not is_daily) == is_warmup.
+    Best set = max(weight, reps) lexicographically (weight first)."""
+    rows = conn.execute(
+        _RECENT_PR_ROWS_SQL,
+        (
+            exercise_id,
+            int(is_daily),
+            int(is_warmup),
+            limit_sessions * 20,
+        ),  # generous cap on rows scanned
+    ).fetchall()
+    return _recent_heaviest_from_rows(rows, exercise_id=exercise_id, limit_sessions=limit_sessions)
+
+
+def recent_prs_for_exercise(
+    conn: sqlite3.Connection, exercise_id: str, *, limit_sessions: int = 30
+) -> dict[tuple[bool, bool], RecentHeaviestPR | None]:
+    """All three recent_heaviest_set_pr variants — (is_daily, is_warmup) in
+    {(False, False), (False, True), (True, False)} — in one round-trip: the
+    same predicates as three separate calls, UNIONed with a tag column (UNION
+    ALL preserves branch order, each branch keeps its own ORDER BY/LIMIT), so
+    each group sees exactly the rows its own query would have returned and
+    runs through the same _recent_heaviest_from_rows logic."""
+    row_limit = limit_sessions * 20  # same generous cap as the single-variant query
+    rows = conn.execute(
+        """
+        SELECT * FROM (
+            SELECT 0 AS tag, es.reps, es.weight, es.session_id, s.date
+            FROM exercise_sets es
+            JOIN sessions s ON s.id = es.session_id
+            WHERE es.exercise_id = ? AND es.is_daily = 0
+              AND (es.exclude_from_tonnage = 1 AND es.is_daily = 0) = 0
+              AND es.weight > 0
+            ORDER BY s.date DESC LIMIT ?
+        )
+        UNION ALL
+        SELECT * FROM (
+            SELECT 1 AS tag, es.reps, es.weight, es.session_id, s.date
+            FROM exercise_sets es
+            JOIN sessions s ON s.id = es.session_id
+            WHERE es.exercise_id = ? AND es.is_daily = 0
+              AND (es.exclude_from_tonnage = 1 AND es.is_daily = 0) = 1
+              AND es.weight > 0
+            ORDER BY s.date DESC LIMIT ?
+        )
+        UNION ALL
+        SELECT * FROM (
+            SELECT 2 AS tag, es.reps, es.weight, es.session_id, s.date
+            FROM exercise_sets es
+            JOIN sessions s ON s.id = es.session_id
+            WHERE es.exercise_id = ? AND es.is_daily = 1
+              AND (es.exclude_from_tonnage = 1 AND es.is_daily = 0) = 0
+              AND es.weight > 0
+            ORDER BY s.date DESC LIMIT ?
+        )
+        """,
+        (exercise_id, row_limit, exercise_id, row_limit, exercise_id, row_limit),
+    ).fetchall()
+    tags = ((False, False), (False, True), (True, False))
+    groups: dict[tuple[bool, bool], list] = {key: [] for key in tags}
+    for tag, reps, weight, session_id, date in rows:
+        groups[tags[tag]].append((reps, weight, session_id, date))
+    return {
+        key: _recent_heaviest_from_rows(
+            group_rows, exercise_id=exercise_id, limit_sessions=limit_sessions
+        )
+        for key, group_rows in groups.items()
+    }
 
 
 @dataclass

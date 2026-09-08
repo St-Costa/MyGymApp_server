@@ -31,11 +31,12 @@ loses or corrupts data), idempotency on `sessionId` + content hash still holds, 
 | Task | Command |
 |---|---|
 | Install deps | `pip install -e ".[dev]"` |
-| Run dev server | `uvicorn app.main:app --reload --port 8420` |
+| Run dev server | `uvicorn app.main:app --reload --port ${PORT:-8420}` |
 | Run tests | `pytest` |
-| Run a single test | `pytest path/to/test_file.py::test_name` |
+| Run a single test | `pytest path/to/test_file.py::test_name` (or `make test-one T=path/to/test_file.py::test_name`) |
 | Lint | `ruff check .` |
 | Format | `ruff format .` |
+| Type-check | `make typecheck` (stub — no checker configured yet) |
 | Audit dependencies for CVEs | `pip-audit . --ignore-vuln PYSEC-2026-3447` (see ci.yml for why that one's excluded) |
 | Build (Docker image) | `docker build -t mygymapp-sync-server .` |
 | Reparse stored sessions | `python reparse.py --all` (or `--stale`, or specific IDs) |
@@ -134,9 +135,11 @@ In this repository, committing is part of finishing a unit of work — you do no
 - Anything under `docs/adr/` — these are historical records, not living docs; add a new ADR instead of editing an old one.
 - `.claude/settings.json`, `lefthook.yml`, `.gitleaks.toml`, `commitlint.config.js` — these govern what Claude itself is permitted to do and what gets checked before a commit lands; loosening them is a trust decision for the user to make, not the agent.
 - The `sessions` / `exercise_sets` / `tonnage_by_bodypart` / `readiness_events` /
-  `scale_weighins` / `ecg_recordings` / `exercises` / `routines` / `routine_exercises`
-  SQLite schema — it's re-derivable from raw files via `reparse.py`, but a breaking change
-  still needs a `PARSER_SCHEMA_VERSION` bump and a migration plan, not a silent edit.
+  `scale_weighins` / `ecg_recordings` / `ecg_analysis` / `exercises` / `routines` /
+  `routine_exercises` / `parse_failures` SQLite schema — it's re-derivable from raw
+  files via `reparse.py` (`ecg_analysis` via `analyze_ecg.py`), but a breaking change
+  still needs a `PARSER_SCHEMA_VERSION` (or `ECG_ANALYSIS_SCHEMA_VERSION`) bump and a
+  migration plan, not a silent edit.
 - `data/raw/` is a git repository (`app/git_backup.py`, see [docs/backup/README.md](docs/backup/README.md)
   and [docs/backup/OPTIMIZATION.md](docs/backup/OPTIMIZATION.md)): commits are **debounced**
   (one background `git commit` per burst of writes, ~3s after the last), a 2xx means

@@ -26,19 +26,23 @@ implementations (neurokit2) worth reusing rather than hand-rolling Lomb-
 Scargle PSD estimation or sample entropy from scratch — a different
 tradeoff than the core §1-§5 port, which needed to reproduce a *specific*
 existing algorithm exactly, not implement a generic textbook statistic.
+Those heavy imports live inside their functions (lazy), so importing this
+module never pulls in the scientific stack by itself.
 """
 
+# Heavy third-party imports (numpy/scipy/neurokit2/py-ecg-detectors) are
+# deliberately *not* top-level: only the advanced-metrics functions below
+# need them, and this module is imported (transitively) by every process —
+# the dashboard, `reparse.py --type sessions`, even plain `pytest`
+# collection. Each consumer imports them lazily inside its own function
+# (sys.modules makes repeat calls a dict lookup), so lightweight consumers
+# never pay the seconds + RAM of importing the scientific stack.
 import math
 import warnings
 from bisect import bisect_left as _bisect_left
 from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
-
-import neurokit2 as nk
-import numpy as np
-from ecgdetectors import Detectors
-from scipy.stats import kurtosis as _scipy_kurtosis
 
 from app.config import ASSUMED_BIRTH_YEAR
 from app.parsing import parse_ecg_file, read_ecg_samples
@@ -133,6 +137,11 @@ class _PanTompkinsIntermediates:
     refractory: int
 
 
+# §1 detection threshold (handoff doc, verbatim): a candidate peak must
+# exceed this fraction of the trailing-max envelope to count as a QRS.
+_PAN_TOMPKINS_THRESHOLD_FRACTION = 0.5
+
+
 def _detect_r_peaks_raw(
     samples: list[int], sample_rate: int
 ) -> tuple[list[int], _PanTompkinsIntermediates]:
@@ -161,7 +170,7 @@ def _detect_r_peaks_raw(
     last_peak = -refractory - 1  # so the very first candidate isn't refractory-blocked
     n = len(integrated)
     for i in range(1, n - 1):
-        threshold = local_max[i] * 0.5
+        threshold = local_max[i] * _PAN_TOMPKINS_THRESHOLD_FRACTION
         if (
             integrated[i] > threshold
             and integrated[i] > integrated[i - 1]
@@ -337,6 +346,14 @@ def _median(values: list[float]) -> float:
     return (ordered[mid - 1] + ordered[mid]) / 2.0
 
 
+# §4 thresholds (ECG_ANALYSIS_HANDOFF.md, transcribed verbatim — grouped
+# here so the port stays auditable against the handoff doc in one place).
+_PAUSE_THRESHOLD_MS = 2000
+_PAC_SHORT_FRACTION = 0.85
+_PAC_COMPENSATORY_FRACTION = 1.10
+_IRREGULAR_DEVIATION_FRACTION = 0.20
+
+
 def compute_arrhythmia_markers(rr: list[float]) -> ArrhythmiaMarkers:
     """§4. Ported as a literal single pass over `rr`, state (`uncounted_
     consecutive`) carried between iterations exactly as the handoff doc
@@ -352,7 +369,7 @@ def compute_arrhythmia_markers(rr: list[float]) -> ArrhythmiaMarkers:
     for i in range(n):
         interval = rr[i]
 
-        if interval > 2000:
+        if interval > _PAUSE_THRESHOLD_MS:
             pause_count += 1
             uncounted_consecutive = False
             continue
@@ -364,14 +381,17 @@ def compute_arrhythmia_markers(rr: list[float]) -> ArrhythmiaMarkers:
             continue
         local_median = _median(rr[start:end])
 
-        if interval < local_median * 0.85:
+        if interval < local_median * _PAC_SHORT_FRACTION:
             next_rr = rr[i + 1] if i + 1 < n else None
-            if next_rr is not None and next_rr > local_median * 1.10:
+            if next_rr is not None and next_rr > local_median * _PAC_COMPENSATORY_FRACTION:
                 pac_count += 1
             # else: short RR without a compensatory pause — not counted as anything.
             uncounted_consecutive = False
 
-        elif abs(interval - local_median) > local_median * 0.20 and interval > local_median:
+        elif (
+            abs(interval - local_median) > local_median * _IRREGULAR_DEVIATION_FRACTION
+            and interval > local_median
+        ):
             # Deliberate asymmetry (handoff doc §4): only intervals *longer*
             # than the local median count as "irregular" here — carried over
             # as-is, not a bug to "fix" to a symmetric definition.
@@ -468,6 +488,9 @@ def compute_kurtosis_sqi(samples: list[int]) -> float | None:
     variance — scipy would compute it anyway via a numerically unstable path
     and emit a RuntimeWarning about catastrophic cancellation; a flat signal
     is unambiguously "no real cardiac signal here" regardless)."""
+    import numpy as np
+    from scipy.stats import kurtosis as _scipy_kurtosis
+
     if len(samples) < 2:
         return None
     arr = np.asarray(samples, dtype=np.float64)
@@ -543,6 +566,8 @@ def compute_b_sqi(samples: list[int], sample_rate: int, primary_peaks: list[int]
     if not primary_peaks or sample_rate <= 0:
         return None
     try:
+        from ecgdetectors import Detectors
+
         secondary_peaks = Detectors(sample_rate).hamilton_detector(samples)
     except Exception:
         # py-ecg-detectors can raise on pathological input (e.g. too short
@@ -626,6 +651,9 @@ def compute_neurokit_derived_metrics(
     csi = None
     cvi = None
     try:
+        import neurokit2 as nk
+        import numpy as np
+
         # See _NONLINEAR_RR_CAP's comment: capped to the most recent window
         # for performance, not run over the full peak list like hrv_frequency
         # below.

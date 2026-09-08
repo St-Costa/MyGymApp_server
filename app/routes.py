@@ -22,7 +22,7 @@ from collections.abc import Callable
 from dataclasses import asdict
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from app.analysis import (
     acwr_daily_trend,
@@ -85,6 +85,39 @@ def health() -> dict:
     return {"ok": True}
 
 
+def _extract_sleep_quality(envelope_data: dict, *, include: bool) -> int | None:
+    """READINESS_SPEC.md: sleepQuality is an explicit envelope key — an int
+    1..5 (rated) or literal null (non valutato). Unlike the steps fields,
+    a present-but-malformed value is a hard 400 (same rule the spec calls
+    out): coercing a bad rating to 0 or dropping it silently would corrupt
+    a subjective scale where every value carries meaning. A missing key is
+    still tolerated as "non valutato", matching the rest of the envelope."""
+    if not include or "sleepQuality" not in envelope_data:
+        return None
+    sleep_quality = envelope_data["sleepQuality"]
+    if sleep_quality is not None and (
+        isinstance(sleep_quality, bool)
+        or not isinstance(sleep_quality, int)
+        or not 1 <= sleep_quality <= 5
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "sleepQuality must be null or an integer in 1..5"},
+        )
+    return sleep_quality
+
+
+def _extract_steps_extras(envelope_data: dict, *, include: bool) -> tuple[float | None, int | None]:
+    """SYNC.md "Daily step average": the phone always sends these two keys
+    (explicit JSON null when there's no data), but read with .get() rather
+    than indexing — a sender that omits them entirely should degrade to "no
+    data available", not 400, same leniency as the rest of the envelope's
+    optional fields."""
+    if not include:
+        return None, None
+    return envelope_data.get("stepsAvgPerDay"), envelope_data.get("stepsDaysSpanned")
+
+
 async def _handle_ingest(
     *,
     envelope: str,
@@ -128,24 +161,10 @@ async def _handle_ingest(
             status_code=400, detail={"error": "contentHash must be prefixed with 'sha256:'"}
         )
 
-    # READINESS_SPEC.md: sleepQuality is an explicit envelope key — an int
-    # 1..5 (rated) or literal null (non valutato). Unlike the steps fields,
-    # a present-but-malformed value is a hard 400 (same rule the spec calls
-    # out): coercing a bad rating to 0 or dropping it silently would corrupt
-    # a subjective scale where every value carries meaning. A missing key is
-    # still tolerated as "non valutato", matching the rest of the envelope.
-    sleep_quality = None
-    if include_sleep_quality and "sleepQuality" in envelope_data:
-        sleep_quality = envelope_data["sleepQuality"]
-        if sleep_quality is not None and (
-            isinstance(sleep_quality, bool)
-            or not isinstance(sleep_quality, int)
-            or not 1 <= sleep_quality <= 5
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail={"error": "sleepQuality must be null or an integer in 1..5"},
-            )
+    sleep_quality = _extract_sleep_quality(envelope_data, include=include_sleep_quality)
+    steps_avg_per_day, steps_days_spanned = _extract_steps_extras(
+        envelope_data, include=include_steps
+    )
 
     env = Envelope(
         record_id=envelope_data[id_field],
@@ -153,13 +172,8 @@ async def _handle_ingest(
         content_hash=envelope_data["contentHash"],
         app_version=envelope_data["appVersion"],
         client_sent_at=envelope_data["clientSentAt"],
-        # SYNC.md "Daily step average": the phone always sends these two keys
-        # (explicit JSON null when there's no data), but read with .get()
-        # rather than indexing — a sender that omits them entirely should
-        # degrade to "no data available", not 400, same leniency as the rest
-        # of this envelope's optional fields.
-        steps_avg_per_day=envelope_data.get("stepsAvgPerDay") if include_steps else None,
-        steps_days_spanned=envelope_data.get("stepsDaysSpanned") if include_steps else None,
+        steps_avg_per_day=steps_avg_per_day,
+        steps_days_spanned=steps_days_spanned,
         sleep_quality=sleep_quality,
     )
 
@@ -456,30 +470,33 @@ async def post_repo_files(request: Request) -> Response:
     fetched = read_live_files([str(p) for p in rel_paths])
 
     boundary = "repofiles-" + secrets.token_hex(16)
-    chunks: list[bytes] = []
-    for rel_path, raw_bytes, sha in fetched:
-        headers = [
-            f'Content-Disposition: attachment; name="{rel_path}"',
-        ]
-        if raw_bytes is None:
-            headers.append("X-Status: absent")
-            body_bytes = b""
-        else:
-            headers.append("X-Status: present")
-            headers.append(f"X-Content-SHA256: {sha}")
-            ctype = "text/markdown" if rel_path.endswith(".md") else "application/octet-stream"
-            headers.append(f"Content-Type: {ctype}")
-            body_bytes = raw_bytes
-        chunks.append(
-            f"--{boundary}\r\n".encode()
-            + ("\r\n".join(headers) + "\r\n\r\n").encode()
-            + body_bytes
-            + b"\r\n"
-        )
-    chunks.append(f"--{boundary}--\r\n".encode())
 
-    return Response(
-        content=b"".join(chunks),
+    def _parts():
+        # Streamed part by part (same bytes the buffered version produced):
+        # a 500-file read-back no longer assembles the whole body in RAM.
+        for rel_path, raw_bytes, sha in fetched:
+            headers = [
+                f'Content-Disposition: attachment; name="{rel_path}"',
+            ]
+            if raw_bytes is None:
+                headers.append("X-Status: absent")
+                body_bytes = b""
+            else:
+                headers.append("X-Status: present")
+                headers.append(f"X-Content-SHA256: {sha}")
+                ctype = "text/markdown" if rel_path.endswith(".md") else "application/octet-stream"
+                headers.append(f"Content-Type: {ctype}")
+                body_bytes = raw_bytes
+            yield (
+                f"--{boundary}\r\n".encode()
+                + ("\r\n".join(headers) + "\r\n\r\n").encode()
+                + body_bytes
+                + b"\r\n"
+            )
+        yield f"--{boundary}--\r\n".encode()
+
+    return StreamingResponse(
+        _parts(),
         media_type=f'multipart/mixed; boundary="{boundary}"',
     )
 

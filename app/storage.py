@@ -379,6 +379,19 @@ PARSER_SCHEMA_VERSION = 11
 UNPARSED_SCHEMA_VERSION = 0
 
 
+def _ensure_columns(conn: sqlite3.Connection, table: str, columns: list[tuple[str, str]]) -> None:
+    """One-time migration workhorse behind the _migrate_*_columns functions
+    below: `ALTER TABLE ... ADD COLUMN` for each (name, type) missing from
+    `table`. `table` is always one of this module's own tables (never
+    caller-supplied). Same DDL the inline versions ran — the per-migration
+    docstrings keep living on their own functions, only the
+    PRAGMA-check-and-ALTER boilerplate is shared."""
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    for name, ddl in columns:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+
+
 def init_db(db_path: Path = DB_PATH) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with connect(db_path) as conn:
@@ -411,9 +424,7 @@ def _migrate_readiness_events_sleep_quality_column(conn: sqlite3.Connection) -> 
     DB the added column has no CHECK, which is fine — every writer (live
     endpoint, parser) has already clamped the value to NULL or 1..5 by the
     time it reaches the INSERT."""
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(readiness_events)")}
-    if "sleep_quality" not in columns:
-        conn.execute("ALTER TABLE readiness_events ADD COLUMN sleep_quality SMALLINT")
+    _ensure_columns(conn, "readiness_events", [("sleep_quality", "SMALLINT")])
 
 
 def _migrate_readiness_events_steps_columns(conn: sqlite3.Connection) -> None:
@@ -425,11 +436,11 @@ def _migrate_readiness_events_steps_columns(conn: sqlite3.Connection) -> None:
     reparse.py --stale backfills them from frontmatter once
     PARSER_SCHEMA_VERSION is bumped (the live endpoint always prefers the
     envelope over frontmatter, but reparse has no envelope to read)."""
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(readiness_events)")}
-    if "steps_avg_per_day" not in columns:
-        conn.execute("ALTER TABLE readiness_events ADD COLUMN steps_avg_per_day REAL")
-    if "steps_days_spanned" not in columns:
-        conn.execute("ALTER TABLE readiness_events ADD COLUMN steps_days_spanned INTEGER")
+    _ensure_columns(
+        conn,
+        "readiness_events",
+        [("steps_avg_per_day", "REAL"), ("steps_days_spanned", "INTEGER")],
+    )
 
 
 def _migrate_sessions_rpe_columns(conn: sqlite3.Connection) -> None:
@@ -440,11 +451,7 @@ def _migrate_sessions_rpe_columns(conn: sqlite3.Connection) -> None:
     session synced before the phone started sending this field — session_rpe
     is an optional 1-10 rating, so unlike the other numeric session fields,
     "never answered" must stay distinguishable from an actual value."""
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
-    if "session_rpe" not in columns:
-        conn.execute("ALTER TABLE sessions ADD COLUMN session_rpe INTEGER")
-    if "session_load" not in columns:
-        conn.execute("ALTER TABLE sessions ADD COLUMN session_load REAL")
+    _ensure_columns(conn, "sessions", [("session_rpe", "INTEGER"), ("session_load", "REAL")])
 
 
 def _migrate_exercise_sets_is_bodyweight_column(conn: sqlite3.Connection) -> None:
@@ -457,11 +464,7 @@ def _migrate_exercise_sets_is_bodyweight_column(conn: sqlite3.Connection) -> Non
     distinguish "untouched set" from "bodyweight exercise" for those; a
     reparse won't fix this retroactively either, since the raw files
     themselves predate the phone sending isBodyweight at all)."""
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(exercise_sets)")}
-    if "is_bodyweight" not in columns:
-        conn.execute(
-            "ALTER TABLE exercise_sets ADD COLUMN is_bodyweight INTEGER NOT NULL DEFAULT 0"
-        )
+    _ensure_columns(conn, "exercise_sets", [("is_bodyweight", "INTEGER NOT NULL DEFAULT 0")])
 
 
 def _migrate_exercise_sets_bodyweight_load_columns(conn: sqlite3.Connection) -> None:
@@ -475,11 +478,11 @@ def _migrate_exercise_sets_bodyweight_load_columns(conn: sqlite3.Connection) -> 
     and nothing computes from these. reparse.py --stale backfills them from
     the raw frontmatter for sessions whose files do carry them, once
     PARSER_SCHEMA_VERSION is bumped."""
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(exercise_sets)")}
-    if "bw_load_percent" not in columns:
-        conn.execute("ALTER TABLE exercise_sets ADD COLUMN bw_load_percent INTEGER")
-    if "bw_base_weight_kg" not in columns:
-        conn.execute("ALTER TABLE exercise_sets ADD COLUMN bw_base_weight_kg REAL")
+    _ensure_columns(
+        conn,
+        "exercise_sets",
+        [("bw_load_percent", "INTEGER"), ("bw_base_weight_kg", "REAL")],
+    )
 
 
 def _migrate_exercise_sets_stretch_time_column(conn: sqlite3.Connection) -> None:
@@ -491,9 +494,7 @@ def _migrate_exercise_sets_stretch_time_column(conn: sqlite3.Connection) -> None
     path with reps/weight forced to 0 and timeSeconds never read).
     reparse.py --stale re-extracts the real held seconds from the raw file
     once PARSER_SCHEMA_VERSION is bumped."""
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(exercise_sets)")}
-    if "time_seconds" not in columns:
-        conn.execute("ALTER TABLE exercise_sets ADD COLUMN time_seconds INTEGER")
+    _ensure_columns(conn, "exercise_sets", [("time_seconds", "INTEGER")])
 
 
 def _migrate_exercise_sets_cardio_columns(conn: sqlite3.Connection) -> None:
@@ -505,15 +506,16 @@ def _migrate_exercise_sets_cardio_columns(conn: sqlite3.Connection) -> None:
     any already-synced CARDIO session too, since it was necessarily parsed
     before this column existed — reparse.py --stale backfills those once
     PARSER_SCHEMA_VERSION is bumped)."""
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(exercise_sets)")}
-    if "started_at" not in columns:
-        conn.execute("ALTER TABLE exercise_sets ADD COLUMN started_at TEXT")
-    if "ended_at" not in columns:
-        conn.execute("ALTER TABLE exercise_sets ADD COLUMN ended_at TEXT")
-    if "avg_hr" not in columns:
-        conn.execute("ALTER TABLE exercise_sets ADD COLUMN avg_hr INTEGER")
-    if "max_hr" not in columns:
-        conn.execute("ALTER TABLE exercise_sets ADD COLUMN max_hr INTEGER")
+    _ensure_columns(
+        conn,
+        "exercise_sets",
+        [
+            ("started_at", "TEXT"),
+            ("ended_at", "TEXT"),
+            ("avg_hr", "INTEGER"),
+            ("max_hr", "INTEGER"),
+        ],
+    )
 
 
 def _migrate_ecg_analysis_advanced_columns(conn: sqlite3.Connection) -> None:
@@ -524,23 +526,23 @@ def _migrate_ecg_analysis_advanced_columns(conn: sqlite3.Connection) -> None:
     result yet" convention as every other field here; `analyze_ecg.py
     --stale` (ECG_ANALYSIS_SCHEMA_VERSION bumped alongside this) is what
     backfills them, not this migration."""
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(ecg_analysis)")}
-    new_columns = (
-        "kurtosis_sqi",
-        "b_sqi",
-        "dfa_alpha1",
-        "hrv_lf",
-        "hrv_hf",
-        "hrv_lf_hf",
-        "sample_entropy",
-        "csi",
-        "cvi",
-        "hrr_1min",
-        "hrr_2min",
+    _ensure_columns(
+        conn,
+        "ecg_analysis",
+        [
+            ("kurtosis_sqi", "REAL"),
+            ("b_sqi", "REAL"),
+            ("dfa_alpha1", "REAL"),
+            ("hrv_lf", "REAL"),
+            ("hrv_hf", "REAL"),
+            ("hrv_lf_hf", "REAL"),
+            ("sample_entropy", "REAL"),
+            ("csi", "REAL"),
+            ("cvi", "REAL"),
+            ("hrr_1min", "REAL"),
+            ("hrr_2min", "REAL"),
+        ],
     )
-    for column in new_columns:
-        if column not in columns:
-            conn.execute(f"ALTER TABLE ecg_analysis ADD COLUMN {column} REAL")  # noqa: S608
 
 
 def _migrate_ecg_analysis_hrr_discarded_columns(conn: sqlite3.Connection) -> None:
@@ -550,10 +552,11 @@ def _migrate_ecg_analysis_hrr_discarded_columns(conn: sqlite3.Connection) -> Non
     pattern as _migrate_ecg_analysis_advanced_columns above. NULL for
     existing rows (indistinguishable from 0/false until re-analyzed;
     analyze_ecg.py --stale backfills a real value)."""
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(ecg_analysis)")}
-    for column in ("hrr_1min_discarded", "hrr_2min_discarded"):
-        if column not in columns:
-            conn.execute(f"ALTER TABLE ecg_analysis ADD COLUMN {column} INTEGER")  # noqa: S608
+    _ensure_columns(
+        conn,
+        "ecg_analysis",
+        [("hrr_1min_discarded", "INTEGER"), ("hrr_2min_discarded", "INTEGER")],
+    )
 
 
 def _migrate_ecg_analysis_hr_zone_columns(conn: sqlite3.Connection) -> None:
@@ -561,22 +564,21 @@ def _migrate_ecg_analysis_hr_zone_columns(conn: sqlite3.Connection) -> None:
     compute_hr_zone_minutes) were added after ecg_analysis already existed
     in deployed databases — same pattern/reasoning as
     _migrate_ecg_analysis_advanced_columns above."""
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(ecg_analysis)")}
-    new_columns = (
-        "hr_zone1_min",
-        "hr_zone2_min",
-        "hr_zone3_min",
-        "hr_zone4_min",
-        "hr_zone5_min",
-        "hr_below_zone1_min",
+    # hr_zones_used_hrr (the 0/1/NULL flag from the %HRR-vs-%HRmax switch)
+    # rides the same call — one entry, INTEGER, in original ALTER order.
+    _ensure_columns(
+        conn,
+        "ecg_analysis",
+        [
+            ("hr_zone1_min", "REAL"),
+            ("hr_zone2_min", "REAL"),
+            ("hr_zone3_min", "REAL"),
+            ("hr_zone4_min", "REAL"),
+            ("hr_zone5_min", "REAL"),
+            ("hr_below_zone1_min", "REAL"),
+            ("hr_zones_used_hrr", "INTEGER"),
+        ],
     )
-    for column in new_columns:
-        if column not in columns:
-            conn.execute(f"ALTER TABLE ecg_analysis ADD COLUMN {column} REAL")  # noqa: S608
-    # 0/1/NULL flag, added alongside the %HRR-vs-%HRmax switch — separate
-    # ALTER since it's INTEGER, not REAL like the columns above.
-    if "hr_zones_used_hrr" not in columns:
-        conn.execute("ALTER TABLE ecg_analysis ADD COLUMN hr_zones_used_hrr INTEGER")
 
 
 def _migrate_ecg_analysis_calorie_columns(conn: sqlite3.Connection) -> None:
@@ -584,10 +586,11 @@ def _migrate_ecg_analysis_calorie_columns(conn: sqlite3.Connection) -> None:
     ecg_analysis.compute_calories_and_trimp) were added after ecg_analysis
     already existed in deployed databases — same pattern as
     _migrate_ecg_analysis_hr_zone_columns above."""
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(ecg_analysis)")}
-    for column in ("session_calories_ecg", "session_trimp_ecg"):
-        if column not in columns:
-            conn.execute(f"ALTER TABLE ecg_analysis ADD COLUMN {column} REAL")  # noqa: S608
+    _ensure_columns(
+        conn,
+        "ecg_analysis",
+        [("session_calories_ecg", "REAL"), ("session_trimp_ecg", "REAL")],
+    )
 
 
 def _migrate_parse_failures_table(conn: sqlite3.Connection) -> None:
@@ -928,18 +931,14 @@ def id_column(table: str) -> str:
     return _ID_COLUMNS.get(table, "id")
 
 
-# Internal alias, kept so existing call sites in this module read the same.
-_id_column = id_column
-
-
 def get_stored_content_hash(
     conn: sqlite3.Connection, record_id: str, table: str = "sessions"
 ) -> str | None:
     if table not in _RECORD_TABLES:
         raise ValueError(f"unknown table: {table}")
-    id_column = _id_column(table)
+    id_col = id_column(table)
     row = conn.execute(
-        f"SELECT content_hash FROM {table} WHERE {id_column} = ?",
+        f"SELECT content_hash FROM {table} WHERE {id_col} = ?",
         (record_id,),  # noqa: S608
     ).fetchone()
     return row[0] if row else None
@@ -1594,15 +1593,15 @@ def record_parse_failure(
     """
     if table not in _RECORD_TABLES:
         raise ValueError(f"unknown table: {table}")
-    id_column = _id_column(table)
+    id_col = id_column(table)
     conn.execute(
         f"""
-        INSERT INTO {table} ({id_column}, content_hash, raw_path, received_at, schema_version)
+        INSERT INTO {table} ({id_col}, content_hash, raw_path, received_at, schema_version)
         VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT({id_column}) DO UPDATE SET
+        ON CONFLICT({id_col}) DO UPDATE SET
             content_hash=excluded.content_hash, raw_path=excluded.raw_path,
             received_at=excluded.received_at, schema_version=excluded.schema_version
-        """,  # noqa: S608 — table/id_column are whitelist-checked above
+        """,  # noqa: S608 — table/id_col are whitelist-checked above
         (record_id, content_hash, raw_path, received_at, UNPARSED_SCHEMA_VERSION),
     )
     conn.execute(
@@ -1620,9 +1619,9 @@ def get_stale_records(conn: sqlite3.Connection, table: str = "sessions") -> list
     """Records in `table` whose schema_version is behind the current parser version."""
     if table not in _RECORD_TABLES:
         raise ValueError(f"unknown table: {table}")
-    id_column = _id_column(table)
+    id_col = id_column(table)
     rows = conn.execute(
-        f"SELECT {id_column}, raw_path FROM {table} WHERE schema_version < ?",  # noqa: S608
+        f"SELECT {id_col}, raw_path FROM {table} WHERE schema_version < ?",  # noqa: S608
         (PARSER_SCHEMA_VERSION,),
     ).fetchall()
     return [(r[0], r[1]) for r in rows]
@@ -1631,6 +1630,6 @@ def get_stale_records(conn: sqlite3.Connection, table: str = "sessions") -> list
 def get_all_records(conn: sqlite3.Connection, table: str = "sessions") -> list[tuple[str, str]]:
     if table not in _RECORD_TABLES:
         raise ValueError(f"unknown table: {table}")
-    id_column = _id_column(table)
-    rows = conn.execute(f"SELECT {id_column}, raw_path FROM {table}").fetchall()  # noqa: S608
+    id_col = id_column(table)
+    rows = conn.execute(f"SELECT {id_col}, raw_path FROM {table}").fetchall()  # noqa: S608
     return [(r[0], r[1]) for r in rows]

@@ -28,8 +28,11 @@ Operational playbook for MyGymApp Sync Server running on the self-hosted box.
   to localhost.
 - **How to roll back**: re-run the previous image tag; the raw file store and SQLite DB are
   untouched by a code rollback since they live in the bind-mounted `DATA_ROOT`.
-- **Pre-deploy checklist**: none currently — no migrations framework; schema changes are
-  handled by bumping `PARSER_SCHEMA_VERSION` and reparsing (see
+- **Pre-deploy checklist**: if the parser changed, bump `PARSER_SCHEMA_VERSION`
+  (`app/storage.py`) and plan a `python reparse.py --stale` (or `--all`) right after deploy;
+  if the ECG analysis math changed, bump `ECG_ANALYSIS_SCHEMA_VERSION` and plan a
+  `python analyze_ecg.py --stale`. Schema changes need no migrations framework — additive
+  `ALTER TABLE` migrations run automatically at startup (see
   [docs/sync-ingestion/SPEC.md](sync-ingestion/SPEC.md#schema_version-and-the-reparse-tool)).
 
 ## Common incidents
@@ -46,6 +49,48 @@ Operational playbook for MyGymApp Sync Server running on the self-hosted box.
   `python reparse.py --stale` (or `--all`) to catch up every affected row. No data was lost —
   the raw file was always there.
 - **Follow-up**: none required; this is expected, routine maintenance per the raw-first design.
+
+### ECG recordings stuck with `analyzed_at IS NULL`
+
+- **Symptom**: rows in `ecg_recordings` with `analyzed_at IS NULL` — the waveform stored fine
+  but the analysis never landed (check: `SELECT session_id FROM ecg_recordings WHERE
+  analyzed_at IS NULL`).
+- **Likely cause(s)**: a bug/edge case in the analysis math (logged, never fatal to the
+  upload), or recordings that landed before automatic analysis was wired in.
+- **Diagnosis steps**: check `DATA_ROOT/logs/` for `ECG analysis failed`; the raw file at
+  `DATA_ROOT/raw/<relPath>` is intact.
+- **Fix**: `python analyze_ecg.py --stale` (or `--all`, or specific session ids). Repeatable
+  any time — this is the designed retry path, not a workaround.
+
+### Repo exercises/routines rows missing after a restart
+
+- **Symptom**: `POST /v1/repo` returned 2xx but the `exercises`/`routines` SQL view has no
+  matching row.
+- **Likely cause(s)**: the repo parse worker's queue is in-memory — a restart drops whatever
+  hadn't been parsed yet (the raw file is safe; see
+  [docs/backup/OPTIMIZATION.md](backup/OPTIMIZATION.md) point 6).
+- **Fix**: `python reparse.py --type exercises --stale` and `--type routines --stale` (or
+  `--all`). On a clean shutdown `stop_worker()` drains the queue first, so this only bites
+  on crashes.
+
+### Bulk request rejected with 413
+
+- **Symptom**: `POST /v1/repo/bulk` returns `413`, or `POST /v1/repo/files` rejects `relPaths`.
+- **Likely cause(s)**: the batch exceeded `BULK_MAX_FILES` (500) entries or
+  `BULK_MAX_TOTAL_BYTES` (50 MB) — these are server-side soft caps, not a bug.
+- **Fix**: client-side — split into smaller batches. No server action needed.
+
+### Debugging notes (not incidents)
+
+- **Git log lags writes by ~3s**: commits are debounced, so a just-synced file won't appear
+  in `git log` until the burst settles. A 2xx means "fsynced", not "committed" — check the
+  working tree first, `git log` second.
+- **`raw/deleted/routines/_debug-backup-*.md` tombstones are expected**: one per press of the
+  phone's "Test backup verso il server" button (an upsert immediately followed by a delete).
+  Harmless — trim manually if they accumulate.
+- **Error-code cheat sheet**: `401` bad/missing bearer; `400` malformed envelope JSON or bad
+  `sleepQuality`; `422` hash mismatch or unsafe `relPath`; `404` restore of a non-live file;
+  `413` bulk caps (above); `500` only when the raw write itself failed (disk full/permissions).
 
 ## Escalation
 
