@@ -23,9 +23,11 @@ app.parsing/app.ingestion.
 
 import sqlite3
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from app.config import ASSUMED_BIRTH_YEAR, ASSUMED_HEIGHT_CM, ASSUMED_SEX
 from app.ecg_analysis import estimated_max_hr
 
 
@@ -143,21 +145,31 @@ def _mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
-def _session_rows_in_window(conn: sqlite3.Connection, start: str, end: str) -> list[sqlite3.Row]:
+@contextmanager
+def _row_dicts(conn: sqlite3.Connection):
+    """Temporarily yield rows as sqlite3.Row mappings, restoring the
+    connection's row_factory afterwards even if the caller raises."""
+    previous = conn.row_factory
     conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        """
-        SELECT date, resting_hr, hrr60s, vo2max, ecg_session_rmssd, sdnn,
-               cardiac_drift_bpm_min, poincare_ratio, afib_suspicion_episodes,
-               ecg_pause_count, ecg_pac_count, ecg_irregular_beats
-        FROM sessions
-        WHERE date >= ? AND date <= ? AND schema_version > 0
-        ORDER BY date
-        """,
-        (start, end),
-    ).fetchall()
-    conn.row_factory = None
-    return rows
+    try:
+        yield conn
+    finally:
+        conn.row_factory = previous
+
+
+def _session_rows_in_window(conn: sqlite3.Connection, start: str, end: str) -> list[sqlite3.Row]:
+    with _row_dicts(conn):
+        return conn.execute(
+            """
+            SELECT date, resting_hr, hrr60s, vo2max, ecg_session_rmssd, sdnn,
+                   cardiac_drift_bpm_min, poincare_ratio, afib_suspicion_episodes,
+                   ecg_pause_count, ecg_pac_count, ecg_irregular_beats
+            FROM sessions
+            WHERE date >= ? AND date <= ? AND schema_version > 0
+            ORDER BY date
+            """,
+            (start, end),
+        ).fetchall()
 
 
 def compute_cardio_trend_card(
@@ -336,11 +348,13 @@ def _monday_of(d) -> "datetime.date":
     return d - timedelta(days=d.weekday())
 
 
-def _weekly_median_buckets(
-    rows: list[tuple[str, float]], *, window_start, window_end
+def _weekly_buckets(
+    rows: list[tuple[str, float]], *, window_start, window_end, agg: str
 ) -> list[WeeklyBucket]:
-    """rows: (date_str, value) pairs already filtered per the caller's rules.
-    Buckets are Monday-keyed, spanning window_start..window_end."""
+    """Shared Monday-keyed bucketing behind _weekly_median_buckets (per-week
+    median — the average condition that week) and _weekly_sum_buckets
+    (per-week sum — how much happened that week, for cumulative counters).
+    rows: (date_str, value) pairs already filtered per the caller's rules."""
     buckets: dict[str, list[float]] = {}
     cursor = _monday_of(window_start)
     while cursor <= window_end:
@@ -353,10 +367,23 @@ def _weekly_median_buckets(
         if week_key in buckets:
             buckets[week_key].append(value)
 
+    if agg == "sum":
+        return [
+            WeeklyBucket(week_start=week, value=sum(values) if values else 0.0, n=len(values))
+            for week, values in sorted(buckets.items())
+        ]
     return [
         WeeklyBucket(week_start=week, value=median(values), n=len(values))
         for week, values in sorted(buckets.items())
     ]
+
+
+def _weekly_median_buckets(
+    rows: list[tuple[str, float]], *, window_start, window_end
+) -> list[WeeklyBucket]:
+    """rows: (date_str, value) pairs already filtered per the caller's rules.
+    Buckets are Monday-keyed, spanning window_start..window_end."""
+    return _weekly_buckets(rows, window_start=window_start, window_end=window_end, agg="median")
 
 
 def resting_hr_weekly_trend(
@@ -396,22 +423,7 @@ def _weekly_sum_buckets(
     instead of taking a median — used for cumulative rhythm counters
     (afib/pauses/premature/uneven) where "how many happened this week"
     is the meaningful value, not a per-session average."""
-    buckets: dict[str, list[float]] = {}
-    cursor = _monday_of(window_start)
-    while cursor <= window_end:
-        buckets[cursor.isoformat()] = []
-        cursor += timedelta(days=7)
-
-    for date_str, value in rows:
-        d = datetime.strptime(date_str, "%Y-%m-%d").date()
-        week_key = _monday_of(d).isoformat()
-        if week_key in buckets:
-            buckets[week_key].append(value)
-
-    return [
-        WeeklyBucket(week_start=week, value=sum(values) if values else 0.0, n=len(values))
-        for week, values in sorted(buckets.items())
-    ]
+    return _weekly_buckets(rows, window_start=window_start, window_end=window_end, agg="sum")
 
 
 # All 7 cardio metrics (§11.1) plus the 4 rhythm counters, as weekly time
@@ -447,14 +459,21 @@ def all_cardio_metrics_weekly_trend(
     today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
     window_start = today_date - timedelta(weeks=_CARDIO_SERIES_WEEKS)
 
+    # One SELECT for all 12 series (same window/table) instead of 12 —
+    # the dashboard calls this plus the ECG/HR-zone series per page load.
+    columns = ", ".join(column for _, column, _, _ in _CARDIO_SERIES_SPECS)
+    rows = conn.execute(
+        f"SELECT date, {columns} FROM sessions "  # noqa: S608 — columns from the fixed spec table above
+        "WHERE date >= ? AND date <= ? AND schema_version > 0 ORDER BY date",
+        (window_start.isoformat(), today_date.isoformat()),
+    ).fetchall()
     result: dict[str, list[WeeklyBucket]] = {}
-    for key, column, aggregation, positive_only in _CARDIO_SERIES_SPECS:
-        rows = conn.execute(
-            f"SELECT date, {column} FROM sessions "  # noqa: S608 — column from the fixed spec table above
-            "WHERE date >= ? AND date <= ? AND schema_version > 0 ORDER BY date",
-            (window_start.isoformat(), today_date.isoformat()),
-        ).fetchall()
-        filtered = [(d, v) for d, v in rows if v is not None and (not positive_only or v > 0)]
+    for idx, (key, _column, aggregation, positive_only) in enumerate(_CARDIO_SERIES_SPECS):
+        filtered = [
+            (date_str, values[idx])
+            for date_str, *values in rows
+            if values[idx] is not None and (not positive_only or values[idx] > 0)
+        ]
         bucket_fn = _weekly_sum_buckets if aggregation == "sum" else _weekly_median_buckets
         result[key] = bucket_fn(filtered, window_start=window_start, window_end=today_date)
 
@@ -495,17 +514,21 @@ def ecg_advanced_metrics_weekly_trend(
     today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
     window_start = today_date - timedelta(weeks=_ECG_ADVANCED_SERIES_WEEKS)
 
+    # One JOIN for all 5 series (same window/join) instead of 5.
+    columns = ", ".join(f"ecg_analysis.{column}" for _, column in _ECG_ADVANCED_SERIES_SPECS)
+    rows = conn.execute(
+        f"""SELECT sessions.date, {columns}
+            FROM ecg_analysis
+            JOIN sessions ON sessions.id = ecg_analysis.session_id
+            WHERE sessions.date >= ? AND sessions.date <= ?
+            ORDER BY sessions.date""",  # noqa: S608 — columns from the fixed spec table above
+        (window_start.isoformat(), today_date.isoformat()),
+    ).fetchall()
     result: dict[str, list[WeeklyBucket]] = {}
-    for key, column in _ECG_ADVANCED_SERIES_SPECS:
-        rows = conn.execute(
-            f"""SELECT sessions.date, ecg_analysis.{column}
-                FROM ecg_analysis
-                JOIN sessions ON sessions.id = ecg_analysis.session_id
-                WHERE sessions.date >= ? AND sessions.date <= ?
-                ORDER BY sessions.date""",  # noqa: S608 — column from the fixed spec table above
-            (window_start.isoformat(), today_date.isoformat()),
-        ).fetchall()
-        filtered = [(d, v) for d, v in rows if v is not None]
+    for idx, (key, _column) in enumerate(_ECG_ADVANCED_SERIES_SPECS):
+        filtered = [
+            (date_str, values[idx]) for date_str, *values in rows if values[idx] is not None
+        ]
         result[key] = _weekly_median_buckets(
             filtered, window_start=window_start, window_end=today_date
         )
@@ -543,17 +566,21 @@ def hr_zones_weekly_trend(
     today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
     window_start = today_date - timedelta(weeks=_HR_ZONE_SERIES_WEEKS)
 
+    # One JOIN for all 6 zone series (same window/join) instead of 6.
+    columns = ", ".join(f"ecg_analysis.{column}" for _, column in _HR_ZONE_COLUMNS)
+    rows = conn.execute(
+        f"""SELECT sessions.date, {columns}
+            FROM ecg_analysis
+            JOIN sessions ON sessions.id = ecg_analysis.session_id
+            WHERE sessions.date >= ? AND sessions.date <= ?
+            ORDER BY sessions.date""",  # noqa: S608 — columns from the fixed spec table above
+        (window_start.isoformat(), today_date.isoformat()),
+    ).fetchall()
     result: dict[str, list[WeeklyBucket]] = {}
-    for key, column in _HR_ZONE_COLUMNS:
-        rows = conn.execute(
-            f"""SELECT sessions.date, ecg_analysis.{column}
-                FROM ecg_analysis
-                JOIN sessions ON sessions.id = ecg_analysis.session_id
-                WHERE sessions.date >= ? AND sessions.date <= ?
-                ORDER BY sessions.date""",  # noqa: S608 — column from the fixed spec table above
-            (window_start.isoformat(), today_date.isoformat()),
-        ).fetchall()
-        filtered = [(d, v) for d, v in rows if v is not None]
+    for idx, (key, _column) in enumerate(_HR_ZONE_COLUMNS):
+        filtered = [
+            (date_str, values[idx]) for date_str, *values in rows if values[idx] is not None
+        ]
         result[key] = _weekly_sum_buckets(
             filtered, window_start=window_start, window_end=today_date
         )
@@ -575,12 +602,11 @@ def latest_readiness(conn: sqlite3.Connection) -> LatestReadiness | None:
     """Most recent daily readiness measurement (a separate phone-side flow
     from gym sessions — see docs/sync-ingestion/READINESS_SPEC.md), for a
     single 'how am I doing today' card rather than a trend."""
-    conn.row_factory = sqlite3.Row
-    row = conn.execute(
-        """SELECT measured_at, readiness, ln_rmssd, resting_hr, vo2max, recommendation
-           FROM readiness_events ORDER BY measured_at DESC LIMIT 1"""
-    ).fetchone()
-    conn.row_factory = None
+    with _row_dicts(conn):
+        row = conn.execute(
+            """SELECT measured_at, readiness, ln_rmssd, resting_hr, vo2max, recommendation
+               FROM readiness_events ORDER BY measured_at DESC LIMIT 1"""
+        ).fetchone()
     if row is None:
         return None
     return LatestReadiness(
@@ -591,6 +617,21 @@ def latest_readiness(conn: sqlite3.Connection) -> LatestReadiness | None:
         vo2max=row["vo2max"],
         recommendation=row["recommendation"],
     )
+
+
+def _readiness_resting_hr_in_window(
+    conn: sqlite3.Connection, *, window_start: str, as_of: str
+) -> list[int]:
+    """Shared trailing-window fetch behind resting_hr_7day_average/min:
+    morning resting-HR readings in [window_start, as_of], excluding the
+    phone's 0/"omitted means unmeasured" convention."""
+    rows = conn.execute(
+        """SELECT resting_hr FROM readiness_events
+           WHERE measured_at >= ? AND measured_at < date(?, '+1 day')
+             AND resting_hr IS NOT NULL AND resting_hr > 0""",
+        (window_start, as_of),
+    ).fetchall()
+    return [r[0] for r in rows]
 
 
 def resting_hr_7day_average(conn: sqlite3.Connection, *, as_of_date: str) -> float | None:
@@ -611,14 +652,9 @@ def resting_hr_7day_average(conn: sqlite3.Connection, *, as_of_date: str) -> flo
     as_of = datetime.strptime(as_of_date, "%Y-%m-%d").date()
     window_start = as_of - timedelta(days=6)  # 7-day window, inclusive of as_of
 
-    rows = conn.execute(
-        """SELECT resting_hr FROM readiness_events
-           WHERE substr(measured_at, 1, 10) >= ? AND substr(measured_at, 1, 10) <= ?
-             AND resting_hr IS NOT NULL AND resting_hr > 0""",
-        (window_start.isoformat(), as_of.isoformat()),
-    ).fetchall()
-
-    values = [r[0] for r in rows]
+    values = _readiness_resting_hr_in_window(
+        conn, window_start=window_start.isoformat(), as_of=as_of.isoformat()
+    )
     return (sum(values) / len(values)) if values else None
 
 
@@ -639,13 +675,9 @@ def resting_hr_7day_min(conn: sqlite3.Connection, *, as_of_date: str) -> int | N
     as_of = datetime.strptime(as_of_date, "%Y-%m-%d").date()
     window_start = as_of - timedelta(days=6)
 
-    readiness_rows = conn.execute(
-        """SELECT resting_hr FROM readiness_events
-           WHERE substr(measured_at, 1, 10) >= ? AND substr(measured_at, 1, 10) <= ?
-             AND resting_hr IS NOT NULL AND resting_hr > 0""",
-        (window_start.isoformat(), as_of.isoformat()),
-    ).fetchall()
-    values = [r[0] for r in readiness_rows]
+    values = _readiness_resting_hr_in_window(
+        conn, window_start=window_start.isoformat(), as_of=as_of.isoformat()
+    )
     if values:
         return min(values)
 
@@ -734,6 +766,19 @@ class ReadinessPoint:
     vo2max: float | None
 
 
+def _fetch_readiness_rows(conn: sqlite3.Connection, *, start: str, end: str) -> list[tuple]:
+    """Shared readiness_events window fetch (range on measured_at so the
+    idx_readiness_events_measured_at index applies) behind
+    readiness_daily_trend and readiness_current_week."""
+    return conn.execute(
+        """SELECT measured_at, readiness, ln_rmssd, resting_hr, vo2max
+           FROM readiness_events
+           WHERE measured_at >= ? AND measured_at < date(?, '+1 day')
+           ORDER BY measured_at""",
+        (start, end),
+    ).fetchall()
+
+
 def readiness_daily_trend(
     conn: sqlite3.Connection, *, days: int = 30, today: str | None = None
 ) -> list[ReadinessPoint]:
@@ -757,13 +802,7 @@ def readiness_daily_trend(
     today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
     window_start = today_date - timedelta(days=days)
 
-    rows = conn.execute(
-        """SELECT measured_at, readiness, ln_rmssd, resting_hr, vo2max
-           FROM readiness_events
-           WHERE substr(measured_at, 1, 10) >= ? AND substr(measured_at, 1, 10) <= ?
-           ORDER BY measured_at""",
-        (window_start.isoformat(), today_date.isoformat()),
-    ).fetchall()
+    rows = _fetch_readiness_rows(conn, start=window_start.isoformat(), end=today_date.isoformat())
 
     return [
         ReadinessPoint(
@@ -793,13 +832,7 @@ def readiness_current_week(
     monday = today_date - timedelta(days=today_date.weekday())
     sunday = monday + timedelta(days=6)
 
-    rows = conn.execute(
-        """SELECT measured_at, readiness, ln_rmssd, resting_hr, vo2max
-           FROM readiness_events
-           WHERE substr(measured_at, 1, 10) >= ? AND substr(measured_at, 1, 10) <= ?
-           ORDER BY measured_at""",
-        (monday.isoformat(), sunday.isoformat()),
-    ).fetchall()
+    rows = _fetch_readiness_rows(conn, start=monday.isoformat(), end=sunday.isoformat())
 
     # ORDER BY measured_at means the last row seen for a given day wins.
     by_day: dict[str, tuple] = {}
@@ -851,8 +884,13 @@ def vo2max_4week_trend(conn: sqlite3.Connection, *, today: str | None = None) ->
         cursor += timedelta(weeks=4)
 
     bucket_starts = sorted(datetime.strptime(k, "%Y-%m-%d").date() for k in buckets)
+    # Several sessions often share a date; the estimate depends only on the
+    # date, so memoize per date instead of re-querying per row.
+    _vo2max_cache: dict[str, float | None] = {}
     for date_str, phone_vo2max in rows:
-        vo2max = estimated_vo2max(conn, as_of_date=date_str) or phone_vo2max
+        if date_str not in _vo2max_cache:
+            _vo2max_cache[date_str] = estimated_vo2max(conn, as_of_date=date_str)
+        vo2max = _vo2max_cache[date_str] or phone_vo2max
         if vo2max is None or vo2max <= 0:
             continue
         d = datetime.strptime(date_str, "%Y-%m-%d").date()
@@ -894,7 +932,7 @@ def steps_avg_per_day_weekly_trend(
 
     rows = conn.execute(
         """SELECT substr(measured_at, 1, 10), steps_avg_per_day FROM readiness_events
-           WHERE substr(measured_at, 1, 10) >= ? AND substr(measured_at, 1, 10) <= ?
+           WHERE measured_at >= ? AND measured_at < date(?, '+1 day')
            ORDER BY measured_at""",
         (window_start.isoformat(), today_date.isoformat()),
     ).fetchall()
@@ -1097,10 +1135,13 @@ def recent_heaviest_set_pr(
         return None
 
     # Restrict to the most recent `limit_sessions` distinct sessions (rows
-    # above may include multiple sets per session).
+    # above may include multiple sets per session). Set for O(1) membership,
+    # list to preserve recency order.
     seen_sessions: list[str] = []
+    seen_set: set[str] = set()
     for _reps, _weight, session_id, _date in rows:
-        if session_id not in seen_sessions:
+        if session_id not in seen_set:
+            seen_set.add(session_id)
             seen_sessions.append(session_id)
         if len(seen_sessions) > limit_sessions:
             break
@@ -1464,11 +1505,12 @@ def _acwr_daily_trend(
     while cursor <= today_date:
         acute_start = cursor - timedelta(days=7)
         chronic_start = cursor - timedelta(days=28)
+        cursor_iso = cursor.isoformat()
+        acute_start_iso = acute_start.isoformat()
+        chronic_start_iso = chronic_start.isoformat()
 
-        acute_values = [v for d, v in rows if acute_start.isoformat() <= d <= cursor.isoformat()]
-        chronic_values = [
-            v for d, v in rows if chronic_start.isoformat() <= d <= cursor.isoformat()
-        ]
+        acute_values = [v for d, v in rows if acute_start_iso <= d <= cursor_iso]
+        chronic_values = [v for d, v in rows if chronic_start_iso <= d <= cursor_iso]
 
         acute_load = _mean(acute_values)
         chronic_load = _mean(chronic_values)
@@ -1476,7 +1518,7 @@ def _acwr_daily_trend(
 
         points.append(
             AcwrPoint(
-                date=cursor.isoformat(),
+                date=cursor_iso,
                 acute_load=acute_load,
                 chronic_load=chronic_load,
                 acwr=acwr,
@@ -1835,8 +1877,6 @@ def estimated_maintenance_calories(
     recent sessions -> eat=0), but BMR has no reasonable default and
     without it the whole estimate is meaningless.
     """
-    from app.config import ASSUMED_BIRTH_YEAR, ASSUMED_HEIGHT_CM, ASSUMED_SEX
-
     today_date = datetime.strptime(today, "%Y-%m-%d").date() if today else datetime.now(UTC).date()
 
     weight_row = conn.execute(
@@ -1862,7 +1902,7 @@ def estimated_maintenance_calories(
 
     steps_row = conn.execute(
         "SELECT steps_avg_per_day FROM readiness_events WHERE steps_avg_per_day IS NOT NULL "
-        "AND substr(measured_at, 1, 10) <= ? ORDER BY measured_at DESC LIMIT 1",
+        "AND measured_at < date(?, '+1 day') ORDER BY measured_at DESC LIMIT 1",
         (today_date.isoformat(),),
     ).fetchone()
     steps_avg_per_day = steps_row[0] if steps_row else None

@@ -26,7 +26,6 @@ from app.analysis import (
     AcwrTrend,
     CardioTrendCard,
     acwr_daily_trend,
-    all_time_tonnage_pr,
     compute_acwr_trend,
     compute_cardio_trend_card,
     compute_rpe_acwr_trend,
@@ -144,16 +143,37 @@ def _new_prs_this_week(
     ).fetchall()
 
     names = {e.exercise_id: e.exercise_name for e in list_exercises(conn)}
+    # One GROUP BY for every all-time best instead of one query per exercise.
+    all_time_rows = conn.execute(
+        """
+        SELECT exercise_id, MAX(reps * weight)
+        FROM exercise_sets
+        WHERE exclude_from_tonnage = 0 AND reps > 0 AND weight > 0
+        GROUP BY exercise_id
+        """
+    ).fetchall()
+    all_time_best = {exercise_id: best for exercise_id, best in all_time_rows}
+    # (reps, weight) of the all-time best row per exercise, for the label.
+    # Same reps*weight arithmetic on both sides (see comment below), so exact
+    # float equality is safe — no independent computation to drift.
     new_prs = []
     for exercise_id, week_best in rows:
-        pr = all_time_tonnage_pr(conn, exercise_id)
-        # Both sides come from the same reps*weight arithmetic over the same
-        # underlying rows (the all-time PR row is necessarily one of this
-        # week's rows when it was set this week), so exact float equality is
-        # safe here — no independent computation on either side to drift.
-        if pr is not None and week_best == pr.reps * pr.weight:
+        best = all_time_best.get(exercise_id)
+        if best is not None and week_best == best:
+            detail = conn.execute(
+                """
+                SELECT reps, weight FROM exercise_sets
+                WHERE exercise_id = ? AND exclude_from_tonnage = 0
+                  AND reps > 0 AND weight > 0
+                ORDER BY (reps * weight) DESC LIMIT 1
+                """,
+                (exercise_id,),
+            ).fetchone()
+            if detail is None:
+                continue
+            reps, weight = detail
             label = names.get(exercise_id) or exercise_id
-            new_prs.append(f"Nuovo PR: {label} ({pr.weight:.1f}kg x {pr.reps})")
+            new_prs.append(f"Nuovo PR: {label} ({weight:.1f}kg x {reps})")
     return new_prs
 
 

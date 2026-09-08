@@ -3,9 +3,11 @@
 Status: **transport implemented both sides** (server: commit `cdfb74f`, "feat(ecg): add
 POST /v1/ecg raw waveform ingestion endpoint"). A manual debug send button exists on the
 phone (`OptionsViewModel.sendDebugEcg()`, see point 5 below) for exercising this
-round-trip live without a full workout session. **Analysis is not implemented yet** — raw
-waveforms are landing in `ecg_recordings` with `analyzed_at IS NULL` and nothing is
-consuming them. See `ECG_ANALYSIS_HANDOFF.md` for the required next step.
+round-trip live without a full workout session. **Analysis is implemented** —
+`POST /v1/ecg` runs `app/ecg_analysis.py` synchronously after the header parses
+(never failing the upload; failures stay in the `analyzed_at IS NULL` queue),
+and `analyze_ecg.py` drains that queue for the backlog / re-analysis.
+See `ECG_ANALYSIS_HANDOFF.md` for the formulas.
 
 Source of truth for the phone-side implementation this spec describes: `docs/SYNC.md` in
 the `MyGymApp` repo (not this one), section "Fourth record type: raw ECG"

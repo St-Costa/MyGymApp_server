@@ -17,7 +17,7 @@ Before considering a task done, run through this. It consolidates checks that ar
 ## Quality gates
 
 - [ ] Lint, format, and type-check commands from `CLAUDE.md` run clean
-- [ ] Pre-commit hooks (if configured, see [.pre-commit-config.yaml](../../.pre-commit-config.yaml) / [lefthook.yml](../../lefthook.yml)) pass
+- [ ] Pre-commit hooks (if configured, see [lefthook.yml](../../lefthook.yml)) pass
 
 ## Documentation
 

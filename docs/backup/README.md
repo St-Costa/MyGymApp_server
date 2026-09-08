@@ -4,10 +4,11 @@
 
 Two things, added together (design brief: `docs/backup-server-brief.md`):
 
-1. **`data/raw/` is a git repository.** Every successful ingest — a session,
-   a readiness event, a scale weigh-in, an ECG recording, or a repo file —
-   makes exactly one commit. Any prior state, and any accidentally deleted
-   file, is recoverable from history.
+1. **`data/raw/` is a git repository.** Successful ingests are committed in
+   debounced bursts (one background commit ~3s after a burst settles — see
+   [OPTIMIZATION.md](OPTIMIZATION.md) point 1), so any prior state, and any
+   accidentally deleted file, is recoverable from history. A 2xx means "raw
+   bytes fsynced + hash verified", not "committed".
 2. **A fifth record type: "repo files"** (`exercises/*.md`, `routines/*.md`)
    via `POST /v1/repo`, plus **restore endpoints** (`GET /v1/manifest`,
    `GET /v1/file`) the phone uses to pull missing/changed files back down
@@ -92,8 +93,11 @@ debug level and skipped). Expect one tombstone per button press; harmless.
 }
 ```
 
-Computed per request by walking `data/raw/` and hashing each file — fast
-enough for a few hundred small files.
+Cached and served O(1) when nothing changed since the last call (keyed on
+`git rev-parse HEAD` + a write-generation counter) — see
+[OPTIMIZATION.md](OPTIMIZATION.md) point 4. The first manifest after a burst
+still pays one full walk + hash of every file, which is fast enough for a
+few hundred small files.
 
 ### `GET /v1/file?relPath=<relPath>`
 

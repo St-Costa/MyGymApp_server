@@ -30,6 +30,7 @@ existing algorithm exactly, not implement a generic textbook statistic.
 
 import math
 import warnings
+from bisect import bisect_left as _bisect_left
 from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -564,18 +565,9 @@ def compute_b_sqi(samples: list[int], sample_rate: int, primary_peaks: list[int]
     return confirmed / len(primary_peaks)
 
 
-def _bisect_left(sorted_values: list[int], target: int) -> int:
-    """Standard binary search for the leftmost insertion point — avoids
-    pulling in the stdlib `bisect` module for one call site, but behaves
-    identically to `bisect.bisect_left`."""
-    lo, hi = 0, len(sorted_values)
-    while lo < hi:
-        mid = (lo + hi) // 2
-        if sorted_values[mid] < target:
-            lo = mid + 1
-        else:
-            hi = mid
-    return lo
+# `_bisect_left` is `bisect.bisect_left` from the stdlib, imported above —
+# the previous hand-rolled copy behaved identically; the stdlib version is
+# C-accelerated and one less thing to maintain.
 
 
 @dataclass

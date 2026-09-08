@@ -113,6 +113,17 @@ def write_raw_file(raw_bytes: bytes, rel_path: str) -> Path:
         f.write(raw_bytes)
         f.flush()
         os.fsync(f.fileno())
+    # Fsync the parent dir so the new entry itself is durable on crash
+    # (file-fsync alone doesn't guarantee the directory entry on ext4).
+    try:
+        dir_fd = os.open(target.parent, os.O_DIRECTORY)
+    except OSError:
+        pass
+    else:
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
 
     return target
 
@@ -239,6 +250,20 @@ def ingest_scale_weighin(
     )
 
 
+def _session_anchor(
+    conn: sqlite3.Connection, session_id: str, received_at: str
+) -> tuple[str, float | None]:
+    """Single shared `sessions` lookup behind resting_hr_for_hr_zones and
+    weight_kg_for_calorie_recalc: returns (anchor_date, session_resting_hr).
+    One query instead of two when both callers run for the same session."""
+    row = conn.execute(
+        "SELECT date, resting_hr FROM sessions WHERE id = ?", (session_id,)
+    ).fetchone()
+    anchor_date = row[0] if row and row[0] else received_at[:10]
+    session_resting_hr = float(row[1]) if row and row[1] else None
+    return anchor_date, session_resting_hr
+
+
 def resting_hr_for_hr_zones(
     conn: sqlite3.Connection, session_id: str, received_at: str
 ) -> float | None:
@@ -265,17 +290,14 @@ def resting_hr_for_hr_zones(
     all (which forces the %HRmax fallback in compute_hr_zone_minutes and
     skips the calorie/TRIMP recompute entirely). 0 (the phone's "omitted
     means unmeasured" convention) is excluded, same as everywhere else."""
-    row = conn.execute(
-        "SELECT date, resting_hr FROM sessions WHERE id = ?", (session_id,)
-    ).fetchone()
-    anchor_date = row[0] if row and row[0] else received_at[:10]
+    anchor_date, session_resting_hr = _session_anchor(conn, session_id, received_at)
 
     resting_hr = resting_hr_7day_average(conn, as_of_date=anchor_date)
     if resting_hr is not None:
         return resting_hr
 
-    if row and row[1]:
-        return float(row[1])
+    if session_resting_hr:
+        return session_resting_hr
     return None
 
 
@@ -287,9 +309,23 @@ def weight_kg_for_calorie_recalc(
     recompute's weight and resting-HR inputs are anchored to the same
     session date for consistency, rather than picking two different
     reference points."""
-    row = conn.execute("SELECT date FROM sessions WHERE id = ?", (session_id,)).fetchone()
-    anchor_date = row[0] if row and row[0] else received_at[:10]
+    anchor_date, _ = _session_anchor(conn, session_id, received_at)
     return nearest_scale_weight_kg(conn, as_of_date=anchor_date)
+
+
+def hr_and_weight_for_ecg(
+    conn: sqlite3.Connection, session_id: str, received_at: str
+) -> tuple[float | None, float | None]:
+    """Combined resting-HR + weight lookup for one ECG recording: a single
+    shared `sessions` anchor lookup, then the readiness-average and the scale
+    lookup. Same values resting_hr_for_hr_zones + weight_kg_for_calorie_recalc
+    would return individually, with one fewer session-row query."""
+    anchor_date, session_resting_hr = _session_anchor(conn, session_id, received_at)
+    resting_hr = resting_hr_7day_average(conn, as_of_date=anchor_date)
+    if resting_hr is None:
+        resting_hr = session_resting_hr
+    weight_kg = nearest_scale_weight_kg(conn, as_of_date=anchor_date)
+    return resting_hr, weight_kg
 
 
 def ingest_ecg(
@@ -388,8 +424,7 @@ def ingest_ecg(
         # happens here.
         try:
             samples = read_ecg_samples(raw_bytes)
-            resting_hr = resting_hr_for_hr_zones(conn, envelope.record_id, received_at)
-            weight_kg = weight_kg_for_calorie_recalc(conn, envelope.record_id, received_at)
+            resting_hr, weight_kg = hr_and_weight_for_ecg(conn, envelope.record_id, received_at)
             result = analyze_ecg_recording(
                 envelope.record_id,
                 samples,

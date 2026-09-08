@@ -157,6 +157,13 @@ without a reason, and update it when a blocked item becomes unblocked or a new o
 
 <!-- Point to docs/adr/ for detailed decisions. Use this section only for a short map of major components and how they talk to each other. -->
 
+Module map: `routes.py` (thin HTTP adapters) → `ingestion.py` (hash, raw write,
+idempotency) → `parsing.py` (bytes → dataclasses) + `storage.py` (SQLite upserts,
+re-derivable via `reparse.py`); repo files go `routes.py` → `repo.py` (fsync +
+manifest/tarball) → `repo_worker.py` (background SQL-view parse) + `git_backup.py`
+(debounced committer, lifecycle in `main.py`); `gui.py` and `weekly_report.py` are
+read-only consumers of `analysis.py` / `ecg_analysis.py`, never of the ingest path.
+
 See [docs/adr/](docs/adr/) for the reasoning behind major architectural decisions.
 
 ## Documentation

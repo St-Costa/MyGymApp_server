@@ -274,13 +274,11 @@ def parse_exercise_file(raw_bytes: bytes) -> ParsedExercise:
     `_`-prefixed basenames (the phone's debug test file) are handled one
     layer up (app.repo / reparse.py early-return before calling this), not
     here — this function has no access to the path."""
-    data = _load_repo_frontmatter(raw_bytes)
+    data, body = _load_repo_frontmatter(raw_bytes)
 
     exercise_id = data.get("id")
     if not exercise_id or not isinstance(exercise_id, str):
         raise SessionParseError("exercise frontmatter missing required 'id' field")
-
-    _, body = _split_frontmatter(raw_bytes.decode("utf-8"))
 
     return ParsedExercise(
         id=exercise_id,
@@ -301,7 +299,7 @@ def parse_routine_file(raw_bytes: bytes) -> ParsedRoutine:
     Task 4). YAML shape: app repo docs/STORAGE.md §Routine — a flat header
     plus an `exercises:` list that becomes `routine_exercises` child rows.
     Same tolerance as above; only `id` is required."""
-    data = _load_repo_frontmatter(raw_bytes)
+    data, _body = _load_repo_frontmatter(raw_bytes)
 
     routine_id = data.get("id")
     if not routine_id or not isinstance(routine_id, str):
@@ -330,19 +328,20 @@ def parse_routine_file(raw_bytes: bytes) -> ParsedRoutine:
     )
 
 
-def _load_repo_frontmatter(raw_bytes: bytes) -> dict:
+def _load_repo_frontmatter(raw_bytes: bytes) -> tuple[dict, str]:
     """Shared front-half of parse_exercise_file/parse_routine_file: decode,
     split the `---` frontmatter, parse it with the same string-id-preserving
-    loader the other parsers use, and assert it's a mapping."""
+    loader the other parsers use, and assert it's a mapping. Returns
+    (frontmatter mapping, body) so callers don't decode+split twice."""
     text = raw_bytes.decode("utf-8")
-    frontmatter, _body = _split_frontmatter(text)
+    frontmatter, body = _split_frontmatter(text)
     try:
         data = yaml.load(frontmatter, Loader=_StringIdLoader) or {}
     except yaml.YAMLError as exc:
         raise SessionParseError(f"invalid YAML frontmatter: {exc}") from exc
     if not isinstance(data, dict):
         raise SessionParseError("frontmatter did not parse to a mapping")
-    return data
+    return data, body
 
 
 _ECG_MAGIC = b"MYGMECG1"
