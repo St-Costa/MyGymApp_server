@@ -169,6 +169,14 @@ def _current_week_sort_key(box: dict) -> tuple:
     return (tier, tuple(sorted((vol_rank, freq_rank))), box["bodypart"])
 
 
+def _stretch_sort_key(box: dict) -> tuple:
+    """Ordina i box Stretch analysis come quelli Volume+Frequenza: prima i
+    GREEN, poi gli altri. Lo stretch ha un solo semaforo (volume RED |
+    GREEN, vedi _stretch_volume_semaphore in app.analysis) quindi non ci
+    sono tier intermedi — a parita' di colore vale l'alfabetico."""
+    return (_SEMAPHORE_RANK.get(box["volume_color"], 3), box["bodypart"])
+
+
 # Dot color per OverloadMetricVerdict.verdict value, for the
 # progressive-overload table cells — per user decision: growing green,
 # stalled gray, fast RED (same severity as dropping — an implausible jump
@@ -236,7 +244,8 @@ def _exercise_analysis_context(conn, today: str | None) -> dict:
 
     # Same "most recent week, only bodyparts actually stretched this week"
     # shape as current_week above. Minutes, not seconds, per user request —
-    # rounded to one decimal so a 90 s hold reads as 1.5, not 2.
+    # rounded to one decimal so a 90 s hold reads as 1.5, not 2. Ordinati
+    # per semaforo come i box Volume+Frequenza (vedi _stretch_sort_key).
     stretch_current_week = [
         {
             "bodypart": bodypart,
@@ -247,6 +256,7 @@ def _exercise_analysis_context(conn, today: str | None) -> dict:
         for bodypart, weeks in sorted(stretch_trend.items())
         if weeks and weeks[-1].total_seconds > 0
     ]
+    stretch_current_week.sort(key=_stretch_sort_key)
 
     exercise_names = {e.exercise_id: e.exercise_name or e.exercise_id for e in exercises}
     overload_rows = []
