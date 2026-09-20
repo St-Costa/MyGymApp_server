@@ -14,12 +14,16 @@ spec's "no speculative generalization" guidance) rather than a single
 generic "record ingestion" route.
 """
 
+import hashlib
 import json
 import logging
+import os
 import secrets
 import sqlite3
+import tempfile
 from collections.abc import Callable
 from dataclasses import asdict
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -42,13 +46,11 @@ from app.config import DB_PATH
 from app.git_backup import request_commit
 from app.ingestion import (
     Envelope,
-    HashMismatchError,
     IngestResult,
     ingest_ecg,
     ingest_readiness,
     ingest_scale_weighin,
     ingest_session,
-    verify_content_hash,
 )
 from app.repo import (
     BULK_MAX_FILES,
@@ -69,6 +71,31 @@ from app.storage import connect
 logger = logging.getLogger("mygymapp.routes")
 
 router = APIRouter()
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Streaming upload helper — avoids buffering large files in memory.
+# Writes the UploadFile to a temp file in 1MB chunks while computing SHA-256
+# incrementally. Returns (temp_path, computed_sha256_hex).
+# Caller is responsible for deleting the temp file after use (via try/finally).
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def _stream_upload_to_temp(file: UploadFile) -> tuple[Path, str]:
+    """Stream an UploadFile to a temp file, computing SHA-256 incrementally.
+    Returns (temp_file_path, 'sha256:<hex>'). The temp file is NOT deleted —
+    caller must clean it up in a finally block."""
+    hasher = hashlib.sha256()
+    temp_fd, temp_path_str = tempfile.mkstemp(prefix="mygymapp-upload-", suffix=".tmp")
+    try:
+        with os.fdopen(temp_fd, "wb") as temp_file:
+            while chunk := await file.read(1024 * 1024):  # 1MB chunks
+                hasher.update(chunk)
+                temp_file.write(chunk)
+    except Exception:
+        os.unlink(temp_path_str)
+        raise
+    return Path(temp_path_str), "sha256:" + hasher.hexdigest()
+
 
 # app.analysis.round_floats, aliased for brevity at the call sites below —
 # every /v1/analysis/* handler runs its asdict()'d result through this so the
@@ -124,7 +151,7 @@ async def _handle_ingest(
     file: UploadFile,
     id_field: str,
     response_id_key: str,
-    ingest_fn: Callable[[sqlite3.Connection, Envelope, bytes], IngestResult],
+    ingest_fn: Callable[[sqlite3.Connection, Envelope, bytes | None], IngestResult],
     commit_count_key: str,
     extra_required_fields: tuple[str, ...] = (),
     include_steps: bool = False,
@@ -177,37 +204,198 @@ async def _handle_ingest(
         sleep_quality=sleep_quality,
     )
 
-    raw_bytes = await file.read()
-
-    # Step 3: hash verification. Must happen before any write.
+    # Step 3: stream upload to temp file while computing SHA-256 incrementally.
+    # This avoids buffering large files entirely in RAM (O(batch) -> O(chunk)).
+    # Hash is verified against envelope.contentHash before any write.
+    temp_path = None
     try:
-        verify_content_hash(raw_bytes, env)
-    except HashMismatchError as exc:
-        raise HTTPException(status_code=422, detail={"error": str(exc)}) from exc
+        temp_path, computed_hash = await _stream_upload_to_temp(file)
+        if computed_hash != env.content_hash:
+            expected = env.content_hash
+            msg = f"contentHash mismatch: envelope said {expected}, computed {computed_hash}"
+            raise HTTPException(status_code=422, detail={"error": msg})
 
-    # Steps 4-7: idempotency check, raw write, parse-and-upsert, response.
+        # Steps 4-7: idempotency check, raw write (streamed), parse-and-upsert, response.
+        try:
+            with connect(DB_PATH) as conn:
+                result = ingest_fn(conn, env, src_path=temp_path)
+        except OSError as exc:
+            # Step 5 failure mode: disk full, permissions, etc. Must not proceed
+            # to step 6 or record partial state — connect()'s rollback-on-error
+            # already guarantees no DB write lands from this request.
+            logger.exception("failed to write raw file for %s", env.record_id)
+            raise HTTPException(
+                status_code=500, detail={"error": f"failed to persist raw file: {exc}"}
+            ) from exc
+
+        # docs/backup/OPTIMIZATION.md point 1: the raw file is fsynced by now
+        # (that's what "stored" means to the client, and always has been — the
+        # 2xx never waited on the git commit conceptually). Hand the burst to
+        # the debounced committer instead of forking `git` here; it folds this
+        # write into one commit for the whole burst after ~3s of write silence.
+        # A "duplicate" wrote nothing, so there's nothing to commit. The staged
+        # path comes from the result (not the envelope) so ECG's `.gunzip-failed`
+        # fallback stages the file actually written.
+        if result.status != "duplicate":
+            paths = [result.stored_rel_path] if result.stored_rel_path else []
+            request_commit(paths=paths, **{commit_count_key: 1})
+
+        return JSONResponse({response_id_key: env.record_id, "status": result.status})
+    finally:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink()
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Bulk ingest helper — processes N records in one request, one debounced commit.
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+async def _handle_bulk_ingest(
+    request: Request,
+    *,
+    id_field: str,
+    response_id_key: str,
+    ingest_fn: Callable[[sqlite3.Connection, Envelope, bytes | None], IngestResult],
+    commit_count_key: str,
+    extra_required_fields: tuple[str, ...] = (),
+) -> JSONResponse:
+    """Handle multipart bulk ingest for sessions/ECG.
+
+    multipart/form-data:
+      - part `envelope` (application/json): JSON array of envelopes
+      - parts `file_0`, `file_1`, …: raw bytes for each entry
+
+    Returns per-entry results with status or error. Uses a single debounced
+    commit for all successful writes.
+    """
+    from app.repo import BULK_MAX_FILES, BULK_MAX_TOTAL_BYTES
+
+    form = await request.form()
+    envelope_raw = form.get("envelope")
+    if not isinstance(envelope_raw, str):
+        raise HTTPException(status_code=422, detail={"error": "missing 'envelope' JSON array part"})
+    try:
+        envelopes = json.loads(envelope_raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=400, detail={"error": f"malformed envelope JSON: {exc}"}
+        ) from exc
+    if not isinstance(envelopes, list):
+        raise HTTPException(status_code=422, detail={"error": "'envelope' must be a JSON array"})
+    if len(envelopes) > BULK_MAX_FILES:
+        raise HTTPException(
+            status_code=413,
+            detail={"error": f"too many entries: {len(envelopes)} > {BULK_MAX_FILES}"},
+        )
+
+    # Step 2: validate all envelopes first
+    validated: list[Envelope] = []
+    temp_paths: list[Path | None] = []
+    total_bytes = 0
+
+    for i, env_data in enumerate(envelopes):
+        # Validate envelope
+        missing = [
+            f
+            for f in (id_field, *REQUIRED_ENVELOPE_FIELDS, *extra_required_fields)
+            if not env_data.get(f)
+        ]
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": f"entry {i} missing required field(s): {', '.join(missing)}"},
+            )
+        if not env_data["contentHash"].startswith("sha256:"):
+            msg = f"entry {i} contentHash must be prefixed with 'sha256:'"
+            raise HTTPException(status_code=400, detail={"error": msg})
+
+        env = Envelope(
+            record_id=env_data[id_field],
+            rel_path=env_data["relPath"],
+            content_hash=env_data["contentHash"],
+            app_version=env_data["appVersion"],
+            client_sent_at=env_data["clientSentAt"],
+            steps_avg_per_day=env_data.get("stepsAvgPerDay"),
+            steps_days_spanned=env_data.get("stepsDaysSpanned"),
+            sleep_quality=env_data.get("sleepQuality"),
+        )
+        validated.append(env)
+        temp_paths.append(None)  # placeholder
+
+    # Step 3: stream all files to temp files while computing hashes
+    # We collect per-entry errors for hash mismatches instead of failing
+    # the whole request
+    for i, env in enumerate(validated):
+        part = form.get(f"file_{i}")
+        if part is None or isinstance(part, str):
+            # Missing file part is a request-level error (invalid multipart)
+            for p in temp_paths:
+                if p and p.exists():
+                    p.unlink()
+            raise HTTPException(
+                status_code=422, detail={"error": f"missing file part for entry {i}"}
+            )
+        temp_path, computed_hash = await _stream_upload_to_temp(part)
+        temp_paths[i] = temp_path
+        if computed_hash != env.content_hash:
+            # Record the error for this entry, but continue processing others
+            # We'll handle this in the results phase
+            temp_path.unlink()
+            temp_paths[i] = None
+            validated[i] = None  # Mark as failed
+            continue
+        total_bytes += temp_path.stat().st_size
+        if total_bytes > BULK_MAX_TOTAL_BYTES:
+            for p in temp_paths:
+                if p and p.exists():
+                    p.unlink()
+            raise HTTPException(
+                status_code=413,
+                detail={"error": f"batch exceeds {BULK_MAX_TOTAL_BYTES} bytes"},
+            )
+
+    # Steps 4-7: process each entry
+    results: list[dict] = []
+    all_paths: list[str] = []
+
     try:
         with connect(DB_PATH) as conn:
-            result = ingest_fn(conn, env, raw_bytes)
-    except OSError as exc:
-        # Step 5 failure mode: disk full, permissions, etc. Must not proceed
-        # to step 6 or record partial state — connect()'s rollback-on-error
-        # already guarantees no DB write lands from this request.
-        logger.exception("failed to write raw file for %s", env.record_id)
-        raise HTTPException(
-            status_code=500, detail={"error": f"failed to persist raw file: {exc}"}
-        ) from exc
+            for i, (env, temp_path) in enumerate(zip(validated, temp_paths, strict=True)):
+                # Hash mismatch entries were marked as None
+                if env is None:
+                    expected = envelopes[i]["contentHash"]
+                    msg = f"contentHash mismatch: envelope said {expected}, computed differs"
+                    results.append(
+                        {
+                            response_id_key: envelopes[i][id_field],
+                            "status": "error",
+                            "error": msg,
+                        }
+                    )
+                    continue
+                try:
+                    result = ingest_fn(conn, env, src_path=temp_path)
+                    results.append(
+                        {response_id_key: env.record_id, "status": result.status}
+                        | ({"error": result.error} if getattr(result, "error", None) else {})
+                    )
+                    if result.status != "duplicate" and result.stored_rel_path:
+                        all_paths.append(result.stored_rel_path)
+                except Exception as exc:
+                    logger.exception("bulk entry %d failed for %s", i, env.record_id)
+                    results.append(
+                        {response_id_key: env.record_id, "status": "error", "error": str(exc)}
+                    )
 
-    # docs/backup/OPTIMIZATION.md point 1: the raw file is fsynced by now
-    # (that's what "stored" means to the client, and always has been — the
-    # 2xx never waited on the git commit conceptually). Hand the burst to
-    # the debounced committer instead of forking `git` here; it folds this
-    # write into one commit for the whole burst after ~3s of write silence.
-    # A "duplicate" wrote nothing, so there's nothing to commit.
-    if result.status != "duplicate":
-        request_commit(**{commit_count_key: 1})
+        if all_paths:
+            request_commit(**{commit_count_key: len(all_paths)}, paths=all_paths)
 
-    return JSONResponse({response_id_key: result.record_id, "status": result.status})
+        return JSONResponse({"results": results})
+    finally:
+        for p in temp_paths:
+            if p and p.exists():
+                p.unlink()
 
 
 @router.post("/v1/sessions", dependencies=[Depends(require_valid_bearer_token)])
@@ -271,6 +459,63 @@ async def post_ecg(
     return await _handle_ingest(
         envelope=envelope,
         file=file,
+        id_field="sessionId",
+        response_id_key="sessionId",
+        ingest_fn=ingest_ecg,
+        commit_count_key="ecg",
+        extra_required_fields=("encoding",),
+    )
+
+
+@router.post("/v1/sessions/bulk", dependencies=[Depends(require_valid_bearer_token)])
+async def post_sessions_bulk(request: Request) -> JSONResponse:
+    """Bulk ingest N sessions in one request. Reduces TLS handshakes for
+    backfills/syncs — the phone can bundle many workouts in one connection.
+
+    multipart/form-data:
+      - part `envelope` (application/json): a JSON array of session envelopes
+        `[{"sessionId": ..., "relPath": ..., "contentHash": ..., "appVersion": ...,
+          "clientSentAt": ...}, ...]`
+      - parts `file_0`, `file_1`, … (any content type): raw bytes for the
+        session at that index.
+
+    Response `200`:
+      {"results": [{"sessionId": ..., "status": "stored"|"duplicate"|"error",
+                    "error": ...?}, ...]}
+    in the same order as `envelope`. A per-entry hash mismatch is that
+    entry's `"error"`, not a request failure. `413` if the batch exceeds
+    BULK_MAX_FILES files or BULK_MAX_TOTAL_BYTES total.
+    """
+    return await _handle_bulk_ingest(
+        request,
+        id_field="sessionId",
+        response_id_key="sessionId",
+        ingest_fn=ingest_session,
+        commit_count_key="sessions",
+    )
+
+
+@router.post("/v1/ecg/bulk", dependencies=[Depends(require_valid_bearer_token)])
+async def post_ecg_bulk(request: Request) -> JSONResponse:
+    """Bulk ingest N ECG recordings in one request. Same wire format as
+    `/v1/sessions/bulk` but with ECG's extra `encoding` envelope field.
+
+    multipart/form-data:
+      - part `envelope` (application/json): a JSON array of ECG envelopes
+        `[{"sessionId": ..., "relPath": ..., "contentHash": ..., "appVersion": ...,
+          "clientSentAt": ..., "encoding": "gzip"}, ...]`
+      - parts `file_0`, `file_1`, … (any content type): raw (still gzipped)
+        bytes for the ECG at that index.
+
+    Response `200`:
+      {"results": [{"sessionId": ..., "status": "stored"|"duplicate"|"error",
+                    "error": ...?}, ...]}
+    in the same order as `envelope`. A per-entry hash mismatch is that
+    entry's `"error"`, not a request failure. `413` if the batch exceeds
+    BULK_MAX_FILES files or BULK_MAX_TOTAL_BYTES total.
+    """
+    return await _handle_bulk_ingest(
+        request,
         id_field="sessionId",
         response_id_key="sessionId",
         ingest_fn=ingest_ecg,
@@ -361,7 +606,8 @@ async def post_repo(
     # to the debounced committer.
     enqueue_parse(rel_path, content_hash, op)
     note = f"delete {rel_path} → deleted/" if result.status == "deleted" else None
-    request_commit(repo=1, note=note)
+    paths = [rel_path] + ([result.tombstone_rel] if result.tombstone_rel else [])
+    request_commit(repo=1, note=note, paths=paths)
 
     return JSONResponse({"relPath": result.rel_path, "status": result.status})
 
@@ -416,11 +662,11 @@ async def post_repo_bulk(request: Request) -> JSONResponse:
             )
         files_by_index[i] = data
 
-    results, touched, notes = ingest_repo_bulk(entries, files_by_index)
+    results, touched, notes, paths = ingest_repo_bulk(entries, files_by_index)
 
     if touched:
         note = "; ".join(notes) if notes else None
-        request_commit(repo=touched, note=note)
+        request_commit(repo=touched, note=note, paths=paths)
 
     return JSONResponse(
         {

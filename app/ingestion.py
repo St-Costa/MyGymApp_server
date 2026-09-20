@@ -31,21 +31,19 @@ from pathlib import Path
 
 from app.analysis import nearest_scale_weight_kg, resting_hr_7day_average
 from app.config import RAW_DIR
-from app.ecg_analysis import analyze_ecg_recording
+from app.ecg_analysis import analyze_ecg_recording  # noqa: F401 — live patch point (worker/tests)
 from app.parsing import (
     SessionParseError,
     parse_ecg_file,
     parse_readiness_file,
     parse_scale_weighin_file,
     parse_session_file,
-    read_ecg_samples,
 )
 from app.storage import (
     ParsedEcg,
     ParsedReadiness,
     get_stored_content_hash,
     record_parse_failure,
-    upsert_ecg_analysis,
     upsert_parsed_ecg,
     upsert_parsed_readiness,
     upsert_parsed_scale_weighin,
@@ -83,6 +81,12 @@ class Envelope:
 class IngestResult:
     record_id: str
     status: str  # "stored" | "updated" | "duplicate"
+    # Raw-store relPath actually written by this request (None on "duplicate",
+    # which wrote nothing) — the debounced committer stages exactly this.
+    # Differs from the envelope's relPath for ECG's `.gunzip-failed` fallback.
+    stored_rel_path: str | None = None
+    # For bulk operations: per-entry error message when status == "error"
+    error: str | None = None
 
 
 def compute_content_hash(raw_bytes: bytes) -> str:
@@ -129,11 +133,42 @@ def write_raw_file(raw_bytes: bytes, rel_path: str) -> Path:
     return target
 
 
+def write_raw_file_from_path(src_path: Path, rel_path: str) -> Path:
+    """Step 5 (streaming variant). Copies the already-written temp file at
+    `src_path` to RAW_DIR/<relPath>, creating parent dirs as needed, and
+    fsyncs before returning so the write is durable before the caller proceeds
+    to step 6 (parse). This is used when the upload was streamed directly to
+    a temp file to avoid buffering large files in memory."""
+    target = RAW_DIR / rel_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    # Copy the temp file to the final location with explicit flush/fsync
+    with open(src_path, "rb") as src, open(target, "wb") as dst:
+        while chunk := src.read(1024 * 1024):  # 1MB chunks
+            dst.write(chunk)
+        dst.flush()
+        os.fsync(dst.fileno())
+
+    # Fsync the parent dir so the new entry itself is durable on crash
+    try:
+        dir_fd = os.open(target.parent, os.O_DIRECTORY)
+    except OSError:
+        pass
+    else:
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+
+    return target
+
+
 def ingest_record[T](
     conn: sqlite3.Connection,
     envelope: Envelope,
-    raw_bytes: bytes,
+    raw_bytes: bytes | None = None,
     *,
+    src_path: Path | None = None,
     table: str,
     record_type: str,
     parse_fn: Callable[[bytes], T],
@@ -145,7 +180,14 @@ def ingest_record[T](
     (see app.storage._RECORD_TABLES and the parse_failures schema note for
     why both a table name and a separate type tag are needed — ids are only
     unique within their own record type, not globally).
+
+    Exactly one of `raw_bytes` or `src_path` must be provided. If `src_path`
+    is given, the file is streamed to the raw store instead of buffering
+    `raw_bytes` in memory — this avoids O(batch) RAM for large uploads.
     """
+    if (raw_bytes is None) == (src_path is None):
+        raise ValueError("exactly one of raw_bytes or src_path must be provided")
+
     stored_hash = get_stored_content_hash(conn, envelope.record_id, table=table)
 
     if stored_hash is not None and stored_hash == envelope.content_hash:
@@ -156,14 +198,20 @@ def ingest_record[T](
     is_update = stored_hash is not None  # case 3: existing record, new content
 
     # Step 5 — must succeed and be durable before we touch the database at all.
-    write_raw_file(raw_bytes, envelope.rel_path)
+    if src_path is not None:
+        write_raw_file_from_path(src_path, envelope.rel_path)
+    else:
+        write_raw_file(raw_bytes, envelope.rel_path)
 
     received_at = datetime.now(UTC).isoformat()
+
+    # For parsing, we still need the bytes — read from src_path if streaming
+    parse_bytes = raw_bytes if raw_bytes is not None else src_path.read_bytes()
 
     # Step 6, wrapped so a parser bug/unexpected shape can never fail the
     # request — the raw file above is already safe, which is what matters.
     try:
-        parsed = parse_fn(raw_bytes)
+        parsed = parse_fn(parse_bytes)
         upsert_fn(
             conn,
             parsed,
@@ -186,15 +234,26 @@ def ingest_record[T](
             error=traceback.format_exc(),
         )
 
-    return IngestResult(record_id=envelope.record_id, status="updated" if is_update else "stored")
+    return IngestResult(
+        record_id=envelope.record_id,
+        status="updated" if is_update else "stored",
+        stored_rel_path=envelope.rel_path,
+    )
 
 
-def ingest_session(conn: sqlite3.Connection, envelope: Envelope, raw_bytes: bytes) -> IngestResult:
+def ingest_session(
+    conn: sqlite3.Connection,
+    envelope: Envelope,
+    raw_bytes: bytes | None = None,
+    *,
+    src_path: Path | None = None,
+) -> IngestResult:
     """Steps 4-7 of POST /v1/sessions."""
     return ingest_record(
         conn,
         envelope,
-        raw_bytes,
+        raw_bytes=raw_bytes,
+        src_path=src_path,
         table="sessions",
         record_type="sessions",
         parse_fn=parse_session_file,
@@ -203,7 +262,11 @@ def ingest_session(conn: sqlite3.Connection, envelope: Envelope, raw_bytes: byte
 
 
 def ingest_readiness(
-    conn: sqlite3.Connection, envelope: Envelope, raw_bytes: bytes
+    conn: sqlite3.Connection,
+    envelope: Envelope,
+    raw_bytes: bytes | None = None,
+    *,
+    src_path: Path | None = None,
 ) -> IngestResult:
     """Steps 4-7 of POST /v1/readiness (docs/sync-ingestion/READINESS_SPEC.md).
 
@@ -228,7 +291,8 @@ def ingest_readiness(
     return ingest_record(
         conn,
         envelope,
-        raw_bytes,
+        raw_bytes=raw_bytes,
+        src_path=src_path,
         table="readiness_events",
         record_type="readiness_events",
         parse_fn=parse_fn,
@@ -237,13 +301,18 @@ def ingest_readiness(
 
 
 def ingest_scale_weighin(
-    conn: sqlite3.Connection, envelope: Envelope, raw_bytes: bytes
+    conn: sqlite3.Connection,
+    envelope: Envelope,
+    raw_bytes: bytes | None = None,
+    *,
+    src_path: Path | None = None,
 ) -> IngestResult:
     """Steps 4-7 of POST /v1/scale-weighins (docs/sync-ingestion/SCALE_SPEC.md)."""
     return ingest_record(
         conn,
         envelope,
-        raw_bytes,
+        raw_bytes=raw_bytes,
+        src_path=src_path,
         table="scale_weighins",
         record_type="scale_weighins",
         parse_fn=parse_scale_weighin_file,
@@ -383,59 +452,29 @@ def _store_ecg_header_best_effort(
     return parsed
 
 
-def _analyze_ecg_best_effort(
+def ingest_ecg(
     conn: sqlite3.Connection,
     envelope: Envelope,
-    raw_bytes: bytes,
-    parsed: ParsedEcg,
-    target_path: str,
-    received_at: str,
-) -> None:
-    """Step 10: run the ECG_ANALYSIS_HANDOFF.md analysis (§1-§5) right away,
-    in the same request — only called once the header parsed successfully,
-    since analysis needs a valid sample_rate. Never raises: a bug or edge
-    case in the analysis math must never take down an otherwise-successful
-    upload — the header row already makes this recording
-    reparseable/re-analyzable later via
-    app.storage.get_unanalyzed_ecg_recordings regardless of what happens
-    here."""
-    try:
-        samples = read_ecg_samples(raw_bytes)
-        resting_hr, weight_kg = hr_and_weight_for_ecg(conn, envelope.record_id, received_at)
-        result = analyze_ecg_recording(
-            envelope.record_id,
-            samples,
-            parsed.sample_rate,
-            file_size_bytes=len(raw_bytes),
-            resting_hr=resting_hr,
-            weight_kg=weight_kg,
-        )
-        upsert_ecg_analysis(conn, result, analyzed_at=received_at)
-    except Exception:
-        logger.exception(
-            "ECG analysis failed for session %s at %s (recording is still stored; "
-            "will remain in the analyzed_at IS NULL queue for retry)",
-            envelope.record_id,
-            target_path,
-        )
-
-
-def ingest_ecg(
-    conn: sqlite3.Connection, envelope: Envelope, compressed_bytes: bytes
+    compressed_bytes: bytes | None = None,
+    *,
+    src_path: Path | None = None,
 ) -> IngestResult:
     """Steps 4-10 of POST /v1/ecg (docs/sync-ingestion/ECG_SPEC.md), plus
     running the docs/sync-ingestion/ECG_ANALYSIS_HANDOFF.md analysis (§1-§5)
-    synchronously once the header parses — see the inner try/except below
-    for why that's safe to do in-request.
+    on the background worker once the header parses.
 
-    Deliberately its own function rather than a call into `ingest_record`:
-    the hash there is computed over the *compressed* bytes (verified by the
-    caller in app.routes, same as the other three — "hash what's on the
+    Exactly one of `compressed_bytes` or `src_path` must be provided. If
+    `src_path` is given, the file is streamed from disk instead of buffering
+    in memory. The hash is computed over the *compressed* bytes (verified by
+    the caller in app.routes, same as the other three — "hash what's on the
     wire"), but the raw write and parse step both need the *decompressed*
     bytes, and a bad/corrupt gunzip needs its own handling (still write to
     disk for forensics, log loudly, but never crash the request) that the
     generic helper has no reason to know about.
     """
+    if (compressed_bytes is None) == (src_path is None):
+        raise ValueError("exactly one of compressed_bytes or src_path must be provided")
+
     stored_hash = get_stored_content_hash(conn, envelope.record_id, table="ecg_recordings")
 
     if stored_hash is not None and stored_hash == envelope.content_hash:
@@ -457,7 +496,9 @@ def ingest_ecg(
 
     received_at = datetime.now(UTC).isoformat()
 
-    raw_bytes, target_path = _gunzip_ecg_or_fallback(envelope, compressed_bytes)
+    # Read compressed bytes from src_path if streaming
+    cbytes = compressed_bytes if compressed_bytes is not None else src_path.read_bytes()
+    raw_bytes, target_path = _gunzip_ecg_or_fallback(envelope, cbytes)
 
     # Step 8: write the bytes (decompressed in the normal case) — the raw
     # store stays directly usable without any reader needing to know it was
@@ -468,16 +509,22 @@ def ingest_ecg(
     if parsed is None:
         pass  # step 9 failed — already logged + recorded, raw file is safe
     else:
-        # Commit the header row before the (seconds-long, CPU-bound) analysis
-        # below: it shortens the write transaction to the header upsert, and
-        # scopes any later failure to the analysis write — the recording then
-        # sits in the analyzed_at IS NULL queue for retry (the documented
-        # recovery path) instead of losing the header row to a rollback.
-        # Client-visible behavior is unchanged: still one "stored" response.
-        conn.commit()
-        _analyze_ecg_best_effort(conn, envelope, raw_bytes, parsed, target_path, received_at)
+        # Step 10: hand the waveform to the background analysis worker
+        # (app.ecg_worker) instead of analyzing in-request — the phone waited
+        # seconds for R-peak/HRV/DFA math after every workout. The header row
+        # is committed by the caller, so the worker (or a later
+        # `analyze_ecg.py --stale` retry) always finds it. A worker-side
+        # failure leaves the recording in the analyzed_at IS NULL queue —
+        # same recovery path as the old in-request try/except, same "stored"
+        # response either way.
+        # Lazy (function-level, not top-level): app.ecg_worker imports
+        # analyze_ecg, which imports this module — a top-level import here
+        # would be circular (same reason app.repo lazy-imports repo_worker).
+        from app.ecg_worker import enqueue_ecg_analysis
+
+        enqueue_ecg_analysis(envelope.record_id, target_path)
 
     # Unlike sessions/readiness/scale, the spec calls for a plain "stored"
     # here even on the different-hash-overwrite path (point 4/step 5 in
     # ECG_SPEC.md) — no "updated" status for this endpoint's response contract.
-    return IngestResult(record_id=envelope.record_id, status="stored")
+    return IngestResult(record_id=envelope.record_id, status="stored", stored_rel_path=target_path)

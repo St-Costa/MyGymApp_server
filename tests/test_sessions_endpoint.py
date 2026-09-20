@@ -3,7 +3,13 @@ apply to the live POST /v1/sessions endpoint."""
 
 import sqlite3
 
-from tests.conftest import SESSION_MD, auth_headers, content_hash_of, post_session
+from tests.conftest import (
+    SESSION_MD,
+    auth_headers,
+    content_hash_of,
+    post_session,
+    post_sessions_bulk,
+)
 
 
 def _db_conn(app_client):
@@ -236,3 +242,163 @@ def test_envelope_missing_required_field_returns_400(app_client) -> None:
         headers=auth_headers(),
     )
     assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Bulk sessions endpoint tests
+# ---------------------------------------------------------------------------
+
+
+def test_bulk_sessions_stored(app_client) -> None:
+    """Two valid sessions in one bulk request — both stored, one commit."""
+    md1 = SESSION_MD.replace("3c4d5e6f", "11111111").encode()
+    md2 = SESSION_MD.replace("3c4d5e6f", "22222222").encode()
+    sessions = [
+        {
+            "sessionId": "11111111",
+            "relPath": "2025/04/sess_11111111.md",
+            "contentHash": content_hash_of(md1),
+            "appVersion": "1.0-test",
+            "clientSentAt": "2025-04-15T10:05:42Z",
+        },
+        {
+            "sessionId": "22222222",
+            "relPath": "2025/04/sess_22222222.md",
+            "contentHash": content_hash_of(md2),
+            "appVersion": "1.0-test",
+            "clientSentAt": "2025-04-15T10:05:42Z",
+        },
+    ]
+    response = post_sessions_bulk(app_client, sessions, [md1, md2])
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["results"]) == 2
+    assert body["results"][0] == {"sessionId": "11111111", "status": "stored"}
+    assert body["results"][1] == {"sessionId": "22222222", "status": "stored"}
+
+    # Verify both files exist in raw store
+    import app.config
+    assert (app.config.RAW_DIR / "2025/04/sess_11111111.md").exists()
+    assert (app.config.RAW_DIR / "2025/04/sess_22222222.md").exists()
+
+    # Verify both sessions in DB
+    conn = _db_conn(app_client)
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE id IN (?, ?)",
+            ("11111111", "22222222"),
+        ).fetchone()[0]
+        == 2
+    )
+
+
+def test_bulk_sessions_one_duplicate_one_stored(app_client) -> None:
+    """First upload stores both; second bulk marks first as duplicate."""
+    md1 = SESSION_MD.replace("3c4d5e6f", "aaaabbbb").encode()
+    md2 = SESSION_MD.replace("3c4d5e6f", "cccceeee").encode()
+    sessions = [
+        {
+            "sessionId": "aaaabbbb",
+            "relPath": "2025/04/sess_aaaabbbb.md",
+            "contentHash": content_hash_of(md1),
+            "appVersion": "1.0-test",
+            "clientSentAt": "2025-04-15T10:05:42Z",
+        },
+        {
+            "sessionId": "cccceeee",
+            "relPath": "2025/04/sess_cccceeee.md",
+            "contentHash": content_hash_of(md2),
+            "appVersion": "1.0-test",
+            "clientSentAt": "2025-04-15T10:05:42Z",
+        },
+    ]
+    # First bulk
+    r1 = post_sessions_bulk(app_client, sessions, [md1, md2])
+    assert r1.json()["results"] == [
+        {"sessionId": "aaaabbbb", "status": "stored"},
+        {"sessionId": "cccceeee", "status": "stored"},
+    ]
+
+    # Second bulk (same data)
+    r2 = post_sessions_bulk(app_client, sessions, [md1, md2])
+    assert r2.json()["results"] == [
+        {"sessionId": "aaaabbbb", "status": "duplicate"},
+        {"sessionId": "cccceeee", "status": "duplicate"},
+    ]
+
+
+def test_bulk_sessions_hash_mismatch_is_per_entry_error(app_client) -> None:
+    """Hash mismatch on one entry doesn't fail the whole request — it's an
+    error for that entry only, other entries still process."""
+    md1 = SESSION_MD.replace("3c4d5e6f", "ffffffff").encode()
+    md2 = SESSION_MD.replace("3c4d5e6f", "eeeeeeee").encode()
+    sessions = [
+        {
+            "sessionId": "ffffffff",
+            "relPath": "2025/04/sess_ffffffff.md",
+            "contentHash": content_hash_of(md1),  # correct
+            "appVersion": "1.0-test",
+            "clientSentAt": "2025-04-15T10:05:42Z",
+        },
+        {
+            "sessionId": "eeeeeeee",
+            "relPath": "2025/04/sess_eeeeeeee.md",
+            "contentHash": "sha256:" + "0" * 64,  # WRONG hash
+            "appVersion": "1.0-test",
+            "clientSentAt": "2025-04-15T10:05:42Z",
+        },
+    ]
+    response = post_sessions_bulk(app_client, sessions, [md1, md2])
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["results"]) == 2
+    # First entry: stored
+    assert body["results"][0] == {"sessionId": "ffffffff", "status": "stored"}
+    # Second entry: error (hash mismatch)
+    assert body["results"][1]["sessionId"] == "eeeeeeee"
+    assert body["results"][1]["status"] == "error"
+    assert "contentHash mismatch" in body["results"][1]["error"]
+
+
+def test_bulk_sessions_too_many_entries_returns_413(app_client) -> None:
+    """Exceeding BULK_MAX_FILES returns 413."""
+    from app.repo import BULK_MAX_FILES
+
+    sessions = []
+    files = []
+    for i in range(BULK_MAX_FILES + 1):
+        md = SESSION_MD.replace("3c4d5e6f", f"{i:08x}").encode()
+        sessions.append(
+            {
+                "sessionId": f"{i:08x}",
+                "relPath": f"2025/04/sess_{i:08x}.md",
+                "contentHash": content_hash_of(md),
+                "appVersion": "1.0-test",
+                "clientSentAt": "2025-04-15T10:05:42Z",
+            }
+        )
+        files.append(md)
+
+    response = post_sessions_bulk(app_client, sessions, files)
+    assert response.status_code == 413
+    assert "too many entries" in response.json()["error"]
+
+
+def test_bulk_sessions_total_bytes_exceeds_limit_returns_413(app_client) -> None:
+    """Exceeding BULK_MAX_TOTAL_BYTES returns 413."""
+    from app.repo import BULK_MAX_TOTAL_BYTES
+
+    # One huge session that exceeds the limit
+    huge_md = b"x" * (BULK_MAX_TOTAL_BYTES + 1)
+    sessions = [
+        {
+            "sessionId": "huge1234",
+            "relPath": "2025/04/huge.md",
+            "contentHash": content_hash_of(huge_md),
+            "appVersion": "1.0-test",
+            "clientSentAt": "2025-04-15T10:05:42Z",
+        }
+    ]
+    response = post_sessions_bulk(app_client, sessions, [huge_md])
+    assert response.status_code == 413
+    assert "exceeds" in response.json()["error"]

@@ -47,9 +47,32 @@ id, same hash — safe no-op, nothing written). A 2xx means "raw bytes fsynced +
 verified", not "committed" (git is debounced) — and a parse failure still returns 2xx
 (the raw file is safe; the row stays re-derivable via `reparse.py`).
 
+### Bulk sessions
+
+`POST /v1/sessions/bulk` — one multipart request for N sessions, one debounced commit.
+
+`multipart/form-data`:
+- part `envelope` (application/json): JSON array of session envelopes
+  `[{"sessionId": ..., "relPath": ..., "contentHash": ..., "appVersion": ..., "clientSentAt": ...}, ...]`
+- parts `file_0`, `file_1`, … (any content type): raw Markdown bytes for each session by index.
+
+Response `200`:
+```jsonc
+{
+  "results": [
+    {"sessionId": "...", "status": "stored"|"duplicate"|"error", "error": ...?},
+    ...
+  ]
+}
+```
+In the same order as `envelope`. A per-entry hash mismatch is that entry's
+`"error"`, not a request failure. `413` if the batch exceeds `BULK_MAX_FILES`
+(500) entries or `BULK_MAX_TOTAL_BYTES` (50 MB) total.
+
 ```bash
-curl -X POST "$HOST/v1/sessions" -H "Authorization: Bearer $SECRET" \
-  -F 'envelope={...json...};type=application/json' -F 'file=@session.md'
+curl -X POST "$HOST/v1/sessions/bulk" -H "Authorization: Bearer $SECRET" \
+  -F 'envelope=[...json array...];type=application/json' \
+  -F 'file_0=@session1.md' -F 'file_1=@session2.md'
 ```
 
 ## ECG ingestion
@@ -74,9 +97,36 @@ hash covers the **compressed** bytes ("hash what's on the wire"):
 ```
 
 The server gunzips, stores the decompressed bytes, and runs the ECG analysis
-synchronously (never failing the upload — failures stay in the `analyzed_at IS NULL`
-queue for `analyze_ecg.py`). Once accepted, the server's copy is the *only* copy — the
-phone deletes its local file.
+on a background worker (never failing the upload — failures stay in the
+`analyzed_at IS NULL` queue for `analyze_ecg.py`). Once accepted, the server's
+copy is the *only* copy — the phone deletes its local file.
+
+### Bulk ECG
+
+`POST /v1/ecg/bulk` — one multipart request for N ECG recordings, one debounced commit.
+
+`multipart/form-data`:
+- part `envelope` (application/json): JSON array of ECG envelopes (includes `encoding: "gzip"`)
+  `[{"sessionId": ..., "relPath": ..., "contentHash": ..., "encoding": "gzip", "appVersion": ..., "clientSentAt": ...}, ...]`
+- parts `file_0`, `file_1`, … (any content type): raw **gzipped** bytes for each ECG by index.
+
+Response `200`:
+```jsonc
+{
+  "results": [
+    {"sessionId": "...", "status": "stored"|"duplicate"|"error", "error": ...?},
+    ...
+  ]
+}
+```
+Same semantics as `/v1/sessions/bulk` but with ECG's extra `encoding` field.
+`413` if the batch exceeds `BULK_MAX_FILES` (500) entries or `BULK_MAX_TOTAL_BYTES` (50 MB) total.
+
+```bash
+curl -X POST "$HOST/v1/ecg/bulk" -H "Authorization: Bearer $SECRET" \
+  -F 'envelope=[...json array...];type=application/json' \
+  -F 'file_0=@ecg1.ecg.gz' -F 'file_1=@ecg2.ecg.gz'
+```
 
 ## Repo files (exercises/routines)
 

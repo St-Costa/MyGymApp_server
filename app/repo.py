@@ -73,6 +73,9 @@ class RepoPathError(ValueError):
 class RepoResult:
     rel_path: str
     status: str  # "stored" | "duplicate" | "deleted" | "already_absent"
+    # Set on "deleted": the tombstone's relPath under deleted/, so the
+    # debounced committer can stage both the disappearance and the new file.
+    tombstone_rel: str | None = None
 
 
 # Bumped on every write to the raw store (upsert that actually wrote, or a
@@ -285,7 +288,8 @@ def ingest_repo_delete(*, rel_path: str) -> RepoResult:
         return RepoResult(rel_path=rel_path, status="already_absent")
 
     unix_ts = int(datetime.now(UTC).timestamp())
-    tombstone_abs = RAW_DIR / "deleted" / f"{rel_path}.{unix_ts}"
+    tombstone_rel = f"deleted/{rel_path}.{unix_ts}"
+    tombstone_abs = RAW_DIR / tombstone_rel
     tombstone_abs.parent.mkdir(parents=True, exist_ok=True)
     os.rename(dest_abs, tombstone_abs)
     for parent in {dest_abs.parent, tombstone_abs.parent}:
@@ -299,7 +303,7 @@ def ingest_repo_delete(*, rel_path: str) -> RepoResult:
             os.close(dir_fd)
     _bump_write_generation()
 
-    return RepoResult(rel_path=rel_path, status="deleted")
+    return RepoResult(rel_path=rel_path, status="deleted", tombstone_rel=tombstone_rel)
 
 
 # ---------------------------------------------------------------------------
@@ -324,7 +328,7 @@ class BulkEntryResult:
 def ingest_repo_bulk(
     entries: list[dict],
     files_by_index: dict[int, bytes],
-) -> tuple[list[BulkEntryResult], int, list[str]]:
+) -> tuple[list[BulkEntryResult], int, list[str], list[str]]:
     """N repo upserts/deletes in one request. `entries[i]` is
     `{relPath, op, contentHash}`; `files_by_index[i]` is the raw bytes for
     entry i when its op is "upsert". Applies every entry independently — a
@@ -332,7 +336,8 @@ def ingest_repo_bulk(
     then returns:
 
       (per-entry results in order, count that actually touched the tree,
-       delete-tombstone notes for the commit message)
+       delete-tombstone notes for the commit message, touched relPaths —
+       writes and tombstones — for the committer's targeted stage)
 
     The route makes ONE debounced commit and enqueues the parse for each
     touched entry. No commit here (same split of responsibilities as the
@@ -340,6 +345,7 @@ def ingest_repo_bulk(
     results: list[BulkEntryResult] = []
     touched = 0
     notes: list[str] = []
+    paths: list[str] = []
 
     # Lazy (function-level, not top-level): app.repo_worker imports this
     # module, so a top-level import would be circular. Hoisted out of the
@@ -388,11 +394,14 @@ def ingest_repo_bulk(
         results.append(BulkEntryResult(rel_path=res.rel_path, status=res.status))
         if res.status in ("stored", "deleted"):
             touched += 1
+            paths.append(rel_path)
             enqueue_parse(rel_path, content_hash, op)
             if res.status == "deleted":
                 notes.append(f"delete {rel_path} → deleted/")
+                if res.tombstone_rel:
+                    paths.append(res.tombstone_rel)
 
-    return results, touched, notes
+    return results, touched, notes, paths
 
 
 # ---------------------------------------------------------------------------

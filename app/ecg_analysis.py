@@ -853,9 +853,7 @@ def _hr_recovery_at(
     delta = peak_hr - smoothed_hr[closest_idx]
 
     window_indices = [
-        i
-        for i in range(len(inst_hr_times_s))
-        if peak_time_s <= inst_hr_times_s[i] <= target_time
+        i for i in range(len(inst_hr_times_s)) if peak_time_s <= inst_hr_times_s[i] <= target_time
     ]
     running_min = peak_hr
     discarded = False

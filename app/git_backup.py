@@ -9,10 +9,12 @@ with a background committer:
 
 - Handlers call `request_commit(...)` after the raw bytes are on disk and
   hash-verified. It never blocks and never raises — it accumulates the
-  per-record-type counts for this burst and (re)arms a quiet-period timer.
+  per-record-type counts plus the touched relPaths for this burst and
+  (re)arms a quiet-period timer.
 - A daemon thread (`_committer_loop`) waits until `COMMIT_DEBOUNCE_SECONDS`
-  of write silence, then does a single `git add -A && git commit` covering
-  the whole burst.
+  of write silence, then does a single commit covering the whole burst —
+  staging just the touched paths (`git add -- …`, falling back to `git add
+  -A` when the burst named no paths or the targeted stage came up empty).
 - `flush_pending_commit()` forces that commit immediately — called on
   clean shutdown (app/main.py lifespan) and by the tests.
 
@@ -33,6 +35,7 @@ import os
 import subprocess
 import threading
 import time
+from collections.abc import Collection
 from datetime import UTC, datetime
 
 from app.config import RAW_DIR
@@ -59,6 +62,9 @@ _GIT_ENV = {
     "GIT_COMMITTER_EMAIL": _GIT_USER_EMAIL,
     "GIT_CONFIG_GLOBAL": os.devnull,  # don't read ~/.gitconfig on every commit
     "GIT_CONFIG_SYSTEM": os.devnull,
+    # Never prompt for credentials (a private remote without a configured key
+    # would otherwise hang the push forever) — a failed push is logged, not fatal.
+    "GIT_TERMINAL_PROMPT": "0",
 }
 
 # How long the raw store must be write-quiet before the debounced committer
@@ -76,15 +82,20 @@ class GitBackupError(RuntimeError):
     `git add -A` recover (the raw files are already safe on disk)."""
 
 
-def _run_git(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+def _run_git(
+    *args: str, check: bool = True, timeout: float | None = None
+) -> subprocess.CompletedProcess:
     """`git -C <RAW_DIR> <args>` with the preset identity env, capturing
-    output. `check=True` raises CalledProcessError on a non-zero exit."""
+    output. `check=True` raises CalledProcessError on a non-zero exit.
+    `timeout` bounds network operations (push) — expiry raises
+    subprocess.TimeoutExpired, which callers handle like any other failure."""
     return subprocess.run(
         ["git", "-C", str(RAW_DIR), *args],
         check=check,
         capture_output=True,
         text=True,
         env=_GIT_ENV,
+        timeout=timeout,
     )
 
 
@@ -156,6 +167,9 @@ _pending_lock = threading.Lock()
 _pending_counts: dict[str, int] = {}
 # Free-text notes (e.g. delete tombstone moves) to append to the message.
 _pending_notes: list[str] = []
+# Raw-store relPaths touched by the burst (files written + tombstones moved),
+# so the commit can `git add` just those instead of scanning the whole tree.
+_pending_paths: list[str] = []
 # Monotonic timestamp of the most recent request_commit() call; the
 # committer flushes once `now - _last_request >= COMMIT_DEBOUNCE_SECONDS`.
 _last_request: float | None = None
@@ -173,13 +187,15 @@ _committer_thread: threading.Thread | None = None
 _COUNT_KEYS = ("sessions", "readiness", "scale", "ecg", "repo")
 
 
-def request_commit(*, note: str | None = None, **counts: int) -> None:
+def request_commit(*, note: str | None = None, paths: Collection[str] = (), **counts: int) -> None:
     """Record that this request wrote to the raw store; the debounced
     committer will fold it into the next burst commit. Never blocks, never
     raises — the raw bytes are already fsynced by the time this is called,
     and a commit failure is the committer's problem to log, not this
     request's to surface. `counts` is any of sessions/readiness/scale/ecg/
-    repo -> number of files that record type touched in this request."""
+    repo -> number of files that record type touched in this request; `paths`
+    is the touched raw-store relPaths (writes and delete tombstones) so the
+    commit can stage just those instead of scanning the whole tree."""
     for key in counts:
         if key not in _COUNT_KEYS:
             raise ValueError(f"unknown record-type count: {key}")
@@ -188,25 +204,31 @@ def request_commit(*, note: str | None = None, **counts: int) -> None:
             _pending_counts[key] = _pending_counts.get(key, 0) + n
         if note:
             _pending_notes.append(note)
+        _pending_paths.extend(paths)
         global _last_request
         _last_request = time.monotonic()
     _wake.set()
 
 
-def _burst_message() -> str:
-    """Build the commit message for the accumulated burst and clear it.
-    Caller holds nothing — this takes `_pending_lock` itself."""
+def _take_burst() -> tuple[str, list[str]]:
+    """Build the commit message for the accumulated burst and take its
+    touched paths, clearing both atomically. Caller holds nothing — this
+    takes `_pending_lock` itself."""
     with _pending_lock:
         counts = {k: _pending_counts.get(k, 0) for k in _COUNT_KEYS}
         notes = list(_pending_notes)
+        # Dedupe while preserving order — a 500-entry bulk touches every
+        # path once, plus the caller may repeat one.
+        paths = list(dict.fromkeys(_pending_paths))
         _pending_counts.clear()
         _pending_notes.clear()
+        _pending_paths.clear()
     stamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     body = " ".join(f"{k}:{counts[k]}" for k in _COUNT_KEYS)
     message = f"sync {stamp} — {body}"
     if notes:
         message += " (" + "; ".join(notes) + ")"
-    return message
+    return message, paths
 
 
 def _has_pending() -> bool:
@@ -215,25 +237,40 @@ def _has_pending() -> bool:
 
 
 def _do_commit_locked() -> None:
-    """Stage + commit whatever is on the working tree, using the burst
-    message. Holds `_LOCK`. Swallows nothing structurally, but a git failure
-    is logged (not raised) — the files stay on the working tree for the next
-    sweep. Also fires the optional off-box mirror push."""
-    message = _burst_message()
+    """Stage + commit the burst, using the burst message. The git index
+    operations hold `_LOCK`; the off-box mirror push runs after it is
+    released, so a slow network never serializes the next burst's commit.
+    A git failure is logged (not raised) — the files stay on the working
+    tree for the next sweep."""
+    message, paths = _take_burst()
     try:
         with _LOCK:
-            _run_git("add", "-A")
+            if paths:
+                # Targeted stage: the burst named its files, so don't walk
+                # the whole tree. `--` ends option parsing — relPaths are
+                # data, never flags.
+                _run_git("add", "--", *paths)
+            else:
+                _run_git("add", "-A")
             if not _has_staged_changes():
-                return
+                if not paths:
+                    return
+                # Targeted add staged nothing despite a requested burst
+                # (e.g. a path was missed): fall back to a full sweep rather
+                # than silently dropping the commit, then re-check.
+                _run_git("add", "-A")
+                if not _has_staged_changes():
+                    return
             _commit(message)
-            _maybe_push()
     except subprocess.CalledProcessError as exc:
         logger.error(
             "debounced git commit failed (%s): %s — files remain on the working "
-            "tree, the next commit's `git add -A` will sweep them in",
+            "tree, the next commit's sweep will pick them up",
             message,
             exc.stderr.strip(),
         )
+        return
+    _maybe_push()
 
 
 def _committer_loop() -> None:
@@ -291,9 +328,7 @@ def start_committer() -> None:
     if _committer_thread is not None and _committer_thread.is_alive():
         return
     _stop.clear()
-    _committer_thread = threading.Thread(
-        target=_committer_loop, name="git-committer", daemon=True
-    )
+    _committer_thread = threading.Thread(target=_committer_loop, name="git-committer", daemon=True)
     _committer_thread.start()
     logger.info("started debounced git committer (debounce=%.1fs)", COMMIT_DEBOUNCE_SECONDS)
 
@@ -331,14 +366,19 @@ def _maybe_push() -> None:
     `BACKUP_GIT_REMOTE` is set, push HEAD to it once, best-effort — a push
     failure is logged and swallowed, the local commit is the real backup.
     Never retried inline. Read through app.config at call time so a test or
-    restart can change it without this module caching a stale value.
-    Called with `_LOCK` held (from `_do_commit_locked`)."""
+    restart can change it without this module caching a stale value. Called
+    WITHOUT `_LOCK` held (from `_do_commit_locked`, after it is released) —
+    a hanging network must never serialize the next burst's commit."""
     from app import config
 
     remote = config.BACKUP_GIT_REMOTE
     if not remote:
         return
-    result = _run_git("push", "--quiet", remote, "HEAD:main", check=False)
+    try:
+        result = _run_git("push", "--quiet", remote, "HEAD:main", check=False, timeout=60.0)
+    except (subprocess.TimeoutExpired, OSError, subprocess.CalledProcessError) as exc:
+        logger.warning("backup mirror push to %s failed (local commit is safe): %s", remote, exc)
+        return
     if result.returncode != 0:
         logger.warning(
             "backup mirror push to %s failed (local commit is safe): %s",

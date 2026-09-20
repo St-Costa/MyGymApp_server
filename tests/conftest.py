@@ -202,7 +202,9 @@ def app_client(tmp_path, monkeypatch):
     monkeypatch.setenv("SYNC_SHARED_SECRET", SHARED_SECRET)
     monkeypatch.setenv("DATA_ROOT", str(tmp_path / "data"))
 
+    import analyze_ecg
     import app.config
+    import app.ecg_worker
     import app.git_backup
     import app.gui
     import app.ingestion
@@ -222,6 +224,12 @@ def app_client(tmp_path, monkeypatch):
     import app.repo_worker
 
     importlib.reload(app.repo_worker)
+    # analyze_ecg binds RAW_DIR/DB_PATH at import and ecg_worker binds
+    # analyze_ecg.analyze_one at import — reload in this order so the worker
+    # thread the lifespan starts sees this test's tmp paths, not the last
+    # test's.
+    importlib.reload(analyze_ecg)
+    importlib.reload(app.ecg_worker)
     importlib.reload(app.ingestion)
     importlib.reload(app.routes)
     importlib.reload(app.gui)
@@ -246,6 +254,18 @@ def settle_backup() -> None:
 
     app.repo_worker.drain(timeout=10.0)
     app.git_backup.flush_pending_commit(timeout=10.0)
+
+
+def settle_ecg() -> None:
+    """POST /v1/ecg returns after the header commit; the waveform analysis
+    drains on a worker thread. A test that inspects `ecg_analysis` or
+    `analyzed_at` right after a POST must call this first — same idea as
+    settle_backup. Not needed for pure status-code tests or for uploads
+    whose analysis was monkeypatched to boom (the worker booms too and
+    writes nothing either way)."""
+    import app.ecg_worker
+
+    app.ecg_worker.drain(timeout=30.0)
 
 
 def _post_record(
@@ -436,5 +456,60 @@ def post_ecg(
         "/v1/ecg",
         data={"envelope": json.dumps(envelope)},
         files={"file": ("record.ecg.gz", compressed, "application/gzip")},
+        headers=headers if headers is not None else auth_headers(),
+    )
+
+
+def post_sessions_bulk(
+    client,
+    sessions: list[dict],
+    files: list[bytes],
+    *,
+    headers=None,
+):
+    """Bulk POST N sessions in one multipart request. `sessions` is a list of
+    envelope dicts (each with sessionId, relPath, contentHash, appVersion,
+    clientSentAt). `files` is a list of raw markdown bytes matching the
+    envelopes in order. Returns the JSON response."""
+    import json
+
+    # Build multipart form
+    envelope_json = json.dumps(sessions)
+    form_data = {"envelope": envelope_json}
+    form_files = []
+    for i, file_bytes in enumerate(files):
+        form_files.append((f"file_{i}", (f"session_{i}.md", file_bytes, "text/markdown")))
+
+    return client.post(
+        "/v1/sessions/bulk",
+        data=form_data,
+        files=form_files,
+        headers=headers if headers is not None else auth_headers(),
+    )
+
+
+def post_ecg_bulk(
+    client,
+    ecgs: list[dict],
+    files: list[bytes],
+    *,
+    headers=None,
+):
+    """Bulk POST N ECG recordings in one multipart request. `ecgs` is a list
+    of envelope dicts (each with sessionId, relPath, contentHash, encoding,
+    appVersion, clientSentAt). `files` is a list of gzipped ECG bytes matching
+    the envelopes in order. Returns the JSON response."""
+    import json
+
+    envelope_json = json.dumps(ecgs)
+    form_data = {"envelope": envelope_json}
+    form_files = []
+    for i, file_bytes in enumerate(files):
+        form_files.append((f"file_{i}", (f"ecg_{i}.ecg.gz", file_bytes, "application/gzip")))
+
+    return client.post(
+        "/v1/ecg/bulk",
+        data=form_data,
+        files=form_files,
         headers=headers if headers is not None else auth_headers(),
     )

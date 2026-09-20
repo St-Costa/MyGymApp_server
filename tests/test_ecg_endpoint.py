@@ -9,10 +9,12 @@ from tests.conftest import (
     build_ecg_bytes,
     content_hash_of,
     post_ecg,
+    post_ecg_bulk,
     post_readiness,
     post_scale_weighin,
     recent_readiness_md,
     recent_scale_weighin_md,
+    settle_ecg,
     synthetic_ecg_samples,
 )
 
@@ -245,11 +247,11 @@ def test_malformed_envelope_json_returns_400(app_client) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Automatic analysis (docs/sync-ingestion/ECG_ANALYSIS_HANDOFF.md) — runs
-# synchronously inside ingest_ecg once the header parses. See
-# tests/test_ecg_analysis.py for the analysis math itself; these tests only
-# cover that the upload path actually triggers it and never lets it break
-# the request.
+# Automatic analysis (docs/sync-ingestion/ECG_ANALYSIS_HANDOFF.md) — runs on
+# the ECG worker once the header commits. See tests/test_ecg_analysis.py for
+# the analysis math itself; these tests only cover that the upload path
+# actually triggers it and never lets it break the request (settle_ecg
+# drains the worker before asserting on analysis state).
 # ---------------------------------------------------------------------------
 
 
@@ -257,6 +259,7 @@ def test_valid_ecg_upload_is_analyzed_automatically(app_client) -> None:
     ecg_bytes = build_ecg_bytes(sample_rate=130, samples=synthetic_ecg_samples(130, 20, 75, seed=1))
     response = post_ecg(app_client, ecg_bytes)
     assert response.status_code == 200
+    settle_ecg()
 
     conn = _db_conn(app_client)
     row = conn.execute(
@@ -287,12 +290,13 @@ def test_valid_ecg_upload_gets_advanced_metrics_too(app_client) -> None:
     ecg_bytes = build_ecg_bytes(sample_rate=130, samples=synthetic_ecg_samples(130, 90, 75, seed=2))
     response = post_ecg(app_client, ecg_bytes)
     assert response.status_code == 200
+    settle_ecg()
 
     conn = _db_conn(app_client)
     row = conn.execute(
         """SELECT kurtosis_sqi, b_sqi, dfa_alpha1, hrv_lf, hrv_hf, hrv_lf_hf,
-                  sample_entropy, csi, cvi
-           FROM ecg_analysis WHERE session_id = ?""",
+                   sample_entropy, csi, cvi
+            FROM ecg_analysis WHERE session_id = ?""",
         ("3c4d5e6f",),
     ).fetchone()
     assert row is not None
@@ -312,6 +316,7 @@ def test_ecg_upload_uses_hrr_zones_when_a_readiness_reading_exists(app_client) -
     )
     response = post_ecg(app_client, ecg_bytes)
     assert response.status_code == 200
+    settle_ecg()
 
     conn = _db_conn(app_client)
     used_hrr = conn.execute(
@@ -329,6 +334,7 @@ def test_ecg_upload_falls_back_to_hrmax_zones_without_a_readiness_reading(app_cl
     )
     response = post_ecg(app_client, ecg_bytes)
     assert response.status_code == 200
+    settle_ecg()
 
     conn = _db_conn(app_client)
     row = conn.execute(
@@ -354,6 +360,7 @@ def test_ecg_upload_recomputes_calories_and_trimp_with_readiness_and_scale_data(
     )
     response = post_ecg(app_client, ecg_bytes)
     assert response.status_code == 200
+    settle_ecg()
 
     conn = _db_conn(app_client)
     row = conn.execute(
@@ -367,10 +374,10 @@ def test_ecg_upload_recomputes_calories_and_trimp_with_readiness_and_scale_data(
 
 
 def test_ecg_upload_leaves_calorie_recompute_null_without_scale_data(app_client) -> None:
-    """A readiness reading alone (resting HR available) but no scale
-    weigh-in must leave session_calories_ecg/session_trimp_ecg NULL, not
-    guess a weight — same "no result, not a misleading number" convention
-    as the rest of this pipeline."""
+    """ECG_SPEC.md point 5: without scale data the ECG analysis must leave
+    session_calories_ecg/session_trimp_ecg NULL, not guess a weight — same
+    "no result, not a misleading number" convention as the rest of this
+    pipeline."""
     assert post_readiness(app_client, recent_readiness_md()).status_code == 200
 
     ecg_bytes = build_ecg_bytes(
@@ -378,6 +385,7 @@ def test_ecg_upload_leaves_calorie_recompute_null_without_scale_data(app_client)
     )
     response = post_ecg(app_client, ecg_bytes)
     assert response.status_code == 200
+    settle_ecg()
 
     conn = _db_conn(app_client)
     row = conn.execute(
@@ -393,6 +401,7 @@ def test_flat_signal_upload_gets_no_result_not_zeros(app_client) -> None:
     a "no result" row (None metrics), not silently skip writing one."""
     response = post_ecg(app_client, build_ecg_bytes())
     assert response.status_code == 200
+    settle_ecg()
 
     conn = _db_conn(app_client)
     row = conn.execute(
@@ -432,3 +441,147 @@ def test_analysis_failure_does_not_fail_the_upload(app_client, monkeypatch) -> N
         "SELECT analyzed_at FROM ecg_recordings WHERE session_id = ?", ("3c4d5e6f",)
     ).fetchone()[0]
     assert analyzed_at is None
+
+
+# ---------------------------------------------------------------------------
+# Bulk ECG endpoint tests
+# ---------------------------------------------------------------------------
+
+
+def test_bulk_ecg_stored(app_client) -> None:
+    """Two valid ECG recordings in one bulk request — both stored."""
+    ecg1 = gzip.compress(build_ecg_bytes(sample_rate=130))
+    ecg2 = gzip.compress(build_ecg_bytes(sample_rate=125))
+    ecgs = [
+        {
+            "sessionId": "ecg00001",
+            "relPath": "ecg/ecg00001.ecg",
+            "contentHash": content_hash_of(ecg1),
+            "encoding": "gzip",
+            "appVersion": "1.0-test",
+            "clientSentAt": "2025-04-15T10:05:42Z",
+        },
+        {
+            "sessionId": "ecg00002",
+            "relPath": "ecg/ecg00002.ecg",
+            "contentHash": content_hash_of(ecg2),
+            "encoding": "gzip",
+            "appVersion": "1.0-test",
+            "clientSentAt": "2025-04-15T10:05:42Z",
+        },
+    ]
+    response = post_ecg_bulk(app_client, ecgs, [ecg1, ecg2])
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["results"]) == 2
+    assert body["results"][0] == {"sessionId": "ecg00001", "status": "stored"}
+    assert body["results"][1] == {"sessionId": "ecg00002", "status": "stored"}
+
+    # Verify both files exist in raw store
+    import app.config
+    assert (app.config.RAW_DIR / "ecg/ecg00001.ecg").exists()
+    assert (app.config.RAW_DIR / "ecg/ecg00002.ecg").exists()
+
+    # Verify both in ecg_recordings
+    conn = _db_conn(app_client)
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM ecg_recordings WHERE session_id IN (?, ?)",
+            ("ecg00001", "ecg00002"),
+        ).fetchone()[0]
+        == 2
+    )
+
+
+def test_bulk_ecg_one_duplicate_one_stored(app_client) -> None:
+    """First upload stores both; second bulk marks first as duplicate."""
+    ecg1 = gzip.compress(build_ecg_bytes(sample_rate=130))
+    ecg2 = gzip.compress(build_ecg_bytes(sample_rate=125))
+    ecgs = [
+        {
+            "sessionId": "ecgaaaaa",
+            "relPath": "ecg/ecgaaaaa.ecg",
+            "contentHash": content_hash_of(ecg1),
+            "encoding": "gzip",
+            "appVersion": "1.0-test",
+            "clientSentAt": "2025-04-15T10:05:42Z",
+        },
+        {
+            "sessionId": "ecgbbbbb",
+            "relPath": "ecg/ecgbbbbb.ecg",
+            "contentHash": content_hash_of(ecg2),
+            "encoding": "gzip",
+            "appVersion": "1.0-test",
+            "clientSentAt": "2025-04-15T10:05:42Z",
+        },
+    ]
+    # First bulk
+    r1 = post_ecg_bulk(app_client, ecgs, [ecg1, ecg2])
+    assert r1.json()["results"] == [
+        {"sessionId": "ecgaaaaa", "status": "stored"},
+        {"sessionId": "ecgbbbbb", "status": "stored"},
+    ]
+
+    # Second bulk (same data)
+    r2 = post_ecg_bulk(app_client, ecgs, [ecg1, ecg2])
+    assert r2.json()["results"] == [
+        {"sessionId": "ecgaaaaa", "status": "duplicate"},
+        {"sessionId": "ecgbbbbb", "status": "duplicate"},
+    ]
+
+
+def test_bulk_ecg_hash_mismatch_is_per_entry_error(app_client) -> None:
+    """Hash mismatch on one entry doesn't fail the whole request."""
+    ecg1 = gzip.compress(build_ecg_bytes(sample_rate=130))
+    ecg2 = gzip.compress(build_ecg_bytes(sample_rate=125))
+    ecgs = [
+        {
+            "sessionId": "ecgccccc",
+            "relPath": "ecg/ecgccccc.ecg",
+            "contentHash": content_hash_of(ecg1),
+            "encoding": "gzip",
+            "appVersion": "1.0-test",
+            "clientSentAt": "2025-04-15T10:05:42Z",
+        },
+        {
+            "sessionId": "ecgddddd",
+            "relPath": "ecg/ecgddddd.ecg",
+            "contentHash": "sha256:" + "0" * 64,  # WRONG hash
+            "encoding": "gzip",
+            "appVersion": "1.0-test",
+            "clientSentAt": "2025-04-15T10:05:42Z",
+        },
+    ]
+    response = post_ecg_bulk(app_client, ecgs, [ecg1, ecg2])
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["results"]) == 2
+    assert body["results"][0] == {"sessionId": "ecgccccc", "status": "stored"}
+    assert body["results"][1]["sessionId"] == "ecgddddd"
+    assert body["results"][1]["status"] == "error"
+    assert "contentHash mismatch" in body["results"][1]["error"]
+
+
+def test_bulk_ecg_too_many_entries_returns_413(app_client) -> None:
+    """Exceeding BULK_MAX_FILES returns 413."""
+    from app.repo import BULK_MAX_FILES
+
+    ecgs = []
+    files = []
+    for i in range(BULK_MAX_FILES + 1):
+        ecg = gzip.compress(build_ecg_bytes(sample_rate=130))
+        ecgs.append(
+            {
+                "sessionId": f"ecg{i:08d}",
+                "relPath": f"ecg/ecg{i:08d}.ecg",
+                "contentHash": content_hash_of(ecg),
+                "encoding": "gzip",
+                "appVersion": "1.0-test",
+                "clientSentAt": "2025-04-15T10:05:42Z",
+            }
+        )
+        files.append(ecg)
+
+    response = post_ecg_bulk(app_client, ecgs, files)
+    assert response.status_code == 413
+    assert "too many entries" in response.json()["error"]
