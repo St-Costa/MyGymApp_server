@@ -44,11 +44,18 @@ from app.storage import (
 logger = logging.getLogger("mygymapp.analyze_ecg")
 
 
-def analyze_one(conn, session_id: str, raw_path: str) -> bool:
+def analyze_one(conn, session_id: str, raw_path: str, *, analyze_fn=None) -> bool:
     """Re-reads RAW_DIR/<raw_path> and re-runs analyze_ecg_recording for one
     session. Returns True on success, False if the recording couldn't even
     be read (missing file, unparseable header) — never raises, so one bad
-    file can't abort a batch of many."""
+    file can't abort a batch of many.
+
+    `analyze_fn` overrides the analysis engine (same signature as
+    analyze_ecg_recording). It exists for app.ecg_worker, which must run the
+    *live* engine — the one tests patch via app.ingestion — rather than this
+    module's own binding, so a simulated upload-time failure stays failed
+    when the worker picks it up. Callers that don't pass it (this script)
+    get this module's binding, exactly as before."""
     full_path = RAW_DIR / raw_path
     if not full_path.exists():
         logger.error("raw ECG file missing for %s: %s", session_id, full_path)
@@ -65,7 +72,8 @@ def analyze_one(conn, session_id: str, raw_path: str) -> bool:
 
     analyzed_at = datetime.now(UTC).isoformat()
     resting_hr, weight_kg = hr_and_weight_for_ecg(conn, session_id, analyzed_at)
-    result = analyze_ecg_recording(
+    engine = analyze_fn if analyze_fn is not None else analyze_ecg_recording
+    result = engine(
         session_id,
         samples,
         parsed.sample_rate,

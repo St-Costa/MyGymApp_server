@@ -19,6 +19,8 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import LOGS_DIR
+from app.ecg_worker import start_worker as start_ecg_worker
+from app.ecg_worker import stop_worker as stop_ecg_worker
 from app.git_backup import ensure_repo, start_committer, stop_committer
 from app.gui import router as gui_router
 from app.repo_worker import start_worker, stop_worker
@@ -37,13 +39,17 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # any raw writes a previous run left uncommitted (see ensure_repo).
     ensure_repo()
     # docs/backup/OPTIMIZATION.md points 1 & 6: the debounced git committer
-    # and the off-request-path repo-file parse worker. Both are daemon
-    # threads; stop_* below flushes their pending work on a clean shutdown.
+    # and the off-request-path repo-file parse worker — plus the ECG analysis
+    # worker (POST /v1/ecg returns after the header commit; the waveform
+    # analysis drains in the background). All are daemon threads; stop_*
+    # below flushes their pending work on a clean shutdown.
     start_committer()
     start_worker()
+    start_ecg_worker()
     try:
         yield
     finally:
+        stop_ecg_worker()
         stop_worker()
         stop_committer()
 

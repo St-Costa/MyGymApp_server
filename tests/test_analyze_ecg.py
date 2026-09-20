@@ -13,6 +13,7 @@ from tests.conftest import (
     post_scale_weighin,
     recent_readiness_md,
     recent_scale_weighin_md,
+    settle_ecg,
     synthetic_ecg_samples,
 )
 
@@ -95,6 +96,7 @@ def test_specific_session_id_forces_reanalysis(app_client) -> None:
     even if the queue is already drained — useful for manually re-checking
     one recording."""
     post_ecg(app_client, build_ecg_bytes(samples=synthetic_ecg_samples(130, 20, 75, seed=2)))
+    settle_ecg()
 
     conn = _db_conn(app_client)
     before = conn.execute(
@@ -141,6 +143,7 @@ def test_stale_reanalysis_picks_up_hrr_zones_from_a_readiness_reading(app_client
     readiness event synced after the original (stale) analysis should still
     switch the re-analysis over to %HRR."""
     post_ecg(app_client, build_ecg_bytes(samples=synthetic_ecg_samples(130, 90, 125, seed=4)))
+    settle_ecg()
 
     conn = _db_conn(app_client)
     with conn:
@@ -165,6 +168,7 @@ def test_stale_reanalysis_picks_up_calorie_recompute_from_scale_and_readiness(ap
     recompute — a readiness reading and scale weigh-in synced after the
     original (stale) analysis should be picked up on re-analysis."""
     post_ecg(app_client, build_ecg_bytes(samples=synthetic_ecg_samples(130, 90, 125, seed=5)))
+    settle_ecg()
 
     conn = _db_conn(app_client)
     with conn:
