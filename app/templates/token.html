@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Token — MyGymApp{% endblock %}
+{% block content %}
+<h1>Token applicazione</h1>
+<p class="section-desc">
+  Il token (&egrave; il <code>SYNC_SHARED_SECRET</code> del server) autentica l'app Android
+  su ogni endpoint <code>/v1/*</code> come <code>Authorization: Bearer &lt;token&gt;</code>.
+  Generarne uno nuovo invalida quello precedente: va poi ricopiato nell'app.
+</p>
+
+{% if new_token %}
+<div class="card" style="border-color: var(--yellow);">
+  <div class="metric-label">Nuovo token attivo — copialo ora, non verr&agrave; pi&ugrave; mostrato</div>
+  <div class="metric-value" style="font-size: 1.1rem; word-break: break-all;">
+    <code id="new-token">{{ new_token }}</code>
+  </div>
+  <p class="section-desc">
+    Il token &egrave; gi&agrave; attivo e salvato in modo persistente (sopravvive ai restart).
+    Aggiorna l'app Android con questo valore, altrimenti la sincronizzazione smette di funzionare.
+  </p>
+  <div class="page-actions" style="justify-content: flex-start;">
+    <button type="button" onclick="navigator.clipboard.writeText(document.getElementById('new-token').textContent)">Copia token</button>
+  </div>
+</div>
+{% else %}
+<div class="card">
+  <div class="metric-label">Token attuale</div>
+  <p class="section-desc" style="margin-bottom: 1rem;">
+    Per sicurezza il valore attuale non viene mostrato. Generandone uno nuovo,
+    quello in uso sull'app smette subito di funzionare.
+  </p>
+  <form method="post" action="/settings/token/rotate" onsubmit="return confirm('Generare un nuovo token? Quello attuale smetterà subito di funzionare.');">
+    <button type="submit">Genera nuovo token</button>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

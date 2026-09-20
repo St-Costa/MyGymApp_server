@@ -114,10 +114,10 @@ detection, deep-learning arrhythmia classifiers) and why.
 ## Dashboard
 
 A server-rendered dashboard is available at `/` (trends), `/exercises` (PR lookup),
-`/exercises/{exercise_id}` (per-exercise detail), and `/weekly-report` (report preview),
-same origin as the API, no separate service or build step. Deliberately **not** behind the
-bearer token — this server is only ever reachable via Tailscale Serve on a private tailnet,
-so there's no browser-side auth flow to build for a single-user tool (see
+`/exercises/{exercise_id}` (per-exercise detail), and `/settings/token` (shared-secret
+rotation), same origin as the API, no separate service or build step. Deliberately **not**
+behind the bearer token — this server is only ever reachable via Tailscale Serve on a
+private tailnet, so there's no browser-side auth flow to build for a single-user tool (see
 [app/gui.py](app/gui.py)'s module docstring for the reasoning). Just open
 `https://<your-tailscale-hostname>/` once Tailscale Serve is set up (below).
 
@@ -217,7 +217,7 @@ settings**, together with the `SYNC_SHARED_SECRET` you generated above.
 ├── app/                    # FastAPI application
 │   ├── main.py               # app entrypoint, startup (DB init)
 │   ├── routes.py              # API handlers (GET /health, /v1/analysis/*, POST /v1/sessions|readiness|scale-weighins|ecg|repo|repo/bulk, GET /v1/manifest|/v1/file|/v1/repo/tarball, POST /v1/repo/files)
-│   ├── gui.py                  # server-rendered dashboard routes (no auth — see module docstring)
+│   ├── gui.py                  # server-rendered dashboard + token routes (no auth — see module docstring)
 │   ├── templates/                # Jinja2 templates for the dashboard
 │   ├── static/                    # vendored JS (Chart.js) served at /static
 │   ├── analysis.py                 # ported trend/PR analysis logic (ANALYSIS_SPEC.md)
@@ -229,8 +229,8 @@ settings**, together with the `SYNC_SHARED_SECRET` you generated above.
 │   ├── repo_worker.py                   # background SQL-view parse worker for repo files
 │   ├── git_backup.py                     # debounced git committer for data/raw/
 │   ├── weekly_report.py                   # deterministic weekly report content
-│   ├── security.py                     # bearer-token auth
-│   └── config.py                        # env-driven configuration
+│   ├── security.py                     # bearer-token auth + secret rotation
+│   └── config.py                        # env-driven configuration (+ DATA_ROOT/.sync_secret override)
 ├── reparse.py               # standalone re-parse maintenance script (reuses app/parsing.py)
 ├── analyze_ecg.py           # standalone ECG-analysis queue-drain script (reuses app/ecg_analysis.py)
 ├── tests/                     # test suite

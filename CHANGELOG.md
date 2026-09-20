@@ -12,9 +12,11 @@ All notable changes to this project are documented here. Format follows [Keep a 
 - Git-versioned `data/raw/` backup store (debounced commits, off-box mirror) with repo-file
   ingestion (`POST /v1/repo`, `POST /v1/repo/bulk`) and pull-only restore (`GET /v1/manifest`,
   `GET /v1/file`, `POST /v1/repo/files`, `GET /v1/repo/tarball`).
-- Server-rendered dashboard (`/`, `/exercises`, `/exercises/{id}`, `/weekly-report` preview)
+- Server-rendered dashboard (`/`, `/exercises`, `/exercises/{id}`)
   with cardio/ACWR/RPE/monotony/HR-zone/muscle-group/maintenance charts, and the
   deterministic weekly report content generation.
+- Token management page (`/settings/token`): generates a new shared secret, activates
+  it immediately and persists it to `DATA_ROOT/.sync_secret`.
 - CARDIO exercise blocks, session-RPE/Foster load, bodyweight-load audit fields, STRETCH
   held seconds, daily step average, readiness `sleepQuality`, server-side VO2max/calorie/
   TRIMP recomputes.
@@ -33,3 +35,5 @@ All notable changes to this project are documented here. Format follows [Keep a 
 ### Removed
 
 - Weekly-report screenshot generation and scheduler (reverted experiment).
+- Weekly-report preview page (`/weekly-report`): the "Genera notifica settimanale" tab,
+  its route/template and GUI tests are gone (the `build_weekly_report` builder stays).
