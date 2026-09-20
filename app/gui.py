@@ -149,6 +149,26 @@ def _frequency_dot(session_count: int) -> str:
     return "GREEN"
 
 
+# Rank per l'ordinamento dei box Volume+Frequenza: GREEN prima di YELLOW
+# prima di RED; colori sconosciuti (es. GRAY) in coda. Vedi
+# _current_week_sort_key sotto.
+_SEMAPHORE_RANK = {"GREEN": 0, "YELLOW": 1, "RED": 2}
+
+
+def _current_week_sort_key(box: dict) -> tuple:
+    """Ordina i box Volume+Frequenza per semafori, non per nome.
+
+    Tier 0: entrambi GREEN; tier 1: un solo GREEN (altro YELLOW prima di
+    RED); tier 2: nessun GREEN (YELLOW+YELLOW, poi YELLOW+RED, poi RED+RED).
+    A parita' di colori, ordine alfabetico per bodypart (comportamento
+    precedente)."""
+    vol_rank = _SEMAPHORE_RANK.get(box["volume_color"], 3)
+    freq_rank = _SEMAPHORE_RANK.get(box["frequency_color"], 3)
+    green_count = (box["volume_color"] == "GREEN") + (box["frequency_color"] == "GREEN")
+    tier = 2 - green_count
+    return (tier, tuple(sorted((vol_rank, freq_rank))), box["bodypart"])
+
+
 # Dot color per OverloadMetricVerdict.verdict value, for the
 # progressive-overload table cells — per user decision: growing green,
 # stalled gray, fast RED (same severity as dropping — an implausible jump
@@ -199,7 +219,8 @@ def _exercise_analysis_context(conn, today: str | None) -> dict:
     # trained this week (set_count > 0) — per user decision, an empty card
     # for a muscle group not touched this week adds noise, not signal; the
     # historical trend for it is still available via muscle_trend if ever
-    # needed, just not surfaced as a "this week" card.
+    # needed, just not surfaced as a "this week" card. Ordinati per semafori
+    # (vedi _current_week_sort_key), non per nome.
     current_week = [
         {
             "bodypart": bodypart,
@@ -211,6 +232,7 @@ def _exercise_analysis_context(conn, today: str | None) -> dict:
         for bodypart, weeks in sorted(muscle_trend.items())
         if weeks and weeks[-1].set_count > 0
     ]
+    current_week.sort(key=_current_week_sort_key)
 
     # Same "most recent week, only bodyparts actually stretched this week"
     # shape as current_week above. Minutes, not seconds, per user request —
