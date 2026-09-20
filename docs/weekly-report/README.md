@@ -72,8 +72,9 @@ knowing about, not indistinguishable from "everything's fine").
 
 ## What's deliberately out of scope here
 
-- Sending the report (ntfy HTTP POST) — no client exists yet; `/weekly-report`
-  only previews what would be sent.
+- Sending the report (ntfy HTTP POST) — no client exists yet (the former
+  `/weekly-report` preview page has been removed; `build_weekly_report` remains
+  as the content builder for whenever a sender is wired up).
 - Scheduling (cron/weekly trigger) — no scheduler exists.
 - An image/screenshot variant — tried (headless-Chromium full-page PNG of the
   dashboard, plus an in-process scheduler to generate it on a schedule) and

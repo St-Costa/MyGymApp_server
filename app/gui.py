@@ -12,13 +12,13 @@ consumer of the same analysis layer, not a proxy in front of the API.
 """
 
 from dataclasses import asdict
-from datetime import date as date_cls
 from pathlib import Path
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+from app import security
 from app.analysis import (
     acwr_daily_trend,
     all_cardio_metrics_weekly_trend,
@@ -50,7 +50,6 @@ from app.analysis import (
 )
 from app.config import DB_PATH
 from app.storage import connect
-from app.weekly_report import build_weekly_report
 
 router = APIRouter()
 
@@ -118,18 +117,22 @@ def dashboard(request: Request, today: str | None = Query(default=None)):
     )
 
 
-@router.get("/weekly-report", response_class=HTMLResponse)
-def weekly_report_preview(request: Request, week_end: str | None = Query(default=None)):
-    """Manual preview of the deterministic weekly report content
-    (app.weekly_report) — lets the user eyeball what a given week's ntfy
-    notification would say before any send/schedule infrastructure exists.
-    `week_end` (ISO date, the Sunday of the reported week) is optional and
-    defaults to the most recently completed week, same as build_weekly_report."""
-    parsed_week_end = date_cls.fromisoformat(week_end) if week_end else None
-    with connect(DB_PATH) as conn:
-        report = build_weekly_report(conn, week_end=parsed_week_end)
+@router.get("/settings/token", response_class=HTMLResponse)
+def token_settings(request: Request):
+    """Shows the token management page: what the shared secret is for,
+    and a button to rotate it. The current secret is never rendered —
+    after a rotation the new value is shown exactly once."""
+    return templates.TemplateResponse(request, "token.html", {"new_token": None})
 
-    return templates.TemplateResponse(request, "weekly_report.html", {"report": report})
+
+@router.post("/settings/token/rotate", response_class=HTMLResponse)
+def rotate_token(request: Request):
+    """Generates a new shared secret, activates it immediately and persists
+    it (see app.security.rotate_shared_secret). The new value is rendered
+    once so it can be copied into the Android app — afterwards the old
+    token stops working."""
+    new_token = security.rotate_shared_secret()
+    return templates.TemplateResponse(request, "token.html", {"new_token": new_token})
 
 
 # Display semaphore for muscle_group_weekly_trend's session_count — mirrors

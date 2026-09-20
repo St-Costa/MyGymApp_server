@@ -527,22 +527,55 @@ def test_dashboard_body_fat_chart_has_ace_thresholds(app_client) -> None:
     assert "ACE, men's table" in response.text
 
 
-def test_dashboard_header_has_weekly_report_link(app_client) -> None:
+def test_dashboard_header_has_token_link_and_no_weekly_report_link(app_client) -> None:
     response = app_client.get("/")
     assert response.status_code == 200
-    assert 'href="/weekly-report"' in response.text
+    assert 'href="/settings/token"' in response.text
+    assert 'href="/weekly-report"' not in response.text
 
 
-def test_weekly_report_preview_renders_with_no_data(app_client) -> None:
+def test_weekly_report_preview_is_gone(app_client) -> None:
     response = app_client.get("/weekly-report")
+    assert response.status_code == 404
+
+
+def test_token_page_renders_without_leaking_secret(app_client) -> None:
+    from tests.conftest import SHARED_SECRET
+
+    response = app_client.get("/settings/token")
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
-    assert "Nessuna sessione questa settimana" in response.text
+    assert "Genera nuovo token" in response.text
+    assert SHARED_SECRET not in response.text
 
 
-def test_weekly_report_preview_accepts_explicit_week_end(app_client) -> None:
-    post_session(app_client)  # SESSION_MD: dated 2025-04-15
-    response = app_client.get("/weekly-report", params={"week_end": "2025-04-20"})
+def test_token_rotation_activates_new_secret_and_persists_it(
+    app_client, tmp_path, monkeypatch
+) -> None:
+    import app.config
+    from tests.conftest import SHARED_SECRET, post_session
+
+    # Regression guard: rotation must never write to the cwd's `.env` — an
+    # earlier version best-effort synced it there, which clobbered the real
+    # secret on every local test run (pytest runs with the repo root as cwd).
+    sentinel = tmp_path / ".env"
+    sentinel.write_text("SYNC_SHARED_SECRET=do-not-touch\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    response = app_client.post("/settings/token/rotate")
     assert response.status_code == 200
-    assert "2025-04-14" in response.text  # the Monday of that week
-    assert "2025-04-20" in response.text
+    new_token = app.config.SYNC_SHARED_SECRET
+    assert len(new_token) == 64
+    assert new_token != SHARED_SECRET
+    assert new_token in response.text
+    assert app.config.SECRET_FILE.read_text(encoding="utf-8").strip() == new_token
+
+    # Old token is dead, new token works on an authenticated endpoint.
+    assert post_session(app_client).status_code == 401
+    assert (
+        post_session(app_client, headers={"Authorization": f"Bearer {new_token}"}).status_code
+        == 200
+    )
+    # A plain GET afterwards must not leak the new value.
+    assert new_token not in app_client.get("/settings/token").text
+    assert sentinel.read_text(encoding="utf-8") == "SYNC_SHARED_SECRET=do-not-touch\n"

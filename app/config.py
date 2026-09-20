@@ -8,13 +8,33 @@ restarted, not reconfigured live, when env vars change.
 import os
 from pathlib import Path
 
-# The shared secret every request must present as `Authorization: Bearer <value>`.
-# No default: an empty/missing secret would make auth meaningless, so we let
-# startup fail loudly (see app/security.py) rather than silently accept anything.
-SYNC_SHARED_SECRET = os.environ.get("SYNC_SHARED_SECRET", "")
-
 # Root directory for all persistent server data: raw/, db.sqlite3, logs/.
 DATA_ROOT = Path(os.environ.get("DATA_ROOT", "./data")).resolve()
+
+# File holding a GUI-rotated secret (see app/security.rotate_shared_secret).
+# It lives under DATA_ROOT so it survives container restarts (unlike the
+# process env, which comes from the host .env via docker-compose and isn't
+# writable from inside the container). When present and non-empty it wins
+# over SYNC_SHARED_SECRET; otherwise the env var is the source of truth.
+# Kept as a dotfile next to db.sqlite3/logs — never committed (see .gitignore).
+SECRET_FILE = DATA_ROOT / ".sync_secret"
+
+
+def _resolve_shared_secret() -> str:
+    """The shared secret every request must present as
+    `Authorization: Bearer <value>`. No default: an empty/missing secret
+    would make auth meaningless, so callers fail loudly (see
+    app/security.py) rather than silently accept anything."""
+    try:
+        file_secret = SECRET_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        file_secret = ""
+    if file_secret:
+        return file_secret
+    return os.environ.get("SYNC_SHARED_SECRET", "")
+
+
+SYNC_SHARED_SECRET = _resolve_shared_secret()
 
 PORT = int(os.environ.get("PORT", "8420"))
 

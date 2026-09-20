@@ -12,8 +12,8 @@ this page wins on disagreements about the envelope shape.
 ## Auth
 
 - Every `/v1/*` endpoint requires `Authorization: Bearer <SYNC_SHARED_SECRET>` → else `401`.
-- Open (no auth): `GET /health`, `/`, `/exercises`, `/exercises/{id}`, `/weekly-report`,
-  `/static/*`.
+- Open (no auth): `GET /health`, `/`, `/exercises`, `/exercises/{id}`,
+  `/settings/token`, `POST /settings/token/rotate`, `/static/*`.
 
 ## Text-record ingestion (sessions, readiness, scale)
 
@@ -124,8 +124,11 @@ capped at 2 decimals.
 
 ## Dashboard (no auth, same origin)
 
-`/`, `/exercises`, `/exercises/{exercise_id}`, `/weekly-report` (`?week_end=` optional,
-`?today=` on `/`). Server-rendered HTML over the same analysis layer — no JSON API.
+`/`, `/exercises`, `/exercises/{exercise_id}` (`?today=` on `/`). Server-rendered
+HTML over the same analysis layer — no JSON API. `/settings/token` manages the
+shared secret: `POST /settings/token/rotate` generates a new token, activates
+it immediately and persists it to `DATA_ROOT/.sync_secret` (which wins over
+the `SYNC_SHARED_SECRET` env var on restart).
 
 ## Error codes
 
