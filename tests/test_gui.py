@@ -579,3 +579,56 @@ def test_token_rotation_activates_new_secret_and_persists_it(
     # A plain GET afterwards must not leak the new value.
     assert new_token not in app_client.get("/settings/token").text
     assert sentinel.read_text(encoding="utf-8") == "SYNC_SHARED_SECRET=do-not-touch\n"
+
+
+def test_exercise_boxes_sorted_green_first_then_mixed_then_rest(monkeypatch) -> None:
+    """I box Volume+Frequenza sono ordinati per semafori: prima entrambi
+    GREEN, poi un solo GREEN (altro YELLOW prima di RED), poi nessun GREEN
+    (YY, poi YR, poi RR); a parita' di colori vale l'alfabetico."""
+    from app import gui
+    from app.analysis import MuscleGroupWeek
+
+    def _week(bodypart, sets, sessions):
+        vol = "GREEN" if 10 <= sets <= 20 else ("YELLOW" if sets >= 5 else "RED")
+        return MuscleGroupWeek(
+            week_start="2025-04-14",
+            bodypart=bodypart,
+            set_count=sets,
+            session_count=sessions,
+            volume_semaphore=vol,
+            frequency_semaphore="GREEN",
+        )
+
+    # sets/sessioni scelti per ottenere le combinazioni volute tramite
+    # _volume_semaphore e _frequency_dot (12=set GREEN, 6=set YELLOW,
+    # 3=set RED; 2xW=freq GREEN, 1xW=freq YELLOW).
+    trend = {
+        "zz_mixed_red": [_week("zz_mixed_red", 3, 2)],  # RED + GREEN
+        "mm_both_green": [_week("mm_both_green", 12, 2)],  # GREEN + GREEN
+        "bb_none_yellow": [_week("bb_none_yellow", 6, 1)],  # YELLOW + YELLOW
+        "aa_mixed_yellow": [_week("aa_mixed_yellow", 12, 1)],  # GREEN + YELLOW
+        "cc_none_mixed": [_week("cc_none_mixed", 3, 1)],  # RED + YELLOW
+    }
+    monkeypatch.setattr(gui, "muscle_group_weekly_trend", lambda conn, today=None: trend)
+    monkeypatch.setattr(gui, "stretch_weekly_trend", lambda conn, today=None: {})
+    monkeypatch.setattr(gui, "exercise_ids_trained_this_week", lambda conn, today=None: set())
+    monkeypatch.setattr(gui, "list_exercises", lambda conn: [])
+
+    ctx = gui._exercise_analysis_context(None, today="2025-04-20")
+    assert [b["bodypart"] for b in ctx["current_week"]] == [
+        "mm_both_green",
+        "aa_mixed_yellow",
+        "zz_mixed_red",
+        "bb_none_yellow",
+        "cc_none_mixed",
+    ]
+
+
+def test_current_week_sort_key_tiebreak_is_alphabetical() -> None:
+    from app.gui import _current_week_sort_key
+
+    boxes = [
+        {"bodypart": "zzz", "volume_color": "GREEN", "frequency_color": "GREEN"},
+        {"bodypart": "aaa", "volume_color": "GREEN", "frequency_color": "GREEN"},
+    ]
+    assert sorted(boxes, key=_current_week_sort_key)[0]["bodypart"] == "aaa"
