@@ -632,3 +632,40 @@ def test_current_week_sort_key_tiebreak_is_alphabetical() -> None:
         {"bodypart": "aaa", "volume_color": "GREEN", "frequency_color": "GREEN"},
     ]
     assert sorted(boxes, key=_current_week_sort_key)[0]["bodypart"] == "aaa"
+
+
+def test_stretch_boxes_sorted_green_first(monkeypatch) -> None:
+    """I box Stretch analysis seguono lo stesso ordinamento: prima i GREEN,
+    poi i RED; a parita' di colore vale l'alfabetico. Lo stretch ha un solo
+    semaforo (RED | GREEN), quindi non ci sono tier intermedi."""
+    from app import gui
+    from app.analysis import StretchMuscleGroupWeek
+
+    def _week(bodypart, seconds):
+        vol = "GREEN" if 300 <= seconds <= 600 else "RED"
+        return StretchMuscleGroupWeek(
+            week_start="2025-04-14",
+            bodypart=bodypart,
+            total_seconds=seconds,
+            session_count=1,
+            volume_semaphore=vol,
+        )
+
+    trend = {
+        "zz_red": [_week("zz_red", 120)],  # <5 min -> RED
+        "mm_green": [_week("mm_green", 420)],  # 7 min -> GREEN
+        "cc_red": [_week("cc_red", 700)],  # >10 min -> RED
+        "aa_green": [_week("aa_green", 360)],  # 6 min -> GREEN
+    }
+    monkeypatch.setattr(gui, "muscle_group_weekly_trend", lambda conn, today=None: {})
+    monkeypatch.setattr(gui, "stretch_weekly_trend", lambda conn, today=None: trend)
+    monkeypatch.setattr(gui, "exercise_ids_trained_this_week", lambda conn, today=None: set())
+    monkeypatch.setattr(gui, "list_exercises", lambda conn: [])
+
+    ctx = gui._exercise_analysis_context(None, today="2025-04-20")
+    assert [b["bodypart"] for b in ctx["stretch_current_week"]] == [
+        "aa_green",
+        "mm_green",
+        "cc_red",
+        "zz_red",
+    ]
