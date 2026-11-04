@@ -40,4 +40,9 @@ jobs:
           # (83.0.0) entirely — verified 2026-08 that no compatible neurokit2
           # release exists yet. Re-check this exclusion whenever neurokit2 is
           # upgraded; drop it once a version without the setuptools pin ships.
-          pip-audit . --ignore-vuln PYSEC-2026-3447
+          #
+          # --ignore-vuln GHSA-xmj3-9gf7-h52w (low): setuptools<84.1 path escape
+          # in the legacy wheel-to-egg install path, Windows only. This project
+          # runs on Linux in Docker and never installs eggs. Same blocker as above:
+          # neurokit2 0.3.0 (latest, checked 2026-11-04) still pins setuptools<82.
+          pip-audit . --ignore-vuln PYSEC-2026-3447 --ignore-vuln GHSA-xmj3-9gf7-h52w
